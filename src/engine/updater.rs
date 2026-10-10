@@ -37,11 +37,11 @@ pub fn ensure_dependencies() -> Result<(), String> {
         .bytes()
         .map_err(|e| format!("Failed to read response bytes: {}", e))?;
 
-    if let Some(parent) = yt_dlp_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create deps directory: {}", e))?;
-        }
+    if let Some(parent) = yt_dlp_path.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create deps directory: {}", e))?;
     }
 
     let mut file = fs::File::create(&yt_dlp_path)

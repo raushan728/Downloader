@@ -26,10 +26,7 @@ fn main() {
         println!("{}", "Valid URL detected. Resolving engine paths...".cyan());
 
         let yt_dlp_path = engine::paths::get_ytdlp_path();
-        let ffmpeg_path = engine::paths::get_ffmpeg_path();
-
-        println!("{}", format!("Engine path: {:?}", yt_dlp_path).blue());
-        println!("{}", format!("Engine path: {:?}", ffmpeg_path).blue());
+        let _ffmpeg_path = engine::paths::get_ffmpeg_path();
 
         if let Err(e) = engine::updater::ensure_dependencies() {
             println!(
@@ -51,6 +48,19 @@ fn main() {
                     "{}",
                     format!("Extracted {} formats.", info.formats.len()).green()
                 );
+
+                if let Some(format_id) = cli::prompts::select_format(&info.formats) {
+                    println!(
+                        "{}",
+                        format!(
+                            "✅ Selected Format ID: {}. Download sequence will start here.",
+                            format_id
+                        )
+                        .green()
+                    );
+                } else {
+                    println!("{}", "🚫 Download cancelled by user.".red());
+                }
             }
             Err(e) => {
                 println!(
