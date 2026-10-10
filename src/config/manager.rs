@@ -99,4 +99,127 @@ impl ConfigManager {
             }
         }
     }
+
+    pub fn reset_to_default() -> DwdrConfig {
+        let default_config = DwdrConfig::default();
+        Self::save(&default_config);
+        default_config
+    }
+
+    pub fn handle_cli(
+        config: &mut DwdrConfig,
+        action: String,
+        key: Option<String>,
+        value: Option<String>,
+        force: bool,
+    ) {
+        use colored::Colorize;
+
+        match action.as_str() {
+            "show" => {
+                println!("{}", "Current Configuration:".cyan().bold());
+                println!("{}: {}", "default_ui".cyan(), config.default_ui.yellow());
+                println!(
+                    "{}: {}",
+                    "download_path".cyan(),
+                    config.download_path.yellow()
+                );
+                println!("{}: {}", "port".cyan(), config.port.to_string().yellow());
+                println!(
+                    "{}: {}",
+                    "update_check_days".cyan(),
+                    config.update_check_days.to_string().yellow()
+                );
+                println!(
+                    "{}: {}",
+                    "max_parallel_downloads".cyan(),
+                    config.max_parallel_downloads.to_string().yellow()
+                );
+            }
+            "reset" => {
+                *config = Self::reset_to_default();
+                println!("{}", "✅ Configuration reset to defaults.".green());
+            }
+            "set" => {
+                let key = match key {
+                    Some(k) => k,
+                    None => {
+                        println!("{}", "ERROR: Missing 'key' for set action.".red());
+                        return;
+                    }
+                };
+                let value = match value {
+                    Some(v) => v,
+                    None => {
+                        println!("{}", "ERROR: Missing 'value' for set action.".red());
+                        return;
+                    }
+                };
+
+                if crate::engine::queue::is_download_active() && !force {
+                    println!(
+                        "{}",
+                        "ERROR: Cannot change settings while downloads are active. Use --force to override."
+                            .red()
+                            .bold()
+                    );
+                    return;
+                }
+
+                match key.as_str() {
+                    "ui" => {
+                        if value == "cli" || value == "browser" {
+                            config.default_ui = value.clone();
+                        } else {
+                            println!(
+                                "{}",
+                                "ERROR: Invalid ui value. Use 'cli' or 'browser'.".red()
+                            );
+                            return;
+                        }
+                    }
+                    "path" => {
+                        config.download_path = value.clone();
+                    }
+                    "port" => match value.parse::<u16>() {
+                        Ok(v) => config.port = v,
+                        Err(_) => {
+                            println!("{}", "ERROR: Invalid port value.".red());
+                            return;
+                        }
+                    },
+                    "parallel" => match value.parse::<u8>() {
+                        Ok(v) => config.max_parallel_downloads = v,
+                        Err(_) => {
+                            println!("{}", "ERROR: Invalid parallel downloads value.".red());
+                            return;
+                        }
+                    },
+                    "update-days" => match value.parse::<u32>() {
+                        Ok(v) => config.update_check_days = v,
+                        Err(_) => {
+                            println!("{}", "ERROR: Invalid update-days value.".red());
+                            return;
+                        }
+                    },
+                    _ => {
+                        println!("{}", "ERROR: Unknown config key.".red());
+                        return;
+                    }
+                }
+
+                Self::save(config);
+                println!(
+                    "{}",
+                    format!("✅ Successfully updated {} to {}", key, value).green()
+                );
+            }
+            _ => {
+                println!(
+                    "{}",
+                    "ERROR: Unknown action. Use 'show', 'reset', or 'set'.".red()
+                );
+            }
+        }
+    }
 }

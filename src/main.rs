@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+pub mod engine;
 
 use clap::Parser;
 use cli::router::{Cli, Commands};
@@ -7,7 +8,7 @@ use colored::Colorize;
 use config::manager::ConfigManager;
 
 fn main() {
-    let config = ConfigManager::load();
+    let mut config = ConfigManager::load();
     let cli = Cli::parse();
 
     if let Some(url) = cli.url {
@@ -17,11 +18,13 @@ fn main() {
 
     if let Some(command) = cli.command {
         match command {
-            Commands::Config { action, .. } => {
-                println!(
-                    "{}",
-                    format!("Config command triggered: {}", action).yellow()
-                );
+            Commands::Config {
+                action,
+                key,
+                value,
+                force,
+            } => {
+                ConfigManager::handle_cli(&mut config, action, key, value, force);
             }
             Commands::Update => {
                 println!("{}", "Update command triggered".yellow());
