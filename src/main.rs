@@ -31,6 +31,14 @@ fn main() {
         println!("{}", format!("Engine path: {:?}", yt_dlp_path).blue());
         println!("{}", format!("Engine path: {:?}", ffmpeg_path).blue());
 
+        if let Err(e) = engine::updater::ensure_dependencies() {
+            println!(
+                "{}",
+                format!("ERROR: Failed to setup engine: {}", e).red().bold()
+            );
+            return;
+        }
+
         println!("{}", "Fetching media details from the server... ⏳".cyan());
 
         match engine::downloader::fetch_video_info(&url, &yt_dlp_path) {
