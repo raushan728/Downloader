@@ -128,3 +128,12 @@ pub fn download_media(
         Err("yt-dlp process exited with an error".to_string())
     }
 }
+
+pub fn find_format_by_quality(formats: &[MediaFormat], target_quality: &str) -> Option<String> {
+    for format in formats {
+        if format.resolution.contains(target_quality) {
+            return Some(format.format_id.clone());
+        }
+    }
+    None
+}

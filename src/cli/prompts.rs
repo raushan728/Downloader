@@ -103,10 +103,17 @@ pub fn interactive_config(config: &mut crate::config::manager::DwdrConfig) {
                         }
                     }
                 } else if ans.starts_with("5") {
+                    if let Ok(quality) = Text::new("Enter new Default Quality:")
+                        .with_default(&config.default_quality)
+                        .prompt()
+                    {
+                        config.default_quality = quality;
+                    }
+                } else if ans.starts_with("6") {
                     crate::config::manager::ConfigManager::save(config);
                     println!("{}", "✅ Settings saved successfully!".green());
                     break;
-                } else if ans.starts_with("6") {
+                } else if ans.starts_with("7") {
                     println!("{}", "🚫 Settings update cancelled.".red());
                     break;
                 }

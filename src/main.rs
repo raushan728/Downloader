@@ -49,15 +49,46 @@ fn main() {
                     format!("Extracted {} formats.", info.formats.len()).green()
                 );
 
-                if let Some(format_id) = cli::prompts::select_format(&info.formats) {
+                let chosen_format = if let Some(format_id) =
+                    engine::downloader::find_format_by_quality(
+                        &info.formats,
+                        &config.default_quality,
+                    ) {
                     println!(
                         "{}",
                         format!(
-                            "✅ Selected Format ID: {}. Download sequence will start here.",
-                            format_id
+                            "✨ Exact quality ({}) found! Auto-starting download...",
+                            config.default_quality
                         )
                         .green()
                     );
+                    Some(format_id)
+                } else {
+                    println!(
+                        "{}",
+                        format!(
+                            "⚠️ Quality ({}) not found. Falling back to manual selection...",
+                            config.default_quality
+                        )
+                        .yellow()
+                    );
+                    if let Some(format_id) = cli::prompts::select_format(&info.formats) {
+                        println!(
+                            "{}",
+                            format!(
+                                "✅ Selected Format ID: {}. Download sequence will start here.",
+                                format_id
+                            )
+                            .green()
+                        );
+                        Some(format_id)
+                    } else {
+                        println!("{}", "🚫 Download cancelled by user.".red());
+                        None
+                    }
+                };
+
+                if let Some(format_id) = chosen_format {
                     match engine::downloader::download_media(
                         &url,
                         &format_id,
@@ -80,8 +111,6 @@ fn main() {
                             println!("{}", format!("❌ Download failed: {}", e).red().bold());
                         }
                     }
-                } else {
-                    println!("{}", "🚫 Download cancelled by user.".red());
                 }
             }
             Err(e) => {

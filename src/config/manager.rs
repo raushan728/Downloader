@@ -10,6 +10,7 @@ pub struct DwdrConfig {
     pub port: u16,
     pub update_check_days: u32,
     pub max_parallel_downloads: u8,
+    pub default_quality: String,
 }
 
 impl Default for DwdrConfig {
@@ -35,6 +36,7 @@ impl Default for DwdrConfig {
             port: 5500,
             update_check_days: 0,
             max_parallel_downloads: 3,
+            default_quality: "1080p".to_string(),
         }
     }
 }
@@ -135,6 +137,11 @@ impl ConfigManager {
                         "max_parallel_downloads".cyan(),
                         config.max_parallel_downloads.to_string().yellow()
                     );
+                    println!(
+                        "{}: {}",
+                        "default_quality".cyan(),
+                        config.default_quality.yellow()
+                    );
                 }
                 "reset" => {
                     *config = Self::reset_to_default();
@@ -180,6 +187,9 @@ impl ConfigManager {
                         }
                         "path" => {
                             config.download_path = value.clone();
+                        }
+                        "quality" => {
+                            config.default_quality = value.clone();
                         }
                         "port" => match value.parse::<u16>() {
                             Ok(v) => config.port = v,
@@ -236,6 +246,7 @@ mod tests {
         assert_eq!(config.port, 5500);
         assert_eq!(config.update_check_days, 0);
         assert_eq!(config.max_parallel_downloads, 3);
+        assert_eq!(config.default_quality, "1080p");
         assert!(!config.download_path.is_empty());
     }
 }
