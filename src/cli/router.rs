@@ -1,7 +1,18 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "dwdr", version, about = "Enterprise-grade CLI and Web media downloader", long_about = None)]
+#[command(
+    name = "dwdr",
+    version,
+    about = "DWDR - The Ultimate Media Downloader with CLI & Web UI",
+    long_about = "EXAMPLES:\n\
+    dwdr \"https://youtube.com/...\" # Quick download with Smart Fallback\n\
+    dwdr                            # Open Interactive Terminal Shell\n\
+    dwdr --web                      # Open Premium Web Browser UI\n\
+    dwdr config                     # Open Interactive Settings Menu\n\
+    dwdr config set port 8080       # Change Web UI port\n\
+    dwdr update                     # Force update dependencies"
+)]
 pub struct Cli {
     /// Bypasses the UI and immediately starts downloading the provided resource.
     pub url: Option<String>,

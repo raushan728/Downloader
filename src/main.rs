@@ -29,7 +29,22 @@ fn main() {
                 ConfigManager::handle_cli(&mut config, action, key, value, force);
             }
             Commands::Update => {
-                println!("{}", "Update command triggered".yellow());
+                println!("{}", "INFO: Forcing update for core engines...".cyan());
+                let yt = crate::engine::paths::get_ytdlp_path();
+                let ff = crate::engine::paths::get_ffmpeg_path();
+                let _ = std::fs::remove_file(yt);
+                let _ = std::fs::remove_file(ff);
+
+                if let Err(e) = crate::engine::updater::ensure_dependencies() {
+                    println!("{}", format!("\nERROR: {}\n", e).red().bold());
+                } else if let Err(e) = crate::engine::updater::ensure_ffmpeg() {
+                    println!("{}", format!("\nERROR: {}\n", e).red().bold());
+                } else {
+                    println!(
+                        "{}",
+                        "SUCCESS: All core engines are updated to the latest versions!".green()
+                    );
+                }
             }
         }
         return;
