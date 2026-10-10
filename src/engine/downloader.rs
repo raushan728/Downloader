@@ -137,3 +137,44 @@ pub fn find_format_by_quality(formats: &[MediaFormat], target_quality: &str) -> 
     }
     None
 }
+
+pub fn download_media_background(
+    task_id: String,
+    url: String,
+    format_id: String,
+    yt_dlp_path: std::path::PathBuf,
+    ffmpeg_path: std::path::PathBuf,
+    download_dir: String,
+) {
+    crate::engine::state::update_task(&task_id, "Starting");
+
+    let mut cmd = Command::new(&yt_dlp_path);
+
+    cmd.arg("-f").arg(format!("{}+bestaudio/best", format_id));
+
+    cmd.arg("-N").arg("8");
+
+    cmd.arg("-P").arg(&download_dir);
+
+    cmd.arg("--ffmpeg-location").arg(&ffmpeg_path);
+
+    cmd.arg(&url);
+
+    match cmd.status() {
+        Ok(status) if status.success() => {
+            crate::engine::state::update_task(&task_id, "Completed");
+        }
+        Ok(_) => {
+            crate::engine::state::update_task(
+                &task_id,
+                "Error: yt-dlp process exited with an error",
+            );
+        }
+        Err(e) => {
+            crate::engine::state::update_task(
+                &task_id,
+                &format!("Error: Failed to execute yt-dlp: {}", e),
+            );
+        }
+    }
+}

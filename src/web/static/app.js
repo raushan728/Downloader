@@ -38,7 +38,7 @@ fetchBtn.addEventListener('click', async () => {
                         <span class="text-gray-500 text-xs uppercase">${format.ext}</span>
                         <span class="text-cyan-500 text-sm ml-3">${size}</span>
                     </div>
-                    <button onclick="alert('Format ID: ' + '${format.format_id}')" class="bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-1 px-3 rounded shadow-lg shadow-cyan-900/50 transition duration-200">
+                    <button id="btn-${format.format_id}" onclick="startDownload('${format.format_id}', 'btn-${format.format_id}')" class="bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-1 px-3 rounded shadow-lg shadow-cyan-900/50 transition duration-200">
                         Download
                     </button>
                 </div>`;
@@ -49,3 +49,49 @@ fetchBtn.addEventListener('click', async () => {
         resultsDiv.innerHTML = `<span class="text-red-400 font-semibold">\nERROR: ${err.message}\n</span>`;
     }
 });
+
+window.startDownload = async function(format_id, btnId) {
+    const url = document.getElementById('urlInput').value.trim();
+    const btn = document.getElementById(btnId);
+    if (!url) return;
+
+    btn.disabled = true;
+    btn.innerHTML = 'Starting...';
+
+    try {
+        const res = await fetch('/api/download', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url, format_id })
+        });
+        const data = await res.json();
+        if (data.status === 'success') {
+            const taskId = data.task_id;
+            const poll = setInterval(async () => {
+                try {
+                    const statusRes = await fetch(`/api/status?task_id=${taskId}`);
+                    const statusData = await statusRes.json();
+                    if (statusData.progress === 'Completed') {
+                        btn.innerHTML = 'SUCCESS: Done!';
+                        btn.classList.replace('bg-cyan-600', 'bg-green-600');
+                        btn.classList.replace('hover:bg-cyan-500', 'hover:bg-green-500');
+                        clearInterval(poll);
+                    } else if (statusData.progress.startsWith('Error')) {
+                        btn.innerHTML = 'ERROR';
+                        btn.classList.replace('bg-cyan-600', 'bg-red-600');
+                        btn.classList.replace('hover:bg-cyan-500', 'hover:bg-red-500');
+                        clearInterval(poll);
+                        console.error(statusData.progress);
+                    } else {
+                        btn.innerHTML = statusData.progress;
+                    }
+                } catch (e) {
+                    btn.innerHTML = 'ERROR';
+                    clearInterval(poll);
+                }
+            }, 2000);
+        }
+    } catch (e) {
+        btn.innerHTML = 'ERROR';
+    }
+};

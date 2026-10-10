@@ -145,6 +145,88 @@ pub fn start_server(config: &crate::config::manager::DwdrConfig) {
                         .respond(Response::from_string("").with_status_code(StatusCode(400)));
                 }
             }
+        } else if request.url().starts_with("/api/download") && request.method().as_str() == "POST"
+        {
+            let mut body = String::new();
+            if let Err(e) = request.as_reader().read_to_string(&mut body) {
+                println!(
+                    "{}",
+                    format!("WARNING: Failed to read request body: {}", e).yellow()
+                );
+                let _ =
+                    request.respond(Response::from_string("").with_status_code(StatusCode(400)));
+                continue;
+            }
+
+            match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(json) => {
+                    let url = json
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let format_id = json
+                        .get("format_id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+
+                    if url.is_empty() || format_id.is_empty() {
+                        let _ = request
+                            .respond(Response::from_string("").with_status_code(StatusCode(400)));
+                        continue;
+                    }
+
+                    let task_id = uuid::Uuid::new_v4().to_string();
+                    let yt_dlp_path = crate::engine::paths::get_ytdlp_path();
+                    let ffmpeg_path = crate::engine::paths::get_ffmpeg_path();
+                    let download_dir = config.download_path.clone();
+
+                    let t_id = task_id.clone();
+                    std::thread::spawn(move || {
+                        crate::engine::downloader::download_media_background(
+                            t_id,
+                            url,
+                            format_id,
+                            yt_dlp_path,
+                            ffmpeg_path,
+                            download_dir,
+                        );
+                    });
+
+                    let resp = serde_json::json!({
+                        "status": "success",
+                        "task_id": task_id
+                    });
+                    let response = Response::from_string(resp.to_string());
+                    let header =
+                        Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+                    let _ = request.respond(response.with_header(header));
+                }
+                Err(e) => {
+                    println!("{}", format!("WARNING: Invalid JSON body: {}", e).yellow());
+                    let _ = request
+                        .respond(Response::from_string("").with_status_code(StatusCode(400)));
+                }
+            }
+        } else if request.url().starts_with("/api/status") && request.method().as_str() == "GET" {
+            let task_id = request.url().split("?task_id=").last().unwrap_or("");
+            if task_id.is_empty() {
+                let _ =
+                    request.respond(Response::from_string("").with_status_code(StatusCode(400)));
+                continue;
+            }
+
+            let state =
+                crate::engine::state::get_task(task_id).unwrap_or_else(|| "Unknown".to_string());
+            let resp = serde_json::json!({
+                "status": "success",
+                "progress": state
+            });
+            let response = Response::from_string(resp.to_string());
+            let header =
+                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+            let _ = request.respond(response.with_header(header));
         } else {
             let _ = request.respond(Response::empty(StatusCode(404)));
         }
