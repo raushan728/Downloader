@@ -22,7 +22,7 @@ pub struct Cli {
 pub enum Commands {
     /// Modify `~/.dwdr/config.toml` programmatically.
     Config {
-        action: String,
+        action: Option<String>,
         key: Option<String>,
         value: Option<String>,
         #[arg(short, long)]
