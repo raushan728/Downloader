@@ -36,7 +36,7 @@ fn main() {
     }
 
     if cli.web || (!cli.cli && config.default_ui == "browser") {
-        crate::web::server::start_server(config.port);
+        crate::web::server::start_server(&config);
     } else {
         crate::cli::shell::start_repl(&config);
     }

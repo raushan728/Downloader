@@ -2,6 +2,11 @@ const urlInput = document.getElementById('urlInput');
 const fetchBtn = document.getElementById('fetchBtn');
 const resultsDiv = document.getElementById('results');
 
+function size_in_mb(bytes) {
+    if (bytes === null || bytes === undefined) return 'Unknown Size';
+    return (bytes / 1048576).toFixed(1) + ' MB';
+}
+
 fetchBtn.addEventListener('click', async () => {
     const url = urlInput.value.trim();
     if (!url) return;
@@ -16,8 +21,31 @@ fetchBtn.addEventListener('click', async () => {
             body: JSON.stringify({ url })
         });
         const data = await response.json();
-        resultsDiv.innerHTML = `<pre class="text-green-400">${JSON.stringify(data, null, 2)}</pre>`;
+        
+        if (data.status === 'error') {
+            resultsDiv.innerHTML = '<span class="text-red-400 font-semibold">\nERROR: ' + data.message + '\n</span>';
+        } else if (data.status === 'success') {
+            let html = `<h2 class="text-cyan-400 font-bold mb-4 text-xl">${data.data.title}</h2>`;
+            let formats = data.data.formats.reverse();
+            for (const format of formats) {
+                const tag = format.vcodec === "none" ? "[AUDIO]" : "[VIDEO]";
+                const size = size_in_mb(format.filesize);
+                html += `
+                <div class="flex justify-between items-center bg-gray-800 p-3 rounded mb-2 border border-gray-700">
+                    <div>
+                        <span class="text-gray-400 font-bold mr-2">${tag}</span>
+                        <span class="text-white mr-2">${format.resolution}</span>
+                        <span class="text-gray-500 text-xs uppercase">${format.ext}</span>
+                        <span class="text-cyan-500 text-sm ml-3">${size}</span>
+                    </div>
+                    <button onclick="alert('Format ID: ' + '${format.format_id}')" class="bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-1 px-3 rounded shadow-lg shadow-cyan-900/50 transition duration-200">
+                        Download
+                    </button>
+                </div>`;
+            }
+            resultsDiv.innerHTML = html;
+        }
     } catch (err) {
-        resultsDiv.innerHTML = `<span class="text-red-400">Error: ${err.message}</span>`;
+        resultsDiv.innerHTML = `<span class="text-red-400 font-semibold">\nERROR: ${err.message}\n</span>`;
     }
 });

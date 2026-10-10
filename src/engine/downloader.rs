@@ -2,14 +2,14 @@ use serde::Deserialize;
 use std::path::Path;
 use std::process::Command;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct VideoInfo {
     pub title: String,
     pub duration: Option<f64>,
     pub formats: Vec<MediaFormat>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct MediaFormat {
     pub format_id: String,
     pub ext: String,

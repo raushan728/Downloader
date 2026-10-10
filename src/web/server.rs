@@ -2,19 +2,22 @@ use colored::Colorize;
 use std::io::Read;
 use tiny_http::{Header, Response, Server, StatusCode};
 
-pub fn start_server(port: u16) {
+pub fn start_server(config: &crate::config::manager::DwdrConfig) {
     let html_content = include_str!("static/index.html");
     let js_content = include_str!("static/app.js");
 
-    let server_address = format!("0.0.0.0:{}", port);
+    let server_address = format!("0.0.0.0:{}", config.port);
     let server = match Server::http(&server_address) {
         Ok(s) => s,
         Err(e) => {
             println!(
                 "{}",
-                format!("\nERROR: Failed to bind server to port {}: {}\n", port, e)
-                    .red()
-                    .bold()
+                format!(
+                    "\nERROR: Failed to bind server to port {}: {}\n",
+                    config.port, e
+                )
+                .red()
+                .bold()
             );
             return;
         }
@@ -22,10 +25,14 @@ pub fn start_server(port: u16) {
 
     println!(
         "{}",
-        format!("INFO: Web UI server running at http://localhost:{}", port).cyan()
+        format!(
+            "INFO: Web UI server running at http://localhost:{}",
+            config.port
+        )
+        .cyan()
     );
 
-    let url = format!("http://localhost:{}", port);
+    let url = format!("http://localhost:{}", config.port);
     if let Err(e) = open::that(&url) {
         println!(
             "{}",
@@ -76,16 +83,61 @@ pub fn start_server(port: u16) {
             match serde_json::from_str::<serde_json::Value>(&body) {
                 Ok(json) => {
                     let extracted_url = json.get("url").and_then(|v| v.as_str()).unwrap_or("");
-                    let dummy_resp = serde_json::json!({
-                        "status": "success",
-                        "message": format!("Backend received URL: {}", extracted_url)
-                    });
+                    if !crate::utils::validator::is_valid_url(extracted_url) {
+                        let dummy_resp = serde_json::json!({
+                            "status": "error",
+                            "message": "Invalid URL provided."
+                        });
+                        let response_body = dummy_resp.to_string();
+                        let response = Response::from_string(response_body);
+                        let header =
+                            Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                .unwrap();
+                        let _ = request.respond(response.with_header(header));
+                        continue;
+                    }
 
-                    let response_body = dummy_resp.to_string();
-                    let response = Response::from_string(response_body);
-                    let header =
-                        Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
-                    let _ = request.respond(response.with_header(header));
+                    if let Err(e) = crate::engine::updater::ensure_dependencies() {
+                        let dummy_resp = serde_json::json!({
+                            "status": "error",
+                            "message": e
+                        });
+                        let response_body = dummy_resp.to_string();
+                        let response = Response::from_string(response_body);
+                        let header =
+                            Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                .unwrap();
+                        let _ = request.respond(response.with_header(header));
+                        continue;
+                    }
+
+                    let yt_dlp_path = crate::engine::paths::get_ytdlp_path();
+                    match crate::engine::downloader::fetch_video_info(extracted_url, &yt_dlp_path) {
+                        Ok(info) => {
+                            let dummy_resp = serde_json::json!({
+                                "status": "success",
+                                "data": info
+                            });
+                            let response_body = dummy_resp.to_string();
+                            let response = Response::from_string(response_body);
+                            let header =
+                                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                    .unwrap();
+                            let _ = request.respond(response.with_header(header));
+                        }
+                        Err(e) => {
+                            let dummy_resp = serde_json::json!({
+                                "status": "error",
+                                "message": e
+                            });
+                            let response_body = dummy_resp.to_string();
+                            let response = Response::from_string(response_body);
+                            let header =
+                                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
+                                    .unwrap();
+                            let _ = request.respond(response.with_header(header));
+                        }
+                    }
                 }
                 Err(e) => {
                     println!("{}", format!("WARNING: Invalid JSON body: {}", e).yellow());
