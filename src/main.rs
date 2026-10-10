@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 pub mod engine;
+pub mod utils;
 
 use clap::Parser;
 use cli::router::{Cli, Commands};
@@ -12,7 +13,24 @@ fn main() {
     let cli = Cli::parse();
 
     if let Some(url) = cli.url {
-        println!("{}", format!("Starting download for {}...", url).cyan());
+        if !utils::validator::is_valid_url(&url) {
+            println!(
+                "{}",
+                "ERROR: Invalid URL provided. It must start with http:// or https://"
+                    .red()
+                    .bold()
+            );
+            return;
+        }
+
+        println!("{}", "Valid URL detected. Resolving engine paths...".cyan());
+
+        let yt_dlp_path = engine::paths::get_ytdlp_path();
+        let ffmpeg_path = engine::paths::get_ffmpeg_path();
+
+        println!("{}", format!("Engine path: {:?}", yt_dlp_path).blue());
+        println!("{}", format!("Engine path: {:?}", ffmpeg_path).blue());
+
         return;
     }
 

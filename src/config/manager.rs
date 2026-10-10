@@ -57,14 +57,11 @@ impl ConfigManager {
             }
         };
 
-        if path.exists() {
-            match fs::read_to_string(&path) {
-                Ok(content) => match toml::from_str(&content) {
-                    Ok(config) => return config,
-                    Err(_) => {}
-                },
-                Err(_) => {}
-            }
+        if path.exists()
+            && let Ok(content) = fs::read_to_string(&path)
+            && let Ok(config) = toml::from_str(&content)
+        {
+            return config;
         }
 
         let default_config = DwdrConfig::default();
@@ -79,13 +76,12 @@ impl ConfigManager {
     }
 
     fn save_config(path: &PathBuf, config: &DwdrConfig) {
-        if let Some(parent) = path.parent() {
-            if !parent.exists() {
-                if let Err(e) = fs::create_dir_all(parent) {
-                    eprintln!("Failed to create config directory: {}", e);
-                    return;
-                }
-            }
+        if let Some(parent) = path.parent()
+            && !parent.exists()
+            && let Err(e) = fs::create_dir_all(parent)
+        {
+            eprintln!("Failed to create config directory: {}", e);
+            return;
         }
 
         match toml::to_string(config) {
@@ -221,5 +217,20 @@ impl ConfigManager {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = DwdrConfig::default();
+        assert_eq!(config.default_ui, "cli");
+        assert_eq!(config.port, 5500);
+        assert_eq!(config.update_check_days, 0);
+        assert_eq!(config.max_parallel_downloads, 3);
+        assert!(!config.download_path.is_empty());
     }
 }

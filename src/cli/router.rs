@@ -31,3 +31,14 @@ pub enum Commands {
     /// Fetch and update isolated yt-dlp and ffmpeg binaries in `~/.dwdr/deps/`.
     Update,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn verify_cli() {
+        Cli::command().debug_assert();
+    }
+}
