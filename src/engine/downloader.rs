@@ -95,3 +95,36 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
         formats,
     })
 }
+
+pub fn download_media(
+    url: &str,
+    format_id: &str,
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    download_dir: &str,
+) -> Result<(), String> {
+    let mut cmd = Command::new(yt_dlp_path);
+    cmd.arg("-f")
+        .arg(format!("{}+bestaudio/best", format_id))
+        .arg("-N")
+        .arg("8")
+        .arg("-P")
+        .arg(download_dir)
+        .arg("--no-warnings");
+
+    if ffmpeg_path.exists() {
+        cmd.arg("--ffmpeg-location").arg(ffmpeg_path);
+    }
+
+    cmd.arg(url);
+
+    let status = cmd
+        .status()
+        .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err("yt-dlp process exited with an error".to_string())
+    }
+}

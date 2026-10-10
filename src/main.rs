@@ -26,7 +26,7 @@ fn main() {
         println!("{}", "Valid URL detected. Resolving engine paths...".cyan());
 
         let yt_dlp_path = engine::paths::get_ytdlp_path();
-        let _ffmpeg_path = engine::paths::get_ffmpeg_path();
+        let ffmpeg_path = engine::paths::get_ffmpeg_path();
 
         if let Err(e) = engine::updater::ensure_dependencies() {
             println!(
@@ -58,6 +58,28 @@ fn main() {
                         )
                         .green()
                     );
+                    match engine::downloader::download_media(
+                        &url,
+                        &format_id,
+                        &yt_dlp_path,
+                        &ffmpeg_path,
+                        &config.download_path,
+                    ) {
+                        Ok(()) => {
+                            println!(
+                                "{}",
+                                format!(
+                                    "🎉 Download completed successfully! File saved to: {}",
+                                    config.download_path
+                                )
+                                .green()
+                                .bold()
+                            );
+                        }
+                        Err(e) => {
+                            println!("{}", format!("❌ Download failed: {}", e).red().bold());
+                        }
+                    }
                 } else {
                     println!("{}", "🚫 Download cancelled by user.".red());
                 }
