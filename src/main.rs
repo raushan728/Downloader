@@ -2,6 +2,7 @@ mod cli;
 mod config;
 pub mod engine;
 pub mod utils;
+pub mod web;
 
 use clap::Parser;
 use cli::router::{Cli, Commands};
@@ -35,7 +36,7 @@ fn main() {
     }
 
     if cli.web || (!cli.cli && config.default_ui == "browser") {
-        println!("{}", "Starting Web UI...".green());
+        crate::web::server::start_server(config.port);
     } else {
         crate::cli::shell::start_repl(&config);
     }
