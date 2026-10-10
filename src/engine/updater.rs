@@ -1,5 +1,6 @@
 use colored::Colorize;
 use std::fs;
+use std::io::Seek;
 use std::io::Write;
 
 #[cfg(unix)]
@@ -14,7 +15,8 @@ pub fn ensure_dependencies() -> Result<(), String> {
 
     println!(
         "{}",
-        "Core engine missing. Downloading latest yt-dlp... This will only happen once. ⏳".yellow()
+        "INFO: Core engine missing. Downloading latest yt-dlp... This will only happen once."
+            .yellow()
     );
 
     let url = if cfg!(target_os = "windows") {
@@ -60,7 +62,7 @@ pub fn ensure_dependencies() -> Result<(), String> {
             .map_err(|e| format!("Failed to set permissions: {}", e))?;
     }
 
-    println!("{}", "✅ Engine downloaded successfully!".green());
+    println!("{}", "SUCCESS: Engine downloaded successfully!".green());
 
     ensure_ffmpeg()?;
 
@@ -74,7 +76,7 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
     }
 
     use colored::Colorize;
-    println!("{}", "Media Merger (FFmpeg) is missing. Downloading prebuilt binary... This will only happen once. ⏳".yellow());
+    println!("{}", "INFO: Media Merger (FFmpeg) is missing. Downloading prebuilt binary... This will only happen once.".yellow());
 
     let url = if cfg!(target_os = "windows") {
         "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-windows-64.zip"
@@ -84,14 +86,22 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
         "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-linux-64.zip"
     };
 
-    let response = reqwest::blocking::get(url)
-        .map_err(|e| format!("Failed to download FFmpeg: {}", e))?
-        .bytes()
-        .map_err(|e| format!("Failed to read FFmpeg bytes: {}", e))?;
+    let mut response =
+        reqwest::blocking::get(url).map_err(|e| format!("Failed to download FFmpeg: {}", e))?;
 
-    let cursor = std::io::Cursor::new(response);
+    let mut tmp_file =
+        tempfile::tempfile().map_err(|e| format!("Failed to create temp file: {}", e))?;
+
+    response
+        .copy_to(&mut tmp_file)
+        .map_err(|e| format!("Failed to write to temp file: {}", e))?;
+
+    tmp_file
+        .seek(std::io::SeekFrom::Start(0))
+        .map_err(|e| format!("Failed to seek temp file: {}", e))?;
+
     let mut archive =
-        zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to read zip archive: {}", e))?;
+        zip::ZipArchive::new(tmp_file).map_err(|e| format!("Failed to read zip archive: {}", e))?;
 
     let expected_filename = if cfg!(target_os = "windows") {
         "ffmpeg.exe"
@@ -138,7 +148,7 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
 
     println!(
         "{}",
-        "✅ Media Merger downloaded and extracted successfully!".green()
+        "SUCCESS: Media Merger downloaded and extracted successfully!".green()
     );
     Ok(())
 }

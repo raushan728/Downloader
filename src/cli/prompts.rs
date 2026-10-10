@@ -83,7 +83,7 @@ pub fn interactive_config(config: &mut crate::config::manager::DwdrConfig) {
                         } else {
                             println!(
                                 "{}",
-                                "ERROR: Invalid port value. Must be a number between 0 and 65535."
+                                "\nERROR: Invalid port value. Must be a number between 0 and 65535.\n"
                                     .red()
                             );
                         }
@@ -98,7 +98,7 @@ pub fn interactive_config(config: &mut crate::config::manager::DwdrConfig) {
                         } else {
                             println!(
                                 "{}",
-                                "ERROR: Invalid number. Must be between 1 and 255.".red()
+                                "\nERROR: Invalid number. Must be between 1 and 255.\n".red()
                             );
                         }
                     }
@@ -111,15 +111,15 @@ pub fn interactive_config(config: &mut crate::config::manager::DwdrConfig) {
                     }
                 } else if ans.starts_with("6") {
                     crate::config::manager::ConfigManager::save(config);
-                    println!("{}", "✅ Settings saved successfully!".green());
+                    println!("{}", "SUCCESS: Settings saved successfully!".green());
                     break;
                 } else if ans.starts_with("7") {
-                    println!("{}", "🚫 Settings update cancelled.".red());
+                    println!("{}", "WARNING: Settings update cancelled.".red());
                     break;
                 }
             }
             Err(_) => {
-                println!("{}", "🚫 Settings update cancelled.".red());
+                println!("{}", "WARNING: Settings update cancelled.".red());
                 break;
             }
         }

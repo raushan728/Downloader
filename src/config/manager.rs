@@ -145,20 +145,20 @@ impl ConfigManager {
                 }
                 "reset" => {
                     *config = Self::reset_to_default();
-                    println!("{}", "✅ Configuration reset to defaults.".green());
+                    println!("{}", "SUCCESS: Configuration reset to defaults.".green());
                 }
                 "set" => {
                     let key = match key {
                         Some(k) => k,
                         None => {
-                            println!("{}", "ERROR: Missing 'key' for set action.".red());
+                            println!("{}", "\nERROR: Missing 'key' for set action.\n".red());
                             return;
                         }
                     };
                     let value = match value {
                         Some(v) => v,
                         None => {
-                            println!("{}", "ERROR: Missing 'value' for set action.".red());
+                            println!("{}", "\nERROR: Missing 'value' for set action.\n".red());
                             return;
                         }
                     };
@@ -166,7 +166,7 @@ impl ConfigManager {
                     if crate::engine::queue::is_download_active() && !force {
                         println!(
                         "{}",
-                        "ERROR: Cannot change settings while downloads are active. Use --force to override."
+                        "\nERROR: Cannot change settings while downloads are active. Use --force to override.\n"
                             .red()
                             .bold()
                     );
@@ -180,7 +180,7 @@ impl ConfigManager {
                             } else {
                                 println!(
                                     "{}",
-                                    "ERROR: Invalid ui value. Use 'cli' or 'browser'.".red()
+                                    "\nERROR: Invalid ui value. Use 'cli' or 'browser'.\n".red()
                                 );
                                 return;
                             }
@@ -194,26 +194,29 @@ impl ConfigManager {
                         "port" => match value.parse::<u16>() {
                             Ok(v) => config.port = v,
                             Err(_) => {
-                                println!("{}", "ERROR: Invalid port value.".red());
+                                println!("{}", "\nERROR: Invalid port value.\n".red());
                                 return;
                             }
                         },
                         "parallel" => match value.parse::<u8>() {
                             Ok(v) => config.max_parallel_downloads = v,
                             Err(_) => {
-                                println!("{}", "ERROR: Invalid parallel downloads value.".red());
+                                println!(
+                                    "{}",
+                                    "\nERROR: Invalid parallel downloads value.\n".red()
+                                );
                                 return;
                             }
                         },
                         "update-days" => match value.parse::<u32>() {
                             Ok(v) => config.update_check_days = v,
                             Err(_) => {
-                                println!("{}", "ERROR: Invalid update-days value.".red());
+                                println!("{}", "\nERROR: Invalid update-days value.\n".red());
                                 return;
                             }
                         },
                         _ => {
-                            println!("{}", "ERROR: Unknown config key.".red());
+                            println!("{}", "\nERROR: Unknown config key.\n".red());
                             return;
                         }
                     }
@@ -221,13 +224,13 @@ impl ConfigManager {
                     Self::save(config);
                     println!(
                         "{}",
-                        format!("✅ Successfully updated {} to {}", key, value).green()
+                        format!("SUCCESS: Successfully updated {} to {}", key, value).green()
                     );
                 }
                 _ => {
                     println!(
                         "{}",
-                        "ERROR: Unknown action. Use 'show', 'reset', or 'set'.".red()
+                        "\nERROR: Unknown action. Use 'show', 'reset', or 'set'.\n".red()
                     );
                 }
             },

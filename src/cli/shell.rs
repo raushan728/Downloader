@@ -5,7 +5,7 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
     if !crate::utils::validator::is_valid_url(url) {
         println!(
             "{}",
-            "ERROR: Invalid URL provided. It must start with http:// or https://"
+            "\nERROR: Invalid URL provided. It must start with http:// or https://\n"
                 .red()
                 .bold()
         );
@@ -20,12 +20,17 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
     if let Err(e) = crate::engine::updater::ensure_dependencies() {
         println!(
             "{}",
-            format!("ERROR: Failed to setup engine: {}", e).red().bold()
+            format!("\nERROR: Failed to setup engine: {}\n", e)
+                .red()
+                .bold()
         );
         return;
     }
 
-    println!("{}", "Fetching media details from the server... ⏳".cyan());
+    println!(
+        "{}",
+        "INFO: Fetching media details from the server...".cyan()
+    );
 
     match crate::engine::downloader::fetch_video_info(url, &yt_dlp_path) {
         Ok(info) => {
@@ -46,7 +51,7 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
                 println!(
                     "{}",
                     format!(
-                        "✨ Exact quality ({}) found! Auto-starting download...",
+                        "INFO: Exact quality ({}) found! Auto-starting download...",
                         config.default_quality
                     )
                     .green()
@@ -56,7 +61,7 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
                 println!(
                     "{}",
                     format!(
-                        "⚠️ Quality ({}) not found. Falling back to manual selection...",
+                        "WARNING: Quality ({}) not found. Falling back to manual selection...",
                         config.default_quality
                     )
                     .yellow()
@@ -65,14 +70,14 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
                     println!(
                         "{}",
                         format!(
-                            "✅ Selected Format ID: {}. Download sequence will start here.",
+                            "SUCCESS: Selected Format ID: {}. Download sequence will start here.",
                             format_id
                         )
                         .green()
                     );
                     Some(format_id)
                 } else {
-                    println!("{}", "🚫 Download cancelled by user.".red());
+                    println!("{}", "WARNING: Download cancelled by user.".red());
                     None
                 }
             };
@@ -89,7 +94,7 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
                         println!(
                             "{}",
                             format!(
-                                "🎉 Download completed successfully! File saved to: {}",
+                                "SUCCESS: Download completed successfully! File saved to: {}",
                                 config.download_path
                             )
                             .green()
@@ -97,7 +102,10 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
                         );
                     }
                     Err(e) => {
-                        println!("{}", format!("❌ Download failed: {}", e).red().bold());
+                        println!(
+                            "{}",
+                            format!("\nERROR: Download failed: {}\n", e).red().bold()
+                        );
                     }
                 }
             }
@@ -105,7 +113,7 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
         Err(e) => {
             println!(
                 "{}",
-                format!("ERROR: Failed to extract video info: {}", e).red()
+                format!("\nERROR: Failed to extract video info: {}\n", e).red()
             );
         }
     }
@@ -114,7 +122,8 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
 pub fn start_repl(config: &crate::config::manager::DwdrConfig) {
     println!(
         "{}",
-        "Welcome to DWDR Interactive Shell 🚀. Type a URL to download, or 'exit' to quit.".cyan()
+        "INFO: Welcome to DWDR Interactive Shell. Type a URL to download, or 'exit' to quit."
+            .cyan()
     );
     loop {
         match Text::new("dwdr >").prompt() {
@@ -124,13 +133,13 @@ pub fn start_repl(config: &crate::config::manager::DwdrConfig) {
                     continue;
                 }
                 if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
-                    println!("{}", "Goodbye! 👋".green());
+                    println!("{}", "INFO: Goodbye!".green());
                     break;
                 }
                 process_url(input, config);
             }
             Err(_) => {
-                println!("{}", "Goodbye! 👋".green());
+                println!("{}", "INFO: Goodbye!".green());
                 break;
             }
         }
