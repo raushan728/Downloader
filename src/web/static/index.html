@@ -1,1 +1,27 @@
-<html><body style="background:#111;color:cyan;font-family:sans-serif;text-align:center;margin-top:20%;"><h1>DWDR Web UI is running!</h1></body></html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DWDR Web Engine</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
+    <div class="bg-gray-800 rounded-xl p-8 shadow-2xl border border-gray-700 w-full max-w-lg">
+        <h1 class="text-3xl font-bold text-center text-cyan-400 mb-6">DWDR Web Engine</h1>
+        <div class="space-y-4">
+            <div>
+                <label for="urlInput" class="block text-sm font-medium text-gray-400 mb-1">Media URL</label>
+                <input type="text" id="urlInput" placeholder="https://youtube.com/..." class="w-full bg-gray-900 border border-gray-700 rounded-lg px-4 py-3 focus:outline-none focus:ring-2 focus:ring-cyan-500 text-white placeholder-gray-500 transition duration-200">
+            </div>
+            <button id="fetchBtn" class="w-full bg-cyan-600 hover:bg-cyan-500 text-white font-semibold py-3 px-4 rounded-lg transition duration-200 shadow-lg shadow-cyan-900/50">
+                Fetch Formats
+            </button>
+        </div>
+        <div id="results" class="hidden mt-6 p-4 bg-gray-900 rounded-lg border border-gray-700 text-sm font-mono overflow-auto max-h-64">
+        </div>
+    </div>
+
+    <script src="/app.js"></script>
+</body>
+</html>
