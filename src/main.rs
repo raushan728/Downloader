@@ -31,6 +31,27 @@ fn main() {
         println!("{}", format!("Engine path: {:?}", yt_dlp_path).blue());
         println!("{}", format!("Engine path: {:?}", ffmpeg_path).blue());
 
+        println!("{}", "Fetching media details from the server... ⏳".cyan());
+
+        match engine::downloader::fetch_video_info(&url, &yt_dlp_path) {
+            Ok(info) => {
+                println!(
+                    "{}",
+                    format!("Successfully fetched data for: {}", info.title).green()
+                );
+                println!(
+                    "{}",
+                    format!("Extracted {} formats.", info.formats.len()).green()
+                );
+            }
+            Err(e) => {
+                println!(
+                    "{}",
+                    format!("ERROR: Failed to extract video info: {}", e).red()
+                );
+            }
+        }
+
         return;
     }
 
