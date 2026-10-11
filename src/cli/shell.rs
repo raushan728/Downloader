@@ -133,13 +133,13 @@ pub fn start_repl(config: &crate::config::manager::DwdrConfig) {
                     continue;
                 }
                 if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
-                    println!("{}", "INFO: Goodbye!".green());
+                    println!("{}", "INFO: Thanks for using DWDR!".green());
                     break;
                 }
                 process_url(input, config);
             }
             Err(_) => {
-                println!("{}", "INFO: Goodbye!".green());
+                println!("{}", "INFO: Thanks for using DWDR!".green());
                 break;
             }
         }

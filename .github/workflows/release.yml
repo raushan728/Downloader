@@ -3,11 +3,16 @@ name: Build and Release
 on:
   push:
     branches:
+      - master
       - main
     paths:
       - 'src/**'
       - 'Cargo.toml'
+      - 'Cargo.lock'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
