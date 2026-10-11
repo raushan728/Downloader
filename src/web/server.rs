@@ -179,7 +179,8 @@ pub fn start_server(config: &crate::config::manager::DwdrConfig) {
                     let task_id = uuid::Uuid::new_v4().to_string();
                     let yt_dlp_path = crate::engine::paths::get_ytdlp_path();
                     let ffmpeg_path = crate::engine::paths::get_ffmpeg_path();
-                    let download_dir = config.download_path.clone();
+                    let current_config = crate::config::manager::ConfigManager::load();
+                    let download_dir = current_config.download_path;
 
                     let t_id = task_id.clone();
                     std::thread::spawn(move || {
@@ -226,6 +227,53 @@ pub fn start_server(config: &crate::config::manager::DwdrConfig) {
             let header =
                 Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
             let _ = request.respond(response.with_header(header));
+        } else if request.url().starts_with("/api/config") && request.method().as_str() == "GET" {
+            let current_config = crate::config::manager::ConfigManager::load();
+            let resp = serde_json::json!({
+                "status": "success",
+                "data": current_config
+            });
+            let response = Response::from_string(resp.to_string());
+            let header =
+                Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+            let _ = request.respond(response.with_header(header));
+        } else if request.url().starts_with("/api/config") && request.method().as_str() == "POST" {
+            let mut body = String::new();
+            if let Err(e) = request.as_reader().read_to_string(&mut body) {
+                println!(
+                    "{}",
+                    format!("WARNING: Failed to read request body: {}", e).yellow()
+                );
+                let _ =
+                    request.respond(Response::from_string("").with_status_code(StatusCode(400)));
+                continue;
+            }
+
+            match serde_json::from_str::<serde_json::Value>(&body) {
+                Ok(json) => {
+                    let mut current_config = crate::config::manager::ConfigManager::load();
+                    if let Some(dp) = json.get("download_path").and_then(|v| v.as_str()) {
+                        current_config.download_path = dp.to_string();
+                    }
+                    if let Some(dq) = json.get("default_quality").and_then(|v| v.as_str()) {
+                        current_config.default_quality = dq.to_string();
+                    }
+                    crate::config::manager::ConfigManager::save(&current_config);
+
+                    let resp = serde_json::json!({
+                        "status": "success"
+                    });
+                    let response = Response::from_string(resp.to_string());
+                    let header =
+                        Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();
+                    let _ = request.respond(response.with_header(header));
+                }
+                Err(e) => {
+                    println!("{}", format!("WARNING: Invalid JSON body: {}", e).yellow());
+                    let _ = request
+                        .respond(Response::from_string("").with_status_code(StatusCode(400)));
+                }
+            }
         } else {
             let _ = request.respond(Response::empty(StatusCode(404)));
         }
