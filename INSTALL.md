@@ -53,3 +53,18 @@ cargo build --release
 ```bash
 cp target/release/dwdr $PREFIX/bin/
 ```
+
+## Uninstallation
+
+### macOS / Linux / Android (Termux)
+Run the uninstaller to remove DWDR, its dependencies, and path entries:
+```bash
+curl -fsSL https://raw.githubusercontent.com/raushan728/Downloader/main/scripts/uninstall.sh | bash
+```
+
+### Windows
+Run the uninstaller in PowerShell:
+```powershell
+irm https://raw.githubusercontent.com/raushan728/Downloader/main/scripts/uninstall.ps1 | iex
+```
+
