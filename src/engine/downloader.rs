@@ -31,6 +31,7 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
     let output = Command::new(yt_dlp_path)
         .arg("-J")
         .arg("--no-warnings")
+        .arg("--no-playlist")
         .arg(url)
         .output()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
@@ -109,7 +110,8 @@ pub fn download_media(
         .arg("8")
         .arg("-P")
         .arg(download_dir)
-        .arg("--no-warnings");
+        .arg("--no-warnings")
+        .arg("--no-playlist");
 
     if ffmpeg_path.exists() {
         cmd.arg("--ffmpeg-location").arg(ffmpeg_path);
@@ -155,6 +157,10 @@ pub fn download_media_background(
 
     cmd.arg("-P").arg(&download_dir);
 
+    cmd.arg("--no-warnings");
+
+    cmd.arg("--no-playlist");
+
     cmd.arg("--ffmpeg-location").arg(&ffmpeg_path);
 
     cmd.arg(&url);
@@ -175,5 +181,61 @@ pub fn download_media_background(
                 &format!("Error: Failed to execute yt-dlp: {}", e),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_find_format_by_quality() {
+        let formats = vec![
+            MediaFormat {
+                format_id: "18".to_string(),
+                ext: "mp4".to_string(),
+                resolution: "360p".to_string(),
+                filesize: Some(10_000_000.0),
+                vcodec: "avc1".to_string(),
+                acodec: "mp4a".to_string(),
+            },
+            MediaFormat {
+                format_id: "22".to_string(),
+                ext: "mp4".to_string(),
+                resolution: "720p".to_string(),
+                filesize: Some(25_000_000.0),
+                vcodec: "avc1".to_string(),
+                acodec: "mp4a".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            find_format_by_quality(&formats, "720p"),
+            Some("22".to_string())
+        );
+        assert_eq!(find_format_by_quality(&formats, "1080p"), None);
+    }
+
+    #[test]
+    fn test_media_format_size_in_mb() {
+        let format_with_size = MediaFormat {
+            format_id: "1".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "720p".to_string(),
+            filesize: Some(10_485_760.0),
+            vcodec: "avc1".to_string(),
+            acodec: "mp4a".to_string(),
+        };
+        assert_eq!(format_with_size.size_in_mb(), "10.0 MB");
+
+        let format_without_size = MediaFormat {
+            format_id: "2".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "Audio".to_string(),
+            filesize: None,
+            vcodec: "none".to_string(),
+            acodec: "opus".to_string(),
+        };
+        assert_eq!(format_without_size.size_in_mb(), "Unknown Size");
     }
 }
