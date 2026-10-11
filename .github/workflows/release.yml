@@ -50,3 +50,31 @@ jobs:
             dwdr-mac
             dwdr-windows.exe
           fail_on_unmatched_files: false
+
+  build-termux:
+    name: Build for Termux (ARM64)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Install cross
+        uses: taiki-e/install-action@cross
+
+      - name: Build release binary
+        run: cross build --target aarch64-unknown-linux-musl --release
+
+      - name: Rename binary
+        run: mv target/aarch64-unknown-linux-musl/release/dwdr dwdr-termux
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "latest"
+          files: dwdr-termux
+          fail_on_unmatched_files: false

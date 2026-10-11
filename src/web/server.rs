@@ -1,5 +1,4 @@
 use colored::Colorize;
-use std::io::Read;
 use tiny_http::{Header, Response, Server, StatusCode};
 
 pub fn start_server(config: &crate::config::manager::DwdrConfig) {
