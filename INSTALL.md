@@ -5,13 +5,13 @@
 ### macOS / Linux / Android (Termux)
 Open your terminal and run the following command:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/raushan728/Downloader/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.sh | bash
 ```
 
 ### Windows
 Open PowerShell and run the following command:
 ```powershell
-irm https://raw.githubusercontent.com/raushan728/Downloader/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.ps1 | iex
 ```
 
 ## Build from Source (Advanced Users)
@@ -59,12 +59,12 @@ cp target/release/dwdr $PREFIX/bin/
 ### macOS / Linux / Android (Termux)
 Run the uninstaller to remove DWDR, its dependencies, and path entries:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/raushan728/Downloader/main/scripts/uninstall.sh | bash
+curl -fsSL https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/uninstall.sh | bash
 ```
 
 ### Windows
 Run the uninstaller in PowerShell:
 ```powershell
-irm https://raw.githubusercontent.com/raushan728/Downloader/main/scripts/uninstall.ps1 | iex
+irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/uninstall.ps1 | iex
 ```
 
