@@ -11,7 +11,7 @@ This document establishes engineering conventions, core invariants, and workflow
    - Never write to system package directories (`/usr/bin`, `/usr/local/bin`, etc.) or invoke external system package managers (`apt`, `brew`, `choco`).
 
 2. **Single-Video Safeguard**:
-   - All `yt-dlp` command builders (`fetch_video_info`, `download_media`, `download_media_background`) must include `--no-playlist`.
+   - All `yt-dlp` command builders (`fetch_video_info`, `download_media`) must include `--no-playlist`.
    - Never assume user-provided URLs lack playlist query parameters (`&list=...`).
 
 3. **Output & Tone Discipline**:
@@ -21,9 +21,9 @@ This document establishes engineering conventions, core invariants, and workflow
 4. **Self-Healing Configuration**:
    - `ConfigManager::load()` must always handle missing or unparseable configuration files gracefully by falling back to safe defaults and reserializing without crashing.
 
-5. **Thread Safety**:
-   - Background tasks triggered from the Web UI or daemon must register updates via `crate::engine::state::update_task()`.
-   - Never hold mutex guards across long-running process waits or network calls.
+5. **Thread Safety & Process Handling**:
+   - Media downloads run synchronously with piped stdout streaming into terminal progress indicators.
+   - Never block user input loops with unhandled zombie child processes or leaked file descriptors.
 
 ---
 

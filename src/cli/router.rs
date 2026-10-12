@@ -4,26 +4,17 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "dwdr",
     version,
-    about = "DWDR - The Ultimate Media Downloader with CLI & Web UI",
+    about = "DWDR - The Ultimate Terminal Media Downloader",
     long_about = "EXAMPLES:\n\
     dwdr \"https://youtube.com/...\" # Quick download with Smart Fallback\n\
     dwdr                            # Open Interactive Terminal Shell\n\
-    dwdr --web                      # Open Premium Web Browser UI\n\
     dwdr config                     # Open Interactive Settings Menu\n\
-    dwdr config set port 8080       # Change Web UI port\n\
+    dwdr config set quality 720p    # Change default download quality\n\
     dwdr update                     # Force update dependencies"
 )]
 pub struct Cli {
     /// Bypasses the UI and immediately starts downloading the provided resource.
     pub url: Option<String>,
-
-    /// Overrides the config's default UI to force the embedded web server.
-    #[arg(short = 'w', long)]
-    pub web: bool,
-
-    /// Overrides the config's default UI to force the interactive terminal.
-    #[arg(short = 'c', long)]
-    pub cli: bool,
 
     #[command(subcommand)]
     pub command: Option<Commands>,

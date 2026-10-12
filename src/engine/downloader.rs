@@ -1,14 +1,18 @@
+use indicatif::{ProgressBar, ProgressStyle};
+use serde::{Deserialize, Serialize};
+use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct VideoInfo {
     pub title: String,
     pub duration: Option<f64>,
     pub formats: Vec<MediaFormat>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MediaFormat {
     pub format_id: String,
     pub ext: String,
@@ -110,6 +114,7 @@ pub fn download_media(
         .arg("8")
         .arg("-P")
         .arg(download_dir)
+        .arg("--newline")
         .arg("--no-warnings")
         .arg("--no-playlist");
 
@@ -118,14 +123,40 @@ pub fn download_media(
     }
 
     cmd.arg(url);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
-    let status = cmd
-        .status()
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner:.green} {msg:.cyan}")
+            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
+    );
+    pb.enable_steady_tick(Duration::from_millis(100));
+    pb.set_message("Starting download...");
+
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
+    if let Some(stdout) = child.stdout.take() {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            if line.contains("[download]") && line.contains('%') {
+                let clean = line.replace("[download]", "").trim().to_string();
+                pb.set_message(clean);
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
+
     if status.success() {
+        pb.finish_with_message("SUCCESS: Download complete!");
         Ok(())
     } else {
+        pb.finish_with_message("ERROR: Download failed.");
         Err("yt-dlp process exited with an error".to_string())
     }
 }
@@ -137,51 +168,6 @@ pub fn find_format_by_quality(formats: &[MediaFormat], target_quality: &str) -> 
         }
     }
     None
-}
-
-pub fn download_media_background(
-    task_id: String,
-    url: String,
-    format_id: String,
-    yt_dlp_path: std::path::PathBuf,
-    ffmpeg_path: std::path::PathBuf,
-    download_dir: String,
-) {
-    crate::engine::state::update_task(&task_id, "Starting");
-
-    let mut cmd = Command::new(&yt_dlp_path);
-
-    cmd.arg("-f").arg(format!("{}+bestaudio/best", format_id));
-
-    cmd.arg("-N").arg("8");
-
-    cmd.arg("-P").arg(&download_dir);
-
-    cmd.arg("--no-warnings");
-
-    cmd.arg("--no-playlist");
-
-    cmd.arg("--ffmpeg-location").arg(&ffmpeg_path);
-
-    cmd.arg(&url);
-
-    match cmd.status() {
-        Ok(status) if status.success() => {
-            crate::engine::state::update_task(&task_id, "Completed");
-        }
-        Ok(_) => {
-            crate::engine::state::update_task(
-                &task_id,
-                "Error: yt-dlp process exited with an error",
-            );
-        }
-        Err(e) => {
-            crate::engine::state::update_task(
-                &task_id,
-                &format!("Error: Failed to execute yt-dlp: {}", e),
-            );
-        }
-    }
 }
 
 #[cfg(test)]

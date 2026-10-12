@@ -1,8 +1,16 @@
 use colored::Colorize;
 use inquire::Text;
+use rfd::FileDialog;
 
-pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
-    if !crate::utils::validator::is_valid_url(url) {
+use crate::cli::prompts::{interactive_config, select_format};
+use crate::config::manager::{ConfigManager, DwdrConfig};
+use crate::engine::downloader::{download_media, fetch_video_info, find_format_by_quality};
+use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
+use crate::engine::updater::ensure_dependencies;
+use crate::utils::validator::is_valid_url;
+
+pub fn process_url(url: &str, config: &mut DwdrConfig) {
+    if !is_valid_url(url) {
         println!(
             "{}",
             "\nERROR: Invalid URL provided. It must start with http:// or https://\n"
@@ -14,10 +22,10 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
 
     println!("{}", "Valid URL detected. Resolving engine paths...".cyan());
 
-    let yt_dlp_path = crate::engine::paths::get_ytdlp_path();
-    let ffmpeg_path = crate::engine::paths::get_ffmpeg_path();
+    let yt_dlp_path = get_ytdlp_path();
+    let ffmpeg_path = get_ffmpeg_path();
 
-    if let Err(e) = crate::engine::updater::ensure_dependencies() {
+    if let Err(e) = ensure_dependencies() {
         println!(
             "{}",
             format!("\nERROR: Failed to setup engine: {}\n", e)
@@ -32,7 +40,7 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
         "INFO: Fetching media details from the server...".cyan()
     );
 
-    match crate::engine::downloader::fetch_video_info(url, &yt_dlp_path) {
+    match fetch_video_info(url, &yt_dlp_path) {
         Ok(info) => {
             println!(
                 "{}",
@@ -44,10 +52,8 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
             );
 
             let chosen_format = if let Some(format_id) =
-                crate::engine::downloader::find_format_by_quality(
-                    &info.formats,
-                    &config.default_quality,
-                ) {
+                find_format_by_quality(&info.formats, &config.default_quality)
+            {
                 println!(
                     "{}",
                     format!(
@@ -66,7 +72,7 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
                     )
                     .yellow()
                 );
-                if let Some(format_id) = crate::cli::prompts::select_format(&info.formats) {
+                if let Some(format_id) = select_format(&info.formats) {
                     println!(
                         "{}",
                         format!(
@@ -83,7 +89,29 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
             };
 
             if let Some(format_id) = chosen_format {
-                match crate::engine::downloader::download_media(
+                if config.download_path.is_empty() {
+                    println!(
+                        "{}",
+                        "INFO: No download path set. Opening file browser...".cyan()
+                    );
+                    if let Some(folder) = FileDialog::new()
+                        .set_title("Select Download Folder")
+                        .pick_folder()
+                    {
+                        config.download_path = folder.to_string_lossy().to_string();
+                        ConfigManager::save(config);
+                    } else {
+                        println!(
+                            "{}",
+                            "\nERROR: No download folder selected. Download cancelled.\n"
+                                .red()
+                                .bold()
+                        );
+                        return;
+                    }
+                }
+
+                match download_media(
                     url,
                     &format_id,
                     &yt_dlp_path,
@@ -119,7 +147,7 @@ pub fn process_url(url: &str, config: &crate::config::manager::DwdrConfig) {
     }
 }
 
-pub fn start_repl(config: &crate::config::manager::DwdrConfig) {
+pub fn start_repl(config: &mut DwdrConfig) {
     println!(
         "{}",
         "INFO: Welcome to DWDR Interactive Shell. Type a URL to download, or 'exit' to quit."
@@ -130,6 +158,10 @@ pub fn start_repl(config: &crate::config::manager::DwdrConfig) {
             Ok(input) => {
                 let input = input.trim();
                 if input.is_empty() {
+                    continue;
+                }
+                if input.eq_ignore_ascii_case("config") || input.eq_ignore_ascii_case("settings") {
+                    interactive_config(config);
                     continue;
                 }
                 if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {

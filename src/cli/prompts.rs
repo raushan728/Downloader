@@ -1,5 +1,9 @@
-use crate::engine::downloader::MediaFormat;
+use colored::Colorize;
 use inquire::Select;
+use rfd::FileDialog;
+
+use crate::config::manager::{ConfigManager, DwdrConfig};
+use crate::engine::downloader::MediaFormat;
 
 pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
     let mut options = Vec::new();
@@ -40,21 +44,17 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
     }
 }
 
-pub fn interactive_config(config: &mut crate::config::manager::DwdrConfig) {
-    use colored::Colorize;
-    use inquire::Text;
-
+pub fn interactive_config(config: &mut DwdrConfig) {
     loop {
         let options = vec![
-            format!("1. Default UI (Current: {})", config.default_ui),
-            format!("2. Download Path (Current: {})", config.download_path),
-            format!("3. Web Server Port (Current: {})", config.port),
+            format!("1. Download Path (Current: {})", config.download_path),
+            format!("2. Default Quality (Current: {})", config.default_quality),
             format!(
-                "4. Max Parallel Downloads (Current: {})",
+                "3. Max Parallel Downloads (Current: {})",
                 config.max_parallel_downloads
             ),
-            "5. Exit & Save".to_string(),
-            "6. Cancel without saving".to_string(),
+            "4. Save & Exit".to_string(),
+            "5. Cancel".to_string(),
         ];
 
         let choice = Select::new("Configuration Menu (Use arrow keys):", options).prompt();
@@ -62,58 +62,34 @@ pub fn interactive_config(config: &mut crate::config::manager::DwdrConfig) {
         match choice {
             Ok(ans) => {
                 if ans.starts_with("1") {
-                    let ui_opts = vec!["cli".to_string(), "browser".to_string()];
-                    if let Ok(ui) = Select::new("Select Default UI:", ui_opts).prompt() {
-                        config.default_ui = ui;
+                    println!("{}", "INFO: Opening native file browser...".cyan());
+                    if let Some(path) = FileDialog::new()
+                        .set_title("Select Download Folder")
+                        .pick_folder()
+                    {
+                        config.download_path = path.to_string_lossy().to_string();
                     }
                 } else if ans.starts_with("2") {
-                    if let Ok(path) = Text::new("Enter new Download Path:")
-                        .with_default(&config.download_path)
-                        .prompt()
+                    let quality_opts = vec!["best", "1080p", "720p", "480p", "audio"];
+                    if let Ok(quality) =
+                        Select::new("Select Default Quality:", quality_opts).prompt()
                     {
-                        config.download_path = path;
+                        config.default_quality = quality.to_string();
                     }
                 } else if ans.starts_with("3") {
-                    if let Ok(port_str) = Text::new("Enter new Web Server Port:")
-                        .with_default(&config.port.to_string())
-                        .prompt()
+                    let parallel_opts = vec!["1", "3", "5", "8"];
+                    if let Ok(parallel_str) =
+                        Select::new("Select Max Parallel Downloads:", parallel_opts).prompt()
                     {
-                        if let Ok(port) = port_str.parse::<u16>() {
-                            config.port = port;
-                        } else {
-                            println!(
-                                "{}",
-                                "\nERROR: Invalid port value. Must be a number between 0 and 65535.\n"
-                                    .red()
-                            );
+                        if let Ok(parallel) = parallel_str.parse::<u8>() {
+                            config.max_parallel_downloads = parallel;
                         }
                     }
                 } else if ans.starts_with("4") {
-                    if let Ok(max_str) = Text::new("Enter Max Parallel Downloads:")
-                        .with_default(&config.max_parallel_downloads.to_string())
-                        .prompt()
-                    {
-                        if let Ok(max) = max_str.parse::<u8>() {
-                            config.max_parallel_downloads = max;
-                        } else {
-                            println!(
-                                "{}",
-                                "\nERROR: Invalid number. Must be between 1 and 255.\n".red()
-                            );
-                        }
-                    }
-                } else if ans.starts_with("5") {
-                    if let Ok(quality) = Text::new("Enter new Default Quality:")
-                        .with_default(&config.default_quality)
-                        .prompt()
-                    {
-                        config.default_quality = quality;
-                    }
-                } else if ans.starts_with("6") {
-                    crate::config::manager::ConfigManager::save(config);
+                    ConfigManager::save(config);
                     println!("{}", "SUCCESS: Settings saved successfully!".green());
                     break;
-                } else if ans.starts_with("7") {
+                } else if ans.starts_with("5") {
                     println!("{}", "WARNING: Settings update cancelled.".red());
                     break;
                 }

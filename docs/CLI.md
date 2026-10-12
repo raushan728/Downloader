@@ -18,8 +18,6 @@ dwdr [COMMAND]
 | Flag | Description |
 | --- | --- |
 | `[URL]` | Directly downloads the provided media URL using Smart Fallback quality matching. |
-| `-w`, `--web` | Starts the embedded Web UI server, overriding the config's default UI setting. |
-| `-c`, `--cli` | Launches the interactive terminal shell, overriding `default_ui = "browser"`. |
 | `-h`, `--help` | Prints help information and examples. |
 | `-V`, `--version` | Prints version information. |
 
@@ -38,10 +36,11 @@ dwdr "https://www.youtube.com/watch?v=VIDEO_ID"
 - DWDR extracts available streams without fetching unnecessary playlist items (`--no-playlist`).
 - If a format matching your configured `default_quality` (e.g. `1080p`) exists, it begins downloading immediately.
 - If the exact quality is unavailable, it automatically prompts you to choose from available streams.
+- If no download folder has been configured, a native OS folder dialog (`rfd`) prompts you to select one.
 
 ### 2. Interactive Terminal Shell (REPL)
 
-Run `dwdr` with no arguments (when `default_ui = "cli"`):
+Run `dwdr` with no arguments:
 
 ```bash
 dwdr
@@ -55,18 +54,8 @@ dwdr >
 ```
 
 - Enter any supported media URL to inspect and download.
+- Type `config` or `settings` to launch the interactive settings menu.
 - Type `exit` or `quit` (or press `Ctrl+C`) to terminate the session.
-
-### 3. Web UI Launcher
-
-Launch the local web dashboard directly:
-
-```bash
-dwdr --web
-```
-
-- Binds to `0.0.0.0:<port>` (default: `5500`).
-- Automatically opens your default web browser to `http://localhost:<port>`.
 
 ---
 
@@ -83,6 +72,8 @@ Run without arguments to launch the guided interactive configuration prompt:
 dwdr config
 ```
 
+Features native OS folder picker (`rfd`) and interactive selection menus.
+
 #### Show Current Configuration
 Display active settings and the physical configuration file path:
 
@@ -94,16 +85,15 @@ dwdr config show
 Update specific keys from scripts or terminal commands:
 
 ```bash
-dwdr config set port 8080
 dwdr config set default_quality 720p
-dwdr config set default_ui browser
 dwdr config set download_path /path/to/downloads
+dwdr config set parallel 5
 ```
 
 To bypass validation bounds, append `--force`:
 
 ```bash
-dwdr config set port 9090 --force
+dwdr config set parallel 16 --force
 ```
 
 ---

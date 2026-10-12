@@ -35,10 +35,10 @@ cargo clippy --all-targets -- -D warnings
 
 The project is structured into distinct, decoupled modules:
 
-- `src/cli`: Manages the Interactive Shell, TUI prompts (using `inquire`), and general argument routing.
-- `src/engine`: The core background daemon. Handles dynamic dependencies, binary invocations (`yt-dlp`, `ffmpeg`), and thread-safe background task state orchestration.
-- `src/web`: An embedded, zero-cost HTTP server (`tiny_http`). Includes the native backend API router and statically-injected Tailwind CSS frontend (`app.js`).
+- `src/cli`: Manages the Interactive Shell, TUI prompts (using `inquire`), native file dialogs (`rfd`), and argument routing.
+- `src/engine`: The core media engine. Handles isolated dependencies, binary process management (`yt-dlp`, `ffmpeg`), and live progress streaming.
 - `src/config`: Manages persistent user configurations (`config.toml`).
+- `src/utils`: URL protocol and regex validation helpers.
 
 For full technical details on threading, safety, and process management, see the [Architecture Deep Dive](docs/ARCHITECTURE.md).
 

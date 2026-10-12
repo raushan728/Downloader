@@ -1,13 +1,15 @@
+use colored::Colorize;
 use directories::{BaseDirs, UserDirs};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+use crate::cli::prompts::interactive_config;
+use crate::engine::queue::is_download_active;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DwdrConfig {
-    pub default_ui: String,
     pub download_path: String,
-    pub port: u16,
     pub update_check_days: u32,
     pub max_parallel_downloads: u8,
     pub default_quality: String,
@@ -31,9 +33,7 @@ impl Default for DwdrConfig {
             });
 
         Self {
-            default_ui: "cli".to_string(),
             download_path,
-            port: 5500,
             update_check_days: 0,
             max_parallel_downloads: 3,
             default_quality: "1080p".to_string(),
@@ -111,22 +111,18 @@ impl ConfigManager {
         value: Option<String>,
         force: bool,
     ) {
-        use colored::Colorize;
-
         match action {
             None => {
-                crate::cli::prompts::interactive_config(config);
+                interactive_config(config);
             }
             Some(act) => match act.as_str() {
                 "show" => {
                     println!("{}", "Current Configuration:".cyan().bold());
-                    println!("{}: {}", "default_ui".cyan(), config.default_ui.yellow());
                     println!(
                         "{}: {}",
                         "download_path".cyan(),
                         config.download_path.yellow()
                     );
-                    println!("{}: {}", "port".cyan(), config.port.to_string().yellow());
                     println!(
                         "{}: {}",
                         "update_check_days".cyan(),
@@ -163,41 +159,23 @@ impl ConfigManager {
                         }
                     };
 
-                    if crate::engine::queue::is_download_active() && !force {
+                    if is_download_active() && !force {
                         println!(
-                        "{}",
-                        "\nERROR: Cannot change settings while downloads are active. Use --force to override.\n"
-                            .red()
-                            .bold()
-                    );
+                            "{}",
+                            "\nERROR: Cannot change settings while downloads are active. Use --force to override.\n"
+                                .red()
+                                .bold()
+                        );
                         return;
                     }
 
                     match key.as_str() {
-                        "ui" => {
-                            if value == "cli" || value == "browser" {
-                                config.default_ui = value.clone();
-                            } else {
-                                println!(
-                                    "{}",
-                                    "\nERROR: Invalid ui value. Use 'cli' or 'browser'.\n".red()
-                                );
-                                return;
-                            }
-                        }
                         "path" => {
                             config.download_path = value.clone();
                         }
                         "quality" => {
                             config.default_quality = value.clone();
                         }
-                        "port" => match value.parse::<u16>() {
-                            Ok(v) => config.port = v,
-                            Err(_) => {
-                                println!("{}", "\nERROR: Invalid port value.\n".red());
-                                return;
-                            }
-                        },
                         "parallel" => match value.parse::<u8>() {
                             Ok(v) => config.max_parallel_downloads = v,
                             Err(_) => {
@@ -245,8 +223,6 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = DwdrConfig::default();
-        assert_eq!(config.default_ui, "cli");
-        assert_eq!(config.port, 5500);
         assert_eq!(config.update_check_days, 0);
         assert_eq!(config.max_parallel_downloads, 3);
         assert_eq!(config.default_quality, "1080p");

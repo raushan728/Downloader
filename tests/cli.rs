@@ -48,33 +48,35 @@ fn test_config_set_valid() {
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
     cmd.env("HOME", home)
         .env("USERPROFILE", home)
-        .args(&["config", "set", "port", "8080"])
+        .args(["config", "set", "quality", "720p"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Successfully updated port to 8080",
+            "Successfully updated quality to 720p",
         ));
 
     // Verify it was actually saved and applied
     let mut cmd2 = Command::cargo_bin("dwdr").unwrap();
     cmd2.env("HOME", home)
         .env("USERPROFILE", home)
-        .args(&["config", "show"])
+        .args(["config", "show"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("8080"));
+        .stdout(predicate::str::contains("720p"));
 }
 
 #[test]
-fn test_config_set_invalid_port() {
+fn test_config_set_invalid_parallel() {
     let temp_dir = tempdir().unwrap();
     let home = temp_dir.path().to_str().unwrap();
 
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
     cmd.env("HOME", home)
         .env("USERPROFILE", home)
-        .args(&["config", "set", "port", "invalid"])
+        .args(["config", "set", "parallel", "invalid"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("ERROR: Invalid port value"));
+        .stdout(predicate::str::contains(
+            "ERROR: Invalid parallel downloads value",
+        ));
 }
