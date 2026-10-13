@@ -46,6 +46,9 @@ pub struct ConfigManager;
 impl ConfigManager {
     // DWDR strictly isolates its data from system paths by using a dedicated hidden directory.
     pub fn config_path() -> Option<PathBuf> {
+        if let Ok(env_path) = std::env::var("DWDR_CONFIG_PATH") {
+            return Some(PathBuf::from(env_path));
+        }
         BaseDirs::new().map(|dirs| dirs.home_dir().join(".dwdr").join("config.toml"))
     }
 

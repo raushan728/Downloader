@@ -14,11 +14,10 @@ fn test_cli_invalid_url() {
 #[test]
 fn test_cli_valid_url() {
     let temp_dir = tempdir().unwrap();
-    let home = temp_dir.path().to_str().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
 
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
-    cmd.env("HOME", home)
-        .env("USERPROFILE", home)
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
         .arg("https://youtube.com/watch?v=123")
         .assert()
         .success()
@@ -28,11 +27,10 @@ fn test_cli_valid_url() {
 #[test]
 fn test_config_show() {
     let temp_dir = tempdir().unwrap();
-    let home = temp_dir.path().to_str().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
 
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
-    cmd.env("HOME", home)
-        .env("USERPROFILE", home)
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
         .arg("config")
         .arg("show")
         .assert()
@@ -43,11 +41,10 @@ fn test_config_show() {
 #[test]
 fn test_config_set_valid() {
     let temp_dir = tempdir().unwrap();
-    let home = temp_dir.path().to_str().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
 
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
-    cmd.env("HOME", home)
-        .env("USERPROFILE", home)
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
         .args(["config", "set", "quality", "720p"])
         .assert()
         .success()
@@ -57,8 +54,7 @@ fn test_config_set_valid() {
 
     // Verify it was actually saved and applied
     let mut cmd2 = Command::cargo_bin("dwdr").unwrap();
-    cmd2.env("HOME", home)
-        .env("USERPROFILE", home)
+    cmd2.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
         .args(["config", "show"])
         .assert()
         .success()
@@ -68,11 +64,10 @@ fn test_config_set_valid() {
 #[test]
 fn test_config_set_invalid_parallel() {
     let temp_dir = tempdir().unwrap();
-    let home = temp_dir.path().to_str().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
 
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
-    cmd.env("HOME", home)
-        .env("USERPROFILE", home)
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
         .args(["config", "set", "parallel", "invalid"])
         .assert()
         .success()
