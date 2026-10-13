@@ -8,6 +8,7 @@ DWDR stores user configuration in an isolated TOML file with automatic self-heal
 
 - **Linux / macOS**: `~/.dwdr/config.toml`
 - **Windows**: `%USERPROFILE%\.dwdr\config.toml`
+- **Environment Override**: Set `DWDR_CONFIG_PATH` to specify a custom configuration file destination (useful for isolated CI or testing environments).
 
 ---
 

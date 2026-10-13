@@ -1,3 +1,5 @@
+use std::io::{self, Write};
+
 use colored::Colorize;
 use inquire::Text;
 use rfd::FileDialog;
@@ -178,6 +180,11 @@ pub fn start_repl(config: &mut DwdrConfig) {
                 }
                 if input.eq_ignore_ascii_case("config") || input.eq_ignore_ascii_case("settings") {
                     interactive_config(config);
+                    continue;
+                }
+                if input.eq_ignore_ascii_case("cls") || input.eq_ignore_ascii_case("clear") {
+                    print!("{}[2J{}[1;1H", 27 as char, 27 as char);
+                    let _ = io::stdout().flush();
                     continue;
                 }
                 if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {

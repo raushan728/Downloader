@@ -60,7 +60,7 @@ Comprehensive topic guides covering every subsystem:
 | Guide | Scope | Description |
 | :--- | :--- | :--- |
 | [CLI Reference Guide][cli-guide] | Syntax & Flags | CLI arguments, options, direct downloads, and exit codes. |
-| [Command Catalog][Commands] | Command Matrix | Complete reference table of all 10 CLI options, subcommands, and REPL actions. |
+| [Command Catalog][Commands] | Command Matrix | Complete reference table of all 12 CLI options, subcommands, and REPL actions. |
 | [Usage Examples][Examples] | Practical Walkthroughs | Step-by-step scenarios: single downloads, audio extraction, GUI folder pickers, and troubleshooting. |
 | [Configuration Guide][Configuration] | Settings & Schema | `config.toml` structure, default resolutions, parallel thread limits, and self-healing recovery. |
 | [Architecture Deep Dive][Architecture] | Core Mechanics | Process streaming, dependency lifecycle, single-video safeguards, and cross-platform compilation architecture. |

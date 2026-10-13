@@ -55,6 +55,7 @@ dwdr >
 
 - Enter any supported media URL to inspect and download.
 - Type `config` or `settings` to launch the interactive settings menu.
+- Type `cls` or `clear` to clear the terminal screen buffer.
 - Type `exit` or `quit` (or press `Ctrl+C`) to terminate the session.
 
 ---

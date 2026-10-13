@@ -9,7 +9,7 @@ DWDR is a high-performance terminal media downloader designed to provide reliabl
 ### 1. Zero External Dependencies
 DWDR isolates its third-party engines into `~/.dwdr/deps/`:
 - `yt-dlp`: Automatically fetched on first run directly from official GitHub releases.
-- `ffmpeg`: Dynamically detected and linked if present, with graceful audio/video demux fallback.
+- `ffmpeg`: Automatically fetched on first run from official prebuilt releases into `~/.dwdr/deps/` for media merging.
 - No global Python, yt-dlp, or FFmpeg installations required.
 - TLS networking is powered by `rustls` instead of native OpenSSL, guaranteeing seamless cross-compilation across desktop environments.
 

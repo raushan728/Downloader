@@ -1,6 +1,6 @@
 # Command Reference Catalog
 
-DWDR provides a total of **11 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
+DWDR provides a total of **12 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
 
 ---
 
@@ -19,6 +19,7 @@ DWDR provides a total of **11 primary commands and subcommands** across three ex
 | `dwdr update` | Subcommand | None | Forces an immediate redownload and verification of internal `yt-dlp` and `ffmpeg` engine binaries. | `dwdr update` |
 | `dwdr self-update` | Subcommand | None | Downloads and atomically replaces the running DWDR CLI executable with the latest GitHub release. | `dwdr self-update` |
 | `config` / `settings` | Interactive Shell (REPL) | None | Opens the interactive configuration menu directly from within an active shell session. | `dwdr > settings` |
+| `cls` / `clear` | Interactive Shell (REPL) | None | Clears the terminal screen buffer within an active shell session. | `dwdr > clear` |
 | `exit` / `quit` | Interactive Shell (REPL) | None | Gracefully exits the interactive shell. | `dwdr > exit` |
 
 ---
@@ -35,6 +36,7 @@ DWDR provides a total of **11 primary commands and subcommands** across three ex
 - **Input Handling**:
   - Entering a valid URL runs the extraction and download sequence.
   - Typing `config` or `settings` opens the interactive settings menu.
+  - Typing `cls` or `clear` clears the terminal screen buffer.
   - Typing `exit`, `quit`, or pressing `Ctrl+C` terminates the shell.
 
 ### 3. Configuration Subcommands (`dwdr config`)
