@@ -10,7 +10,8 @@ use clap::{Parser, Subcommand};
     dwdr                            # Open Interactive Terminal Shell\n\
     dwdr config                     # Open Interactive Settings Menu\n\
     dwdr config set quality 720p    # Change default download quality\n\
-    dwdr update                     # Force update dependencies"
+    dwdr update                     # Force update dependencies\n\
+    dwdr self-update                # Update the DWDR CLI tool itself"
 )]
 pub struct Cli {
     /// Bypasses the UI and immediately starts downloading the provided resource.
@@ -32,6 +33,8 @@ pub enum Commands {
     },
     /// Fetch and update isolated yt-dlp and ffmpeg binaries in `~/.dwdr/deps/`.
     Update,
+    /// Update the DWDR tool itself to the latest version.
+    SelfUpdate,
 }
 
 #[cfg(test)]

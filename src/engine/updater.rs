@@ -152,3 +152,71 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
     );
     Ok(())
 }
+
+pub fn update_self() -> Result<(), String> {
+    let current_exe = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current executable path: {}", e))?;
+
+    let url = if cfg!(target_os = "windows") {
+        "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-windows.exe"
+    } else if cfg!(target_os = "macos") {
+        "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-mac"
+    } else {
+        "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-linux"
+    };
+
+    println!("{}", "INFO: Downloading latest DWDR release...".cyan());
+
+    let response =
+        reqwest::blocking::get(url).map_err(|e| format!("Failed to download update: {}", e))?;
+
+    if !response.status().is_success() {
+        return Err(format!(
+            "Download failed with status: {}",
+            response.status()
+        ));
+    }
+
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("Failed to read update bytes: {}", e))?;
+
+    let tmp_exe = current_exe.with_extension("tmp");
+
+    let mut file = fs::File::create(&tmp_exe)
+        .map_err(|e| format!("Failed to create temporary executable: {}", e))?;
+
+    file.write_all(&bytes)
+        .map_err(|e| format!("Failed to write temporary executable: {}", e))?;
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&tmp_exe)
+                .map_err(|e| format!("Failed to read metadata: {}", e))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&tmp_exe, perms)
+                .map_err(|e| format!("Failed to set permissions: {}", e))?;
+        }
+
+        std::fs::rename(&tmp_exe, &current_exe)
+            .map_err(|e| format!("Failed to replace binary: {}", e))?;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let old_exe = current_exe.with_extension("old");
+        let _ = std::fs::rename(&current_exe, &old_exe);
+        std::fs::rename(&tmp_exe, &current_exe)
+            .map_err(|e| format!("Failed to replace binary: {}", e))?;
+    }
+
+    println!(
+        "{}",
+        "SUCCESS: DWDR updated to the latest version! Restart the tool to apply changes.".green()
+    );
+
+    Ok(())
+}

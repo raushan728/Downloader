@@ -105,3 +105,14 @@ Forces an immediate redownload and verification of internal engine dependencies 
 ```bash
 dwdr update
 ```
+
+---
+
+### `dwdr self-update`
+
+Updates the DWDR command-line tool itself to the latest release published on GitHub:
+
+```bash
+dwdr self-update
+```
+

@@ -1,6 +1,6 @@
 # Command Reference Catalog
 
-DWDR provides a total of **10 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
+DWDR provides a total of **11 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
 
 ---
 
@@ -17,6 +17,7 @@ DWDR provides a total of **10 primary commands and subcommands** across three ex
 | `dwdr config set` | Subcommand | `<key>` `<value>` `[--force]` | Programmatically updates a configuration key (`path`, `quality`, `parallel`, `update-days`). | `dwdr config set quality 720p` |
 | `dwdr config reset` | Subcommand | None | Restores `~/.dwdr/config.toml` to clean factory defaults. | `dwdr config reset` |
 | `dwdr update` | Subcommand | None | Forces an immediate redownload and verification of internal `yt-dlp` and `ffmpeg` engine binaries. | `dwdr update` |
+| `dwdr self-update` | Subcommand | None | Downloads and atomically replaces the running DWDR CLI executable with the latest GitHub release. | `dwdr self-update` |
 | `config` / `settings` | Interactive Shell (REPL) | None | Opens the interactive configuration menu directly from within an active shell session. | `dwdr > settings` |
 | `exit` / `quit` | Interactive Shell (REPL) | None | Gracefully exits the interactive shell. | `dwdr > exit` |
 
@@ -49,3 +50,9 @@ DWDR provides a total of **10 primary commands and subcommands** across three ex
 
 ### 4. Engine Updater (`dwdr update`)
 - **Behavior**: Deletes cached binaries in `~/.dwdr/deps/` and fetches fresh pre-compiled releases from official upstream repositories over TLS (`rustls`).
+
+### 5. CLI Self-Updater (`dwdr self-update`)
+- **Behavior**: Downloads and replaces the current DWDR binary with the latest release from GitHub.
+- **OS-Native File Handling**:
+  - Unix (Linux & macOS): Preserves `0o755` executable permissions and atomically replaces the binary without lingering files.
+  - Windows: Bypasses file locking by renaming the running executable to `.old` before replacing it, with automated silent cleanup on subsequent launches.

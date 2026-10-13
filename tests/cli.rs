@@ -80,3 +80,12 @@ fn test_config_set_invalid_parallel() {
             "ERROR: Invalid parallel downloads value",
         ));
 }
+
+#[test]
+fn test_cli_self_update_help() {
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("self-update"));
+}

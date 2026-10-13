@@ -9,9 +9,19 @@ use cli::shell::{process_url, start_repl};
 use colored::Colorize;
 use config::manager::ConfigManager;
 use engine::paths::{get_ffmpeg_path, get_ytdlp_path};
-use engine::updater::{ensure_dependencies, ensure_ffmpeg};
+use engine::updater::{ensure_dependencies, ensure_ffmpeg, update_self};
 
 fn main() {
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(current_exe) = std::env::current_exe() {
+            let old_exe = current_exe.with_extension("old");
+            if old_exe.exists() {
+                let _ = std::fs::remove_file(old_exe);
+            }
+        }
+    }
+
     let mut config = ConfigManager::load();
     let cli = Cli::parse();
 
@@ -46,6 +56,15 @@ fn main() {
                         "{}",
                         "SUCCESS: All core engines are updated to the latest versions!".green()
                     );
+                }
+            }
+            Commands::SelfUpdate => {
+                println!(
+                    "{}",
+                    "INFO: Updating DWDR CLI to the latest version...".cyan()
+                );
+                if let Err(e) = update_self() {
+                    println!("{}", format!("\nERROR: {}\n", e).red().bold());
                 }
             }
         }
