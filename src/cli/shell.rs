@@ -51,7 +51,23 @@ pub fn process_url(url: &str, config: &mut DwdrConfig) {
                 format!("Extracted {} formats.", info.formats.len()).green()
             );
 
-            let chosen_format = if let Some(format_id) =
+            let chosen_format = if config.default_quality == "always ask" {
+                println!("{}", "INFO: Manual selection requested...".cyan());
+                if let Some(format_id) = select_format(&info.formats) {
+                    println!(
+                        "{}",
+                        format!(
+                            "SUCCESS: Selected Format ID: {}. Download sequence will start here.",
+                            format_id
+                        )
+                        .green()
+                    );
+                    Some(format_id)
+                } else {
+                    println!("{}", "WARNING: Download cancelled by user.".red());
+                    None
+                }
+            } else if let Some(format_id) =
                 find_format_by_quality(&info.formats, &config.default_quality)
             {
                 println!(
@@ -67,7 +83,7 @@ pub fn process_url(url: &str, config: &mut DwdrConfig) {
                 println!(
                     "{}",
                     format!(
-                        "WARNING: Quality ({}) not found. Falling back to manual selection...",
+                        "WARNING: Your selected default quality ({}) is not available in this video. Falling back to manual selection...",
                         config.default_quality
                     )
                     .yellow()

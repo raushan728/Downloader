@@ -70,7 +70,16 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         config.download_path = path.to_string_lossy().to_string();
                     }
                 } else if ans.starts_with("2") {
-                    let quality_opts = vec!["best", "1080p", "720p", "480p", "audio"];
+                    let quality_opts = vec![
+                        "always ask",
+                        "best",
+                        "4k",
+                        "2k",
+                        "1080p",
+                        "720p",
+                        "480p",
+                        "audio",
+                    ];
                     if let Ok(quality) =
                         Select::new("Select Default Quality:", quality_opts).prompt()
                     {
@@ -78,12 +87,12 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                     }
                 } else if ans.starts_with("3") {
                     let parallel_opts = vec!["1", "3", "5", "8"];
-                    if let Ok(parallel_str) =
-                        Select::new("Select Max Parallel Downloads:", parallel_opts).prompt()
+                    if let Ok(Ok(parallel)) =
+                        Select::new("Select Max Parallel Downloads:", parallel_opts)
+                            .prompt()
+                            .map(|s| s.parse::<u8>())
                     {
-                        if let Ok(parallel) = parallel_str.parse::<u8>() {
-                            config.max_parallel_downloads = parallel;
-                        }
+                        config.max_parallel_downloads = parallel;
                     }
                 } else if ans.starts_with("4") {
                     ConfigManager::save(config);

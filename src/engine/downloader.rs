@@ -162,8 +162,25 @@ pub fn download_media(
 }
 
 pub fn find_format_by_quality(formats: &[MediaFormat], target_quality: &str) -> Option<String> {
+    let target = target_quality.trim().to_lowercase();
+    if target == "best" {
+        return formats.first().map(|f| f.format_id.clone());
+    }
+    if target == "always ask" {
+        return None;
+    }
+
     for format in formats {
-        if format.resolution.contains(target_quality) {
+        let res_lower = format.resolution.to_lowercase();
+        let matched = if target == "4k" {
+            res_lower.contains("2160") || res_lower.contains("4k")
+        } else if target == "2k" {
+            res_lower.contains("1440") || res_lower.contains("2k")
+        } else {
+            res_lower.contains(&target)
+        };
+
+        if matched {
             return Some(format.format_id.clone());
         }
     }
@@ -178,12 +195,20 @@ mod tests {
     fn test_find_format_by_quality() {
         let formats = vec![
             MediaFormat {
-                format_id: "18".to_string(),
-                ext: "mp4".to_string(),
-                resolution: "360p".to_string(),
-                filesize: Some(10_000_000.0),
-                vcodec: "avc1".to_string(),
-                acodec: "mp4a".to_string(),
+                format_id: "313".to_string(),
+                ext: "webm".to_string(),
+                resolution: "2160p".to_string(),
+                filesize: Some(100_000_000.0),
+                vcodec: "vp9".to_string(),
+                acodec: "none".to_string(),
+            },
+            MediaFormat {
+                format_id: "271".to_string(),
+                ext: "webm".to_string(),
+                resolution: "1440p".to_string(),
+                filesize: Some(50_000_000.0),
+                vcodec: "vp9".to_string(),
+                acodec: "none".to_string(),
             },
             MediaFormat {
                 format_id: "22".to_string(),
@@ -193,8 +218,29 @@ mod tests {
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
             },
+            MediaFormat {
+                format_id: "18".to_string(),
+                ext: "mp4".to_string(),
+                resolution: "360p".to_string(),
+                filesize: Some(10_000_000.0),
+                vcodec: "avc1".to_string(),
+                acodec: "mp4a".to_string(),
+            },
         ];
 
+        assert_eq!(
+            find_format_by_quality(&formats, "best"),
+            Some("313".to_string())
+        );
+        assert_eq!(find_format_by_quality(&formats, "always ask"), None);
+        assert_eq!(
+            find_format_by_quality(&formats, "4k"),
+            Some("313".to_string())
+        );
+        assert_eq!(
+            find_format_by_quality(&formats, "2k"),
+            Some("271".to_string())
+        );
         assert_eq!(
             find_format_by_quality(&formats, "720p"),
             Some("22".to_string())

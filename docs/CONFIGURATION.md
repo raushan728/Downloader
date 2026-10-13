@@ -6,7 +6,7 @@ DWDR stores user configuration in an isolated TOML file with automatic self-heal
 
 ## File Location
 
-- **Linux / macOS / Termux**: `~/.dwdr/config.toml`
+- **Linux / macOS**: `~/.dwdr/config.toml`
 - **Windows**: `%USERPROFILE%\.dwdr\config.toml`
 
 ---
@@ -27,7 +27,7 @@ default_quality = "1080p"
 | Key | Type | Default | Description | Valid Values |
 | --- | --- | --- | --- | --- |
 | `download_path` | string | `~/Downloads/DWDR` | Destination folder where downloaded audio and video files are saved. | Any valid directory path |
-| `default_quality` | string | `"1080p"` | Preferred video resolution matched during Smart Fallback downloads. | `"best"`, `"1080p"`, `"720p"`, `"480p"`, `"audio"` |
+| `default_quality` | string | `"1080p"` | Preferred video resolution matched during Smart Fallback downloads, or manual prompt. | `"always ask"`, `"best"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"audio"` |
 | `max_parallel_downloads` | integer | `3` | Maximum number of concurrent media tasks allowed simultaneously. | `1` to `16` |
 | `update_check_days` | integer | `0` | Frequency in days to check for dependency updates (`0` disables check). | Non-negative integer |
 

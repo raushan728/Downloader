@@ -11,7 +11,7 @@ DWDR isolates its third-party engines into `~/.dwdr/deps/`:
 - `yt-dlp`: Automatically fetched on first run directly from official GitHub releases.
 - `ffmpeg`: Dynamically detected and linked if present, with graceful audio/video demux fallback.
 - No global Python, yt-dlp, or FFmpeg installations required.
-- TLS networking is powered by `rustls` instead of native OpenSSL, guaranteeing seamless cross-compilation on musl, Android, and Termux environments.
+- TLS networking is powered by `rustls` instead of native OpenSSL, guaranteeing seamless cross-compilation across desktop environments.
 
 ### 2. Single-Video Protection (`--no-playlist`)
 Standard YouTube URLs copied from recommendation mixes or radio feeds often contain query parameters like `&list=RD...`. When passed to `yt-dlp` without safeguards, extraction blocks while scraping all 50+ playlist tracks. 

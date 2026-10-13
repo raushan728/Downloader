@@ -1,6 +1,6 @@
 <div align="center">
   <h1>DWDR (Downloader)</h1>
-  <p>A high-performance, zero-dependency terminal media downloader.</p>
+  <p>A high-performance, zero-dependency terminal media downloader for Windows, macOS, and Linux.</p>
 
   [Installation] | [Commands] | [Examples] | [Configuration] | [Architecture] | [Contributing]
 </div>
@@ -23,7 +23,7 @@ This is the main source code repository for [DWDR]. It contains the CLI engine, 
 
 - **Productivity:** Pure terminal ergonomics featuring an interactive REPL shell ([inquire]), native desktop folder selection dialogs ([rfd]), and smart quality fallback that directly grabs your preferred resolution without tedious menu navigation.
 
-- **Portability:** Built on pure Rust TLS ([rustls]) via [reqwest], enabling zero-effort cross-compilation across Linux, macOS, Windows, and Android ([Termux]) without OpenSSL dependencies.
+- **Portability:** Built on pure Rust TLS ([rustls]) via [reqwest], enabling zero-effort compilation across Linux, macOS, and Windows without OpenSSL dependencies.
 
 [indicatif]: https://github.com/console-rs/indicatif
 [yt-dlp]: https://github.com/yt-dlp/yt-dlp
@@ -32,7 +32,6 @@ This is the main source code repository for [DWDR]. It contains the CLI engine, 
 [rfd]: https://github.com/PolyMeilex/rfd
 [rustls]: https://github.com/rustls/rustls
 [reqwest]: https://github.com/seanmonstar/reqwest
-[Termux]: https://termux.dev/
 
 ## Quick Start
 
