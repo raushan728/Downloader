@@ -37,3 +37,9 @@ In interactive shell mode, DWDR orchestrates multi-media downloads via `QueueMan
 - **FIFO Waiting Queue**: Tasks exceeding parallel capacity enter a waiting queue; as worker threads finish, queued tasks automatically transition to active downloading.
 - **Process Isolation & Clean Cancellation**: Worker threads track child process IDs (`u32`). On shell exit, `Ctrl+C`, or explicit `cancel`, DWDR purges the waiting queue and executes atomic process tree termination (`taskkill /F /T` on Windows, `kill -9` on Unix), eliminating zombie background processes.
 - **State Protection**: `is_download_active()` queries the global queue to prevent destructive settings edits while downloads are in flight unless overridden by `--force`.
+
+### 7. Signal Handling & Zero System Debris
+DWDR registers cross-platform interrupt signal handlers (`ctrlc`) across both direct CLI and interactive shell workflows:
+- **Interruption Trapping**: Traps `SIGINT` (Unix) and `CTRL_C_EVENT` (Windows) during active downloads.
+- **Process Tree Killing**: Child processes (`yt-dlp` and `ffmpeg`) are forcefully terminated immediately.
+- **Partial File Deletion**: Scans the target download directory to purge all `.part`, `.ytdl`, `.temp`, and unmerged intermediate stream chunks (`.f<id>.*`), preventing broken or orphaned partial files from lingering on user storage.

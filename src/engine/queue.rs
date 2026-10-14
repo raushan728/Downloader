@@ -7,7 +7,9 @@ use std::thread;
 
 use colored::Colorize;
 
-use crate::engine::downloader::{download_media_background, render_progress_bar};
+use crate::engine::downloader::{
+    clean_partial_files, download_media_background, render_progress_bar,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStatus {
@@ -93,6 +95,15 @@ pub fn is_download_active() -> bool {
         return guard.is_active();
     }
     false
+}
+
+pub fn cancel_global_downloads() {
+    if let Ok(g) = GLOBAL_QUEUE.lock()
+        && let Some(queue) = &*g
+        && let Ok(mut guard) = queue.lock()
+    {
+        guard.cancel_all();
+    }
 }
 
 pub fn kill_process_by_pid(pid: u32) {
@@ -259,6 +270,10 @@ impl QueueManager {
                 (t.title.clone(), t.download_dir.clone())
             };
 
+            if is_cancelled || result.is_err() {
+                clean_partial_files(&download_dir, Some(&title));
+            }
+
             if !is_cancelled {
                 match result {
                     Ok(()) => {
@@ -341,6 +356,7 @@ impl QueueManager {
                 TaskStatus::Queued | TaskStatus::Downloading | TaskStatus::Finalizing
             ) {
                 t.status = TaskStatus::Cancelled;
+                clean_partial_files(&t.download_dir, Some(&t.title));
             }
         }
 

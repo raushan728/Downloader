@@ -25,6 +25,16 @@ fn main() {
         }
     }
 
+    let _ = ctrlc::set_handler(move || {
+        crate::engine::downloader::cancel_direct_download();
+        crate::engine::queue::cancel_global_downloads();
+        eprintln!(
+            "{}",
+            "\nINFO: Interrupted by user. Cleaned up partial files.".yellow()
+        );
+        std::process::exit(130);
+    });
+
     let mut config = ConfigManager::load();
     let cli = Cli::parse();
 

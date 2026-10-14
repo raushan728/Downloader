@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write, stdout};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::thread;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -485,6 +486,109 @@ pub fn render_progress_bar(
     render_progress_bar_with_width(percent, downloaded, total, speed, eta, get_terminal_width())
 }
 
+pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usize {
+    let dir = Path::new(download_dir);
+    if !dir.exists() || !dir.is_dir() {
+        return 0;
+    }
+
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return 0,
+    };
+
+    let mut removed_count = 0;
+    let sanitized_title = title_hint.map(|t| {
+        t.chars()
+            .filter(|c| !['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
+            .collect::<String>()
+    });
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let file_name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(name) => name,
+            None => continue,
+        };
+
+        let file_name_lower = file_name.to_lowercase();
+        let is_part_or_temp = file_name_lower.ends_with(".part")
+            || file_name_lower.ends_with(".ytdl")
+            || file_name_lower.ends_with(".temp");
+
+        let matches_title = if let Some(ref title) = sanitized_title {
+            if title.is_empty() {
+                true
+            } else {
+                let first_word = title.split_whitespace().next().unwrap_or(title.as_str());
+                file_name.contains(title.as_str()) || file_name.contains(first_word)
+            }
+        } else {
+            true
+        };
+
+        let is_unmerged_chunk = if let Some(ref title) = sanitized_title {
+            if title.is_empty() {
+                file_name.contains(".f") && !file_name_lower.ends_with(".mp4")
+            } else {
+                let first_word = title.split_whitespace().next().unwrap_or(title.as_str());
+                (file_name.contains(title.as_str()) || file_name.contains(first_word))
+                    && file_name.contains(".f")
+                    && !file_name_lower.ends_with(".mp4")
+            }
+        } else {
+            false
+        };
+
+        if ((is_part_or_temp && matches_title) || is_unmerged_chunk)
+            && std::fs::remove_file(&path).is_ok()
+        {
+            removed_count += 1;
+        }
+    }
+
+    removed_count
+}
+
+struct DirectDownloadTracker {
+    pid: Option<u32>,
+    download_dir: String,
+    title: String,
+}
+
+static DIRECT_TRACKER: Mutex<Option<DirectDownloadTracker>> = Mutex::new(None);
+
+pub fn register_direct_download(pid: u32, download_dir: &str, title: &str) {
+    if let Ok(mut g) = DIRECT_TRACKER.lock() {
+        *g = Some(DirectDownloadTracker {
+            pid: Some(pid),
+            download_dir: download_dir.to_string(),
+            title: title.to_string(),
+        });
+    }
+}
+
+pub fn unregister_direct_download() {
+    if let Ok(mut g) = DIRECT_TRACKER.lock() {
+        *g = None;
+    }
+}
+
+pub fn cancel_direct_download() {
+    if let Ok(mut g) = DIRECT_TRACKER.lock()
+        && let Some(tracker) = g.take()
+    {
+        if let Some(pid) = tracker.pid {
+            crate::engine::queue::kill_process_by_pid(pid);
+        }
+        clean_partial_files(&tracker.download_dir, Some(&tracker.title));
+    }
+}
+
 pub fn download_media(
     url: &str,
     format_id: &str,
@@ -522,6 +626,9 @@ pub fn download_media(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
+
+    let pid = child.id();
+    register_direct_download(pid, download_dir, "");
 
     let mut stderr_handle = child.stderr.take();
     let stderr_thread = thread::spawn(move || {
@@ -567,6 +674,7 @@ pub fn download_media(
         .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
 
     let stderr_output = stderr_thread.join().unwrap_or_default();
+    unregister_direct_download();
 
     if status.success() {
         if !postprocess_started {
@@ -578,6 +686,7 @@ pub fn download_media(
         println!("{}", "SUCCESS: Finalizing complete!".green());
         Ok(())
     } else {
+        clean_partial_files(download_dir, None);
         println!();
         Err(extract_engine_error(&stderr_output))
     }
@@ -668,6 +777,7 @@ where
     if status.success() {
         Ok(())
     } else {
+        clean_partial_files(download_dir, None);
         Err(extract_engine_error(&stderr_output))
     }
 }
@@ -1230,5 +1340,35 @@ mod tests {
         assert_eq!(info.title, "Offline Mock Video");
         assert_eq!(info.formats.len(), 1);
         assert_eq!(info.formats[0].format_id, "18");
+    }
+
+    #[test]
+    fn test_clean_partial_files() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir_path = temp_dir.path();
+
+        let part1 = dir_path.join("Consistent Hashing - System Design.f248.webm.part");
+        let part2 = dir_path.join("Consistent Hashing - System Design.f251.webm");
+        let ytdl_file = dir_path.join("Consistent Hashing - System Design.ytdl");
+        let completed_file = dir_path.join("Consistent Hashing - System Design.mp4");
+        let unrelated_file = dir_path.join("Other Video.mp4");
+
+        std::fs::write(&part1, "test part data").unwrap();
+        std::fs::write(&part2, "test chunk data").unwrap();
+        std::fs::write(&ytdl_file, "test ytdl data").unwrap();
+        std::fs::write(&completed_file, "test completed data").unwrap();
+        std::fs::write(&unrelated_file, "test other data").unwrap();
+
+        let removed = clean_partial_files(
+            dir_path.to_str().unwrap(),
+            Some("Consistent Hashing - System Design"),
+        );
+
+        assert_eq!(removed, 3);
+        assert!(!part1.exists());
+        assert!(!part2.exists());
+        assert!(!ytdl_file.exists());
+        assert!(completed_file.exists());
+        assert!(unrelated_file.exists());
     }
 }

@@ -19,7 +19,7 @@ This is the main source code repository for [DWDR]. It contains the CLI engine, 
 
 - **Performance:** Accelerated 8-thread fragmented downloading (`-N 8`) coupled with real-time visual progress bar tracking downloaded/total sizes, speed, percentage, and ETA metrics, plus clean background execution and strict MP4 audio/video merging.
 
-- **Reliability:** Zero system pollution. Isolated engines ([yt-dlp], [FFmpeg]) reside exclusively in `~/.dwdr/deps/` without modifying system package managers. Single-video safeguards (`--no-playlist`) prevent accidental multi-track playlist dumps, and self-healing configuration handles corrupted settings automatically.
+- **Reliability:** Zero system pollution. Isolated engines ([yt-dlp], [FFmpeg]) reside exclusively in `~/.dwdr/deps/` without modifying system package managers. Single-video safeguards (`--no-playlist`) prevent accidental multi-track playlist dumps, self-healing configuration handles corrupted settings automatically, and automated cleanup purges incomplete `.part` files on cancellation.
 
 - **Productivity:** Pure terminal ergonomics featuring an interactive non-blocking REPL shell ([inquire]), concurrent background download queue with parallel capacity controls (`max_parallel_downloads`), clean format selection, native desktop folder selection dialogs ([rfd]), and smart quality fallback.
 
