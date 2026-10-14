@@ -132,9 +132,11 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
             };
 
             if let (Some(w), Some(h)) = (f["width"].as_u64(), f["height"].as_u64())
-                && w == h && w > 0 {
-                    continue;
-                }
+                && w == h
+                && w > 0
+            {
+                continue;
+            }
 
             let height = match f["height"].as_u64() {
                 Some(h) if h > 0 => h,

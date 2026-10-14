@@ -177,9 +177,10 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
     )
     .prompt()
     {
-        Ok(choice) => {
-            options.iter().position(|r| r == &choice).map(|index| formats[index].format_id.clone())
-        }
+        Ok(choice) => options
+            .iter()
+            .position(|r| r == &choice)
+            .map(|index| formats[index].format_id.clone()),
         Err(_) => None,
     }
 }
