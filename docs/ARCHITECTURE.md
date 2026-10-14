@@ -25,8 +25,8 @@ This guarantees immediate single-video resolution regardless of query parameters
 ### 3. Accelerated Download Engine
 All download invocations execute with `-N 8`, splitting downloads into 8 concurrent fragmented streams for maximum network throughput.
 
-### 4. Real-Time Terminal Progress Streaming
-`download_media` spawns `yt-dlp` with piped stdio and `--newline`. Output streams are parsed in real time to feed speed, percentage, and ETA metrics into an `indicatif::ProgressBar` spinner, providing a responsive terminal interface without polling overhead.
+### 4. Real-Time Visual Progress Bar & MP4 Merging
+`download_media` spawns `yt-dlp` with piped stdio, `--newline`, and a structured `--progress-template`. The stream is parsed in real time into an active in-place visual progress bar displaying completion percentage, total file size, download speed, and ETA. Audio and video streams are strictly merged into MP4 format via `--merge-output-format mp4`, ensuring clean single-file outputs named after the media title.
 
 ### 5. Native OS File System Integration
 Configuration and folder selection workflows integrate with `rfd::FileDialog`, enabling desktop users to browse and select download directories visually while preserving a headless terminal fallback.

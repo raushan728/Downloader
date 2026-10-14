@@ -17,15 +17,14 @@ This is the main source code repository for [DWDR]. It contains the CLI engine, 
 
 ## Why DWDR?
 
-- **Performance:** Accelerated 8-thread fragmented downloading (`-N 8`) coupled with real-time speed, percentage, and ETA metrics streaming via [indicatif].
+- **Performance:** Accelerated 8-thread fragmented downloading (`-N 8`) coupled with real-time visual progress bar tracking speed, percentage, and ETA metrics, plus strict MP4 audio/video merging.
 
 - **Reliability:** Zero system pollution. Isolated engines ([yt-dlp], [FFmpeg]) reside exclusively in `~/.dwdr/deps/` without modifying system package managers. Single-video safeguards (`--no-playlist`) prevent accidental multi-track playlist dumps, and self-healing configuration handles corrupted settings automatically.
 
-- **Productivity:** Pure terminal ergonomics featuring an interactive REPL shell ([inquire]), native desktop folder selection dialogs ([rfd]), and smart quality fallback that directly grabs your preferred resolution without tedious menu navigation.
+- **Productivity:** Pure terminal ergonomics featuring an interactive REPL shell ([inquire]), clean non-looping format selection, native desktop folder selection dialogs ([rfd]), and smart quality fallback that directly grabs your preferred resolution without tedious menu navigation.
 
 - **Portability:** Built on pure Rust TLS ([rustls]) via [reqwest], enabling zero-effort compilation across Linux, macOS, and Windows without OpenSSL dependencies.
 
-[indicatif]: https://github.com/console-rs/indicatif
 [yt-dlp]: https://github.com/yt-dlp/yt-dlp
 [FFmpeg]: https://ffmpeg.org/
 [inquire]: https://github.com/mikaelmello/inquire

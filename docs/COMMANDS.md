@@ -42,7 +42,7 @@ DWDR provides a total of **12 primary commands and subcommands** across three ex
 ### 3. Configuration Subcommands (`dwdr config`)
 - **Interactive Mode** (`dwdr config`):
   - Option 1: Launches native OS file browser (`rfd`) to select a download directory.
-  - Option 2: Selects default resolution (`best`, `1080p`, `720p`, `480p`, `audio`).
+  - Option 2: Selects default resolution (`always ask`, `best`, `4k`, `2k`, `1080p`, `720p`, `480p`, `audio`).
   - Option 3: Selects max parallel download threads (`1`, `3`, `5`, `8`).
   - Option 4: Saves to `~/.dwdr/config.toml` and exits.
   - Option 5: Cancels without saving.

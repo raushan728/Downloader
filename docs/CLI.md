@@ -86,8 +86,8 @@ dwdr config show
 Update specific keys from scripts or terminal commands:
 
 ```bash
-dwdr config set default_quality 720p
-dwdr config set download_path /path/to/downloads
+dwdr config set quality 720p
+dwdr config set path /path/to/downloads
 dwdr config set parallel 5
 ```
 

@@ -17,10 +17,11 @@ dwdr "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 Valid URL detected. Resolving engine paths...
 INFO: Fetching media details from the server...
 Successfully fetched data for: Rick Astley - Never Gonna Give You Up (Official Music Video)
-Extracted 28 formats.
+Extracted 9 formats.
 INFO: Exact quality (1080p) found! Auto-starting download...
-/ [download]  45.2% of 42.10MiB at 4.25MiB/s ETA 00:05
-SUCCESS: Download completed successfully! File saved to: /home/user/Downloads/DWDR
+[download] [=============>           ]  52.1% of   42.10MiB at    4.25MiB/s ETA 00:04
+[download] [=========================] 100.0% Complete!
+SUCCESS: Download completed successfully! File saved: "Rick Astley - Never Gonna Give You Up (Official Music Video)" in /home/user/Downloads/DWDR
 ```
 
 ---
@@ -41,17 +42,16 @@ dwdr > https://www.youtube.com/watch?v=dQw4w9WgXcQ
 Valid URL detected. Resolving engine paths...
 INFO: Fetching media details from the server...
 Successfully fetched data for: Rick Astley - Never Gonna Give You Up (Official Music Video)
-Extracted 28 formats.
-WARNING: Quality (720p) not found. Falling back to manual selection...
+Extracted 9 formats.
+WARNING: Your selected default quality (720p) is not available in this video. Falling back to manual selection...
 ? Select a format to download (Use arrow keys):
-> [VIDEO] | 1080p      | mp4   | 42.1 MB
-  [VIDEO] | 480p       | mp4   | 18.5 MB
-  [VIDEO] | 360p       | mp4   | 11.2 MB
-  [AUDIO] | Audio      | m4a   | 3.4 MB
-  [AUDIO] | Audio      | opus  | 2.8 MB
+ > [VIDEO] | 1080p  | mp4  | 42.1 MB
+   [VIDEO] | 480p   | mp4  | 18.5 MB
+   [VIDEO] | 360p   | mp4  | 11.2 MB
+   [AUDIO] | Audio  | m4a  | 3.4 MB
 ```
 
-Use the **Up/Down arrow keys** to navigate and press **Enter** to confirm your format selection.
+Use the **Up/Down arrow keys** to navigate (the selection stops cleanly at top and bottom bounds) and press **Enter** to confirm your format selection.
 
 ---
 
@@ -63,9 +63,9 @@ To download only the audio track from a video:
    dwdr
    ```
 2. Paste the URL.
-3. When the format picker appears, navigate to the `[AUDIO]` formats:
+3. When the format picker appears, navigate to the `[AUDIO]` format:
    ```text
-   > [AUDIO] | Audio      | m4a   | 3.4 MB
+    > [AUDIO] | Audio  | m4a  | 3.4 MB
    ```
 4. Press **Enter**. DWDR will download the dedicated audio stream without downloading unnecessary video data.
 

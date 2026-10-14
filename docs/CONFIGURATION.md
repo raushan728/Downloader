@@ -43,7 +43,7 @@ default_quality = "1080p"
 dwdr config show
 
 # Set specific settings
-dwdr config set default_quality 720p
+dwdr config set quality 720p
 dwdr config set parallel 5
 ```
 
