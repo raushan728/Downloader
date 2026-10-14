@@ -84,3 +84,51 @@ fn test_cli_self_update_help() {
         .success()
         .stdout(predicate::str::contains("self-update"));
 }
+
+#[test]
+fn test_config_reset_command() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "quality", "720p"])
+        .assert()
+        .success();
+
+    let mut cmd_reset = Command::cargo_bin("dwdr").unwrap();
+    cmd_reset
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "reset"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Configuration reset to defaults"));
+
+    let mut cmd_verify = Command::cargo_bin("dwdr").unwrap();
+    cmd_verify
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1080p"));
+}
+
+#[test]
+fn test_cli_version() {
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dwdr"));
+}
+
+#[test]
+fn test_cli_help_shows_all_subcommands() {
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("config"))
+        .stdout(predicate::str::contains("update"))
+        .stdout(predicate::str::contains("self-update"));
+}

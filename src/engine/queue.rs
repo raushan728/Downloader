@@ -550,4 +550,70 @@ mod tests {
         mgr_arc.lock().unwrap().cancel_all();
         assert!(!is_download_active());
     }
+    #[test]
+    fn test_queue_zero_parallel() {
+        let mgr_arc = QueueManager::new(0, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        assert_eq!(mgr_arc.lock().unwrap().max_parallel, 1);
+    }
+
+    #[test]
+    fn test_task_progress_default() {
+        let prog = TaskProgress::default();
+        assert_eq!(prog.percent, 0.0);
+        assert_eq!(prog.downloaded_str, "0 B");
+        assert_eq!(prog.total_str, "Unknown");
+        assert_eq!(prog.speed_str, "Unknown");
+        assert_eq!(prog.eta_str, "--:--");
+    }
+
+    #[test]
+    fn test_queue_cancel_when_empty() {
+        let mgr_arc = QueueManager::new(3, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        mgr_arc.lock().unwrap().cancel_all();
+        let mgr = mgr_arc.lock().unwrap();
+        assert_eq!(mgr.active_count, 0);
+        assert!(mgr.queue.is_empty());
+        assert!(!mgr.is_active());
+    }
+
+    #[test]
+    fn test_queue_multiple_enqueues() {
+        let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        for i in 1..=5 {
+            let res = QueueManager::enqueue(
+                &mgr_arc,
+                format!("url{}", i),
+                format!("Title {}", i),
+                "248".to_string(),
+                "/tmp".to_string(),
+            );
+            if i <= 2 {
+                match res {
+                    EnqueueResult::Started { active_count, .. } => {
+                        assert_eq!(active_count, i);
+                    }
+                    _ => panic!("Task {} should have started", i),
+                }
+            } else {
+                match res {
+                    EnqueueResult::Queued { position, .. } => {
+                        assert_eq!(position, i - 2);
+                    }
+                    _ => panic!("Task {} should have queued", i),
+                }
+            }
+        }
+
+        let mgr = mgr_arc.lock().unwrap();
+        assert_eq!(mgr.active_count, 2);
+        assert_eq!(mgr.queue.len(), 3);
+        assert!(mgr.is_active());
+        drop(mgr);
+
+        // Printing status should not panic
+        mgr_arc.lock().unwrap().print_status();
+
+        mgr_arc.lock().unwrap().cancel_all();
+        assert!(!mgr_arc.lock().unwrap().is_active());
+    }
 }

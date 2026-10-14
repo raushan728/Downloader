@@ -1,4 +1,5 @@
 use colored::Colorize;
+use crossterm::terminal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write, stdout};
@@ -19,6 +20,8 @@ pub struct MediaFormat {
     pub ext: String,
     pub resolution: String,
     pub filesize: Option<f64>,
+    #[serde(default)]
+    pub is_estimated: bool,
     pub vcodec: String,
     pub acodec: String,
     #[serde(default)]
@@ -47,14 +50,70 @@ pub fn format_bytes(bytes: f64) -> String {
 impl MediaFormat {
     pub fn format_filesize(&self) -> String {
         match self.filesize {
-            Some(bytes) => format_bytes(bytes),
-            None => "Unknown Size".to_string(),
+            Some(bytes) => {
+                let formatted = format_bytes(bytes);
+                if self.is_estimated {
+                    format!("~{} (Est.)", formatted)
+                } else {
+                    formatted
+                }
+            }
+            None => "Stream Size Pending".to_string(),
         }
     }
 
     pub fn size_in_mb(&self) -> String {
         self.format_filesize()
     }
+}
+
+pub fn calculate_media_filesize(
+    exact: Option<f64>,
+    approx: Option<f64>,
+    bitrate_kbps: Option<f64>,
+    duration: Option<f64>,
+    height: Option<u64>,
+    is_video: bool,
+) -> (Option<f64>, bool) {
+    if let Some(exact_bytes) = exact
+        && exact_bytes > 0.0
+    {
+        return (Some(exact_bytes), false);
+    }
+
+    if let Some(approx_bytes) = approx
+        && approx_bytes > 0.0
+    {
+        return (Some(approx_bytes), true);
+    }
+
+    if let Some(dur) = duration
+        && dur > 0.0
+    {
+        if let Some(kbps) = bitrate_kbps {
+            let bytes = (kbps * 1000.0 / 8.0) * dur;
+            return (Some(bytes), true);
+        }
+
+        let typical_kbps = if is_video {
+            match height.unwrap_or(0) {
+                2160.. => 12000.0,
+                1440..=2159 => 6000.0,
+                1080..=1439 => 2500.0,
+                720..=1079 => 1500.0,
+                480..=719 => 800.0,
+                360..=479 => 450.0,
+                _ => 250.0,
+            }
+        } else {
+            128.0
+        };
+
+        let bytes = (typical_kbps * 1000.0 / 8.0) * dur;
+        return (Some(bytes), true);
+    }
+
+    (None, false)
 }
 
 pub fn map_height_to_resolution(height: u64) -> Option<&'static str> {
@@ -100,6 +159,25 @@ pub fn resolve_resolution(
         }
     }
 
+    if let (Some(w), Some(h)) = (width, height)
+        && h > w
+        && let Some(res) = map_height_to_resolution(w)
+    {
+        let rank = match res {
+            "8K" => 4320,
+            "4K" => 2160,
+            "2K" => 1440,
+            "1080p" => 1080,
+            "720p" => 720,
+            "480p" => 480,
+            "360p" => 360,
+            "240p" => 240,
+            "144p" => 144,
+            _ => w,
+        };
+        return Some((res, rank));
+    }
+
     if let Some(w) = width {
         if w >= 7680 {
             return Some(("8K", 4320));
@@ -143,24 +221,30 @@ pub fn resolve_resolution(
     None
 }
 
-pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, String> {
-    let output = Command::new(yt_dlp_path)
-        .arg("-J")
-        .arg("--no-warnings")
-        .arg("--no-playlist")
-        .arg(url)
-        .output()
-        .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
-
-    if !output.status.success() {
-        let err = String::from_utf8_lossy(&output.stderr);
-        return Err(err.to_string());
+pub fn extract_engine_error(stderr: &str) -> String {
+    let trimmed = stderr.trim();
+    if trimmed.is_empty() {
+        return "yt-dlp process exited with an error".to_string();
     }
 
-    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    if let Some(err_line) = trimmed
+        .lines()
+        .rev()
+        .find(|l| l.contains("ERROR:") || l.contains("error:"))
+    {
+        return err_line.trim().to_string();
+    }
 
+    trimmed
+        .lines()
+        .next_back()
+        .map(|l| l.trim().to_string())
+        .unwrap_or_else(|| trimmed.to_string())
+}
+
+pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
     let raw: serde_json::Value =
-        serde_json::from_str(&stdout_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
+        serde_json::from_str(stdout_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
     let title = raw["title"].as_str().unwrap_or("Unknown Title").to_string();
     let duration = raw["duration"].as_f64();
@@ -195,58 +279,65 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
         }
 
         let format_id = f["format_id"].as_str().unwrap_or("unknown").to_string();
-        let filesize = f["filesize"]
-            .as_f64()
-            .or_else(|| f["filesize_approx"].as_f64());
+        let exact = f["filesize"].as_f64();
+        let approx = f["filesize_approx"].as_f64();
+        let tbr = f["tbr"].as_f64();
+        let vbr = f["vbr"].as_f64();
+        let abr = f["abr"].as_f64();
+        let height = f["height"].as_u64();
+        let width = f["width"].as_u64();
+        let note = f["format_note"].as_str();
 
         if vcodec != "none" {
-            let size = match filesize {
-                Some(s) => s,
-                None => continue,
-            };
-
-            if let (Some(w), Some(h)) = (f["width"].as_u64(), f["height"].as_u64())
+            if let (Some(w), Some(h)) = (width, height)
                 && w == h
                 && w > 0
             {
                 continue;
             }
 
-            let height = f["height"].as_u64();
-            let width = f["width"].as_u64();
-            let note = f["format_note"].as_str();
-
             let (resolution, rank) = match resolve_resolution(height, width, note) {
                 Some(r) => r,
                 None => continue,
             };
 
+            let total_bitrate = tbr.or_else(|| {
+                let v = vbr.unwrap_or(0.0);
+                let a = abr.unwrap_or(0.0);
+                if v + a > 0.0 { Some(v + a) } else { None }
+            });
+            let (filesize, is_estimated) =
+                calculate_media_filesize(exact, approx, total_bitrate, duration, height, true);
+            let size_ranking = filesize.unwrap_or(0.0);
+
             video_candidates.push((
                 rank,
-                size,
+                size_ranking,
                 MediaFormat {
                     format_id,
                     ext: ext.to_string(),
                     resolution: resolution.to_string(),
-                    filesize: Some(size),
+                    filesize,
+                    is_estimated,
                     vcodec: vcodec.to_string(),
                     acodec: acodec.to_string(),
                     height: height.map(|h| h as u32),
                 },
             ));
         } else if acodec != "none" {
-            let size = match filesize {
-                Some(s) => s,
-                None => continue,
-            };
+            let total_bitrate = abr.or(tbr);
+            let (filesize, is_estimated) =
+                calculate_media_filesize(exact, approx, total_bitrate, duration, height, false);
+            let size_ranking = filesize.unwrap_or(0.0);
 
             audio_candidates.push((
-                size,
+                size_ranking,
                 MediaFormat {
                     format_id,
                     ext: ext.to_string(),
                     resolution: "Audio".to_string(),
-                    filesize: Some(size),
+                    filesize,
+                    is_estimated,
                     vcodec: "none".to_string(),
                     acodec: acodec.to_string(),
                     height: None,
@@ -280,6 +371,24 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
         duration,
         formats,
     })
+}
+
+pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, String> {
+    let output = Command::new(yt_dlp_path)
+        .arg("-J")
+        .arg("--no-warnings")
+        .arg("--no-playlist")
+        .arg(url)
+        .output()
+        .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(extract_engine_error(&err));
+    }
+
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    parse_video_info_json(&stdout_str)
 }
 
 pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, String)> {
@@ -326,6 +435,46 @@ pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, S
     ))
 }
 
+pub fn get_terminal_width() -> usize {
+    terminal::size()
+        .map(|(w, _)| w as usize)
+        .unwrap_or_else(|_| {
+            std::env::var("COLUMNS")
+                .ok()
+                .and_then(|c| c.parse::<usize>().ok())
+                .unwrap_or(100)
+        })
+}
+
+pub fn render_progress_bar_with_width(
+    percent: f64,
+    downloaded: &str,
+    total: &str,
+    speed: &str,
+    eta: &str,
+    terminal_width: usize,
+) -> String {
+    if terminal_width >= 75 {
+        let bar_width = (terminal_width.saturating_sub(69)).min(25);
+        let filled = ((percent / 100.0) * bar_width as f64).clamp(0.0, bar_width as f64) as usize;
+        let empty = bar_width.saturating_sub(filled + if filled < bar_width { 1 } else { 0 });
+        let arrow = if filled < bar_width { ">" } else { "" };
+        let bar = format!("[{}{}{}]", "=".repeat(filled), arrow, " ".repeat(empty));
+
+        format!(
+            "\r[download] {} {:>5.1}% [{:>9} / {:>9}] at {:>10} ETA {:>5}",
+            bar, percent, downloaded, total, speed, eta
+        )
+    } else if terminal_width >= 55 {
+        format!(
+            "\r[download] {:>5.1}% [{} / {}] at {} ETA {}",
+            percent, downloaded, total, speed, eta
+        )
+    } else {
+        format!("\r[download] {:>5.1}% {} ETA {}", percent, speed, eta)
+    }
+}
+
 pub fn render_progress_bar(
     percent: f64,
     downloaded: &str,
@@ -333,16 +482,7 @@ pub fn render_progress_bar(
     speed: &str,
     eta: &str,
 ) -> String {
-    let bar_width: usize = 25;
-    let filled = ((percent / 100.0) * bar_width as f64).clamp(0.0, bar_width as f64) as usize;
-    let empty = bar_width.saturating_sub(filled + if filled < bar_width { 1 } else { 0 });
-    let arrow = if filled < bar_width { ">" } else { "" };
-    let bar = format!("[{}{}{}]", "=".repeat(filled), arrow, " ".repeat(empty));
-
-    format!(
-        "\r[download] {} {:>5.1}% [{:>9} / {:>9}] at {:>10} ETA {:>5}   ",
-        bar, percent, downloaded, total, speed, eta
-    )
+    render_progress_bar_with_width(percent, downloaded, total, speed, eta, get_terminal_width())
 }
 
 pub fn download_media(
@@ -439,17 +579,7 @@ pub fn download_media(
         Ok(())
     } else {
         println!();
-        let trimmed_err = stderr_output.trim();
-        if !trimmed_err.is_empty() {
-            let error_line = trimmed_err
-                .lines()
-                .rev()
-                .find(|l| l.contains("ERROR:") || l.contains("error:"))
-                .unwrap_or_else(|| trimmed_err.lines().next_back().unwrap_or(trimmed_err));
-            Err(error_line.to_string())
-        } else {
-            Err("yt-dlp process exited with an error".to_string())
-        }
+        Err(extract_engine_error(&stderr_output))
     }
 }
 
@@ -538,17 +668,7 @@ where
     if status.success() {
         Ok(())
     } else {
-        let trimmed_err = stderr_output.trim();
-        if !trimmed_err.is_empty() {
-            let error_line = trimmed_err
-                .lines()
-                .rev()
-                .find(|l| l.contains("ERROR:") || l.contains("error:"))
-                .unwrap_or_else(|| trimmed_err.lines().next_back().unwrap_or(trimmed_err));
-            Err(error_line.to_string())
-        } else {
-            Err("yt-dlp process exited with an error".to_string())
-        }
+        Err(extract_engine_error(&stderr_output))
     }
 }
 
@@ -590,6 +710,7 @@ mod tests {
                 ext: "webm".to_string(),
                 resolution: "4K".to_string(),
                 filesize: Some(100_000_000.0),
+                is_estimated: false,
                 vcodec: "vp9".to_string(),
                 acodec: "none".to_string(),
                 height: Some(2160),
@@ -599,6 +720,7 @@ mod tests {
                 ext: "webm".to_string(),
                 resolution: "2K".to_string(),
                 filesize: Some(50_000_000.0),
+                is_estimated: false,
                 vcodec: "vp9".to_string(),
                 acodec: "none".to_string(),
                 height: Some(1440),
@@ -608,6 +730,7 @@ mod tests {
                 ext: "mp4".to_string(),
                 resolution: "720p".to_string(),
                 filesize: Some(25_000_000.0),
+                is_estimated: false,
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
                 height: Some(720),
@@ -617,6 +740,7 @@ mod tests {
                 ext: "mp4".to_string(),
                 resolution: "360p".to_string(),
                 filesize: Some(10_000_000.0),
+                is_estimated: false,
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
                 height: Some(360),
@@ -650,6 +774,7 @@ mod tests {
             ext: "mp4".to_string(),
             resolution: "720p".to_string(),
             filesize: Some(10_485_760.0),
+            is_estimated: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -662,6 +787,7 @@ mod tests {
             ext: "mp4".to_string(),
             resolution: "720p".to_string(),
             filesize: Some(500.0),
+            is_estimated: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -673,6 +799,7 @@ mod tests {
             ext: "mp4".to_string(),
             resolution: "720p".to_string(),
             filesize: Some(1_500_000.0),
+            is_estimated: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -684,6 +811,7 @@ mod tests {
             ext: "mp4".to_string(),
             resolution: "720p".to_string(),
             filesize: Some(2_500_000_000.0),
+            is_estimated: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -695,12 +823,25 @@ mod tests {
             ext: "mp4".to_string(),
             resolution: "Audio".to_string(),
             filesize: None,
+            is_estimated: false,
             vcodec: "none".to_string(),
             acodec: "opus".to_string(),
             height: None,
         };
-        assert_eq!(format_without_size.format_filesize(), "Unknown Size");
-        assert_eq!(format_without_size.size_in_mb(), "Unknown Size");
+        assert_eq!(format_without_size.format_filesize(), "Stream Size Pending");
+        assert_eq!(format_without_size.size_in_mb(), "Stream Size Pending");
+
+        let format_estimated = MediaFormat {
+            format_id: "6".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "1080p".to_string(),
+            filesize: Some(44_040_192.0),
+            is_estimated: true,
+            vcodec: "avc1".to_string(),
+            acodec: "mp4a".to_string(),
+            height: Some(1080),
+        };
+        assert_eq!(format_estimated.format_filesize(), "~42.0 MB (Est.)");
     }
 
     #[test]
@@ -759,5 +900,335 @@ mod tests {
         assert!(bar.contains("35.40MiB /  78.20MiB"));
         assert!(bar.contains("2.10MiB/s"));
         assert!(bar.contains("00:20"));
+    }
+    #[test]
+    fn test_format_bytes_boundaries() {
+        assert_eq!(format_bytes(0.0), "0 B");
+        assert_eq!(format_bytes(1.0), "1 B");
+        assert_eq!(format_bytes(1023.0), "1023 B");
+        assert_eq!(format_bytes(1024.0), "1.0 KB");
+        assert_eq!(format_bytes(1048576.0), "1.0 MB");
+        assert_eq!(format_bytes(1073741824.0), "1.0 GB");
+        assert_eq!(format_bytes(1099511627776.0), "1.0 TB");
+        assert_eq!(format_bytes(5497558138880.0), "5.0 TB");
+    }
+
+    #[test]
+    fn test_resolve_resolution_vertical_and_edge() {
+        // YouTube Shorts (1080x1920)
+        assert_eq!(
+            resolve_resolution(Some(1920), Some(1080), None),
+            Some(("1080p", 1080))
+        );
+        // YouTube Shorts (720x1280)
+        assert_eq!(
+            resolve_resolution(Some(1280), Some(720), None),
+            Some(("720p", 720))
+        );
+        // 8K Landscape
+        assert_eq!(
+            resolve_resolution(Some(4320), Some(7680), None),
+            Some(("8K", 4320))
+        );
+        // Format notes
+        assert_eq!(
+            resolve_resolution(None, None, Some("4320p60")),
+            Some(("8K", 4320))
+        );
+        assert_eq!(
+            resolve_resolution(None, None, Some("1080p60 HDR")),
+            Some(("1080p", 1080))
+        );
+        assert_eq!(
+            resolve_resolution(None, None, Some("480p")),
+            Some(("480p", 480))
+        );
+        assert_eq!(
+            resolve_resolution(None, None, Some("360p")),
+            Some(("360p", 360))
+        );
+        assert_eq!(
+            resolve_resolution(None, None, Some("240p")),
+            Some(("240p", 240))
+        );
+        assert_eq!(
+            resolve_resolution(None, None, Some("144p")),
+            Some(("144p", 144))
+        );
+    }
+
+    #[test]
+    fn test_parse_progress_line_whitespace_and_extra_pipes() {
+        let line = "PROGRESS|  65.5%  |  20.00MiB  |  40.00MiB  |  2.50MiB/s  |  00:08  ";
+        let (p, d, t, s, e) = parse_progress_line(line).unwrap();
+        assert!((p - 65.5).abs() < f64::EPSILON);
+        assert_eq!(d, "20.00MiB");
+        assert_eq!(t, "40.00MiB");
+        assert_eq!(s, "2.50MiB/s");
+        assert_eq!(e, "00:08");
+
+        let line_extra = "PROGRESS|70%|30MB|50MB|3MB/s|00:05|extra|ignored";
+        let (p, d, t, s, e) = parse_progress_line(line_extra).unwrap();
+        assert!((p - 70.0).abs() < f64::EPSILON);
+        assert_eq!(d, "30MB");
+        assert_eq!(t, "50MB");
+        assert_eq!(s, "3MB/s");
+        assert_eq!(e, "00:05");
+
+        let non_num = "PROGRESS|invalid|10MB|20MB|1MB/s|00:10";
+        let (p, _, _, _, _) = parse_progress_line(non_num).unwrap();
+        assert_eq!(p, 0.0);
+    }
+
+    #[test]
+    fn test_render_progress_bar_clamping() {
+        // Zero percent
+        let bar_zero = render_progress_bar(0.0, "0B", "10MB", "0MB/s", "--:--");
+        assert!(bar_zero.contains("0.0%"));
+
+        // Over 100 percent
+        let bar_over = render_progress_bar(150.0, "15MB", "10MB", "1MB/s", "00:00");
+        assert!(bar_over.contains("150.0%"));
+
+        // Negative percent
+        let bar_neg = render_progress_bar(-10.0, "0B", "10MB", "0MB/s", "--:--");
+        assert!(bar_neg.contains("-10.0%"));
+    }
+
+    #[test]
+    fn test_find_format_by_quality_case_and_whitespace() {
+        let formats = vec![
+            MediaFormat {
+                format_id: "1080".to_string(),
+                ext: "mp4".to_string(),
+                resolution: "1080p".to_string(),
+                filesize: Some(50_000_000.0),
+                is_estimated: false,
+                vcodec: "avc1".to_string(),
+                acodec: "none".to_string(),
+                height: Some(1080),
+            },
+            MediaFormat {
+                format_id: "audio1".to_string(),
+                ext: "m4a".to_string(),
+                resolution: "Audio".to_string(),
+                filesize: Some(5_000_000.0),
+                is_estimated: false,
+                vcodec: "none".to_string(),
+                acodec: "mp4a".to_string(),
+                height: None,
+            },
+        ];
+
+        assert_eq!(
+            find_format_by_quality(&formats, "1080P"),
+            Some("1080".to_string())
+        );
+        assert_eq!(
+            find_format_by_quality(&formats, "  1080p  "),
+            Some("1080".to_string())
+        );
+        assert_eq!(
+            find_format_by_quality(&formats, "AUDIO"),
+            Some("audio1".to_string())
+        );
+        assert_eq!(
+            find_format_by_quality(&formats, "audio"),
+            Some("audio1".to_string())
+        );
+        assert_eq!(find_format_by_quality(&formats, "9999p"), None);
+    }
+
+    #[test]
+    fn test_calculate_media_filesize_tiers() {
+        // Tier 1: exact size
+        let (size, est) = calculate_media_filesize(
+            Some(10_000_000.0),
+            Some(8_000_000.0),
+            Some(2000.0),
+            Some(60.0),
+            Some(1080),
+            true,
+        );
+        assert_eq!(size, Some(10_000_000.0));
+        assert!(!est);
+
+        // Tier 2: engine approx
+        let (size, est) = calculate_media_filesize(
+            None,
+            Some(8_000_000.0),
+            Some(2000.0),
+            Some(60.0),
+            Some(1080),
+            true,
+        );
+        assert_eq!(size, Some(8_000_000.0));
+        assert!(est);
+
+        // Tier 3: from bitrate and duration (2000 kbps * 60 s = 15 MB)
+        let (size, est) =
+            calculate_media_filesize(None, None, Some(2000.0), Some(60.0), Some(1080), true);
+        assert_eq!(size, Some(15_000_000.0));
+        assert!(est);
+
+        // Tier 4: from profile (1080p -> 2500 kbps * 60 s = 18.75 MB)
+        let (size, est) = calculate_media_filesize(None, None, None, Some(60.0), Some(1080), true);
+        assert_eq!(size, Some(18_750_000.0));
+        assert!(est);
+
+        // Tier 4 Audio: (128 kbps * 60 s = 960,000 bytes)
+        let (size, est) = calculate_media_filesize(None, None, None, Some(60.0), None, false);
+        assert_eq!(size, Some(960_000.0));
+        assert!(est);
+
+        // Tier 5: Live stream (duration is None)
+        let (size, est) = calculate_media_filesize(None, None, None, None, Some(1080), true);
+        assert_eq!(size, None);
+        assert!(!est);
+    }
+
+    #[test]
+    fn test_render_progress_bar_responsive_widths() {
+        // Full width (120 cols) should have 25-char bar
+        let full = render_progress_bar_with_width(50.0, "50MB", "100MB", "5MB/s", "00:10", 120);
+        assert!(full.contains("[download] [="));
+        assert!(full.contains("50.0%"));
+
+        // Standard terminal (80 cols) should fit within 80 characters without visual wrapping
+        let std_term = render_progress_bar_with_width(50.0, "50MB", "100MB", "5MB/s", "00:10", 80);
+        assert!(std_term.contains("50.0%"));
+        let display_width = std_term.trim_start_matches('\r').chars().count();
+        assert!(display_width <= 80);
+
+        // Compact mode for 60 cols
+        let compact = render_progress_bar_with_width(50.0, "50MB", "100MB", "5MB/s", "00:10", 60);
+        let display_width_compact = compact.trim_start_matches('\r').chars().count();
+        assert!(display_width_compact <= 60);
+
+        // Ultra-compact mode for 40 cols
+        let ultra = render_progress_bar_with_width(50.0, "50MB", "100MB", "5MB/s", "00:10", 40);
+        let display_width_ultra = ultra.trim_start_matches('\r').chars().count();
+        assert!(display_width_ultra <= 40);
+    }
+
+    #[test]
+    fn test_extract_engine_error_status_codes() {
+        // HTTP 403 Forbidden
+        let stderr_403 = "WARNING: [youtube] Some warning\nERROR: unable to download video data: HTTP Error 403: Forbidden\n";
+        assert_eq!(
+            extract_engine_error(stderr_403),
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        );
+
+        // HTTP 429 Too Many Requests
+        let stderr_429 = "ERROR: HTTP Error 429: Too Many Requests\n";
+        assert_eq!(
+            extract_engine_error(stderr_429),
+            "ERROR: HTTP Error 429: Too Many Requests"
+        );
+
+        // Video unavailable
+        let stderr_unavail = "ERROR: [youtube] rNpaYXAO2K4: Video unavailable\n";
+        assert_eq!(
+            extract_engine_error(stderr_unavail),
+            "ERROR: [youtube] rNpaYXAO2K4: Video unavailable"
+        );
+
+        // Empty stderr fallback
+        assert_eq!(
+            extract_engine_error("   "),
+            "yt-dlp process exited with an error"
+        );
+
+        // Plain stderr without ERROR tag
+        let stderr_plain = "Command exited with status code 127";
+        assert_eq!(
+            extract_engine_error(stderr_plain),
+            "Command exited with status code 127"
+        );
+    }
+
+    #[test]
+    fn test_parse_video_info_json_valid_and_invalid() {
+        // Invalid JSON
+        let invalid = parse_video_info_json("not json {{{{");
+        assert!(invalid.is_err());
+        assert!(invalid.unwrap_err().contains("Failed to parse JSON"));
+
+        // Missing formats
+        let missing_formats = parse_video_info_json(r#"{"title": "Test Video"}"#);
+        assert!(missing_formats.is_err());
+        assert_eq!(missing_formats.unwrap_err(), "No formats found in JSON");
+
+        // Valid minimal payload
+        let valid_json = r#"{
+            "title": "Sample Video",
+            "duration": 120.0,
+            "formats": [
+                {
+                    "format_id": "137",
+                    "ext": "mp4",
+                    "width": 1920,
+                    "height": 1080,
+                    "vcodec": "avc1",
+                    "acodec": "none",
+                    "filesize": 50000000.0
+                },
+                {
+                    "format_id": "140",
+                    "ext": "m4a",
+                    "vcodec": "none",
+                    "acodec": "mp4a",
+                    "filesize": 5000000.0
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(valid_json).unwrap();
+        assert_eq!(parsed.title, "Sample Video");
+        assert_eq!(parsed.duration, Some(120.0));
+        assert_eq!(parsed.formats.len(), 2);
+        assert_eq!(parsed.formats[0].resolution, "1080p");
+        assert_eq!(parsed.formats[1].resolution, "Audio");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_fetch_video_info_simulated_engine_errors() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mock_engine = temp_dir.path().join("mock_ytdlp.sh");
+
+        // Create mock executable that simulates an HTTP 403 error
+        std::fs::write(
+            &mock_engine,
+            "#!/bin/sh\necho \x27ERROR: unable to download video data: HTTP Error 403: Forbidden\x27 >&2\nexit 1\n",
+        )
+        .unwrap();
+
+        std::fs::set_permissions(&mock_engine, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let result = fetch_video_info("https://youtube.com/watch?v=mock", &mock_engine);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+        );
+
+        // Update mock executable to simulate successful JSON extraction
+        let mock_json = r#"{"title": "Offline Mock Video", "duration": 60, "formats": [{"format_id": "18", "ext": "mp4", "width": 640, "height": 360, "vcodec": "avc1", "acodec": "mp4a", "filesize": 1000000}]}"#;
+        std::fs::write(
+            &mock_engine,
+            format!("#!/bin/sh\ncat << 'EOF'\n{}\nEOF\nexit 0\n", mock_json),
+        )
+        .unwrap();
+
+        let result_ok = fetch_video_info("https://youtube.com/watch?v=mock", &mock_engine);
+        assert!(result_ok.is_ok());
+        let info = result_ok.unwrap();
+        assert_eq!(info.title, "Offline Mock Video");
+        assert_eq!(info.formats.len(), 1);
+        assert_eq!(info.formats[0].format_id, "18");
     }
 }

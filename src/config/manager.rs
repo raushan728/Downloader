@@ -62,15 +62,19 @@ impl ConfigManager {
             }
         };
 
+        Self::load_from_path(&path)
+    }
+
+    pub fn load_from_path(path: &std::path::Path) -> DwdrConfig {
         if path.exists()
-            && let Ok(content) = fs::read_to_string(&path)
+            && let Ok(content) = fs::read_to_string(path)
             && let Ok(config) = toml::from_str(&content)
         {
             return config;
         }
 
         let default_config = DwdrConfig::default();
-        Self::save_config(&path, &default_config);
+        Self::save_config(path, &default_config);
         default_config
     }
 
@@ -80,7 +84,7 @@ impl ConfigManager {
         }
     }
 
-    fn save_config(path: &PathBuf, config: &DwdrConfig) {
+    fn save_config(path: &std::path::Path, config: &DwdrConfig) {
         if let Some(parent) = path.parent()
             && !parent.exists()
             && let Err(e) = fs::create_dir_all(parent)
@@ -230,5 +234,79 @@ mod tests {
         assert_eq!(config.max_parallel_downloads, 3);
         assert_eq!(config.default_quality, "1080p");
         assert!(!config.download_path.is_empty());
+    }
+
+    #[test]
+    fn test_config_self_healing_corrupted_file() {
+        let temp = tempfile::NamedTempFile::new().unwrap();
+        let path = temp.path().to_path_buf();
+        std::fs::write(&path, "this is corrupt toml! {{{]]] :::").unwrap();
+
+        let config = ConfigManager::load_from_path(&path);
+        assert_eq!(config.default_quality, "1080p");
+        assert_eq!(config.max_parallel_downloads, 3);
+
+        // Verify the file was healed with valid TOML
+        let healed_content = std::fs::read_to_string(&path).unwrap();
+        let parsed: Result<DwdrConfig, _> = toml::from_str(&healed_content);
+        assert!(parsed.is_ok());
+    }
+
+    #[test]
+    fn test_config_handle_cli_edge_cases() {
+        let mut config = DwdrConfig::default();
+
+        // Unknown action
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("invalid_action".to_string()),
+            None,
+            None,
+            false,
+        );
+
+        // Missing key for set
+        ConfigManager::handle_cli(&mut config, Some("set".to_string()), None, None, false);
+
+        // Missing value for set
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("quality".to_string()),
+            None,
+            false,
+        );
+
+        // Unknown key
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("foo".to_string()),
+            Some("bar".to_string()),
+            false,
+        );
+
+        // Invalid parallel
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("parallel".to_string()),
+            Some("abc".to_string()),
+            false,
+        );
+
+        // Invalid update-days
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("update-days".to_string()),
+            Some("invalid_num".to_string()),
+            false,
+        );
+
+        // Values remain unaffected by erroneous input
+        assert_eq!(config.default_quality, "1080p");
+        assert_eq!(config.max_parallel_downloads, 3);
+        assert_eq!(config.update_check_days, 0);
     }
 }
