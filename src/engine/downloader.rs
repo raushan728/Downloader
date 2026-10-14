@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::io::{BufRead, BufReader, Write, stdout};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -298,6 +299,9 @@ pub fn download_media(
         .arg(&output_template)
         .arg("--merge-output-format")
         .arg("mp4")
+        .arg("--newline")
+        .arg("--progress-template")
+        .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
         .arg("--no-warnings")
         .arg("--no-playlist");
 
@@ -306,17 +310,61 @@ pub fn download_media(
     }
 
     cmd.arg(url);
-    cmd.stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
 
-    let status = cmd
-        .status()
+    let mut child = cmd
+        .spawn()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
+    if let Some(stdout_pipe) = child.stdout.take() {
+        let reader = BufReader::new(stdout_pipe);
+
+        for line in reader.lines().map_while(Result::ok) {
+            let line = line.trim();
+            if let Some(rest) = line.strip_prefix("PROGRESS|") {
+                let parts: Vec<&str> = rest.split('|').collect();
+                if parts.len() >= 4 {
+                    let percent_str = parts[0].trim().trim_end_matches('%').trim();
+                    let total_str = parts[1].trim();
+                    let speed_str = parts[2].trim();
+                    let eta_str = parts[3].trim();
+
+                    let percent = percent_str.parse::<f64>().unwrap_or(0.0);
+                    let bar_width: usize = 25;
+                    let filled = ((percent / 100.0) * bar_width as f64).clamp(0.0, bar_width as f64)
+                        as usize;
+                    let empty =
+                        bar_width.saturating_sub(filled + if filled < bar_width { 1 } else { 0 });
+                    let arrow = if filled < bar_width { ">" } else { "" };
+                    let bar = format!("[{}{}{}]", "=".repeat(filled), arrow, " ".repeat(empty));
+
+                    print!(
+                        "\r[download] {} {:>5.1}% of {:>9} at {:>11} ETA {:>5}",
+                        bar, percent, total_str, speed_str, eta_str
+                    );
+                    let _ = stdout().flush();
+                }
+            } else if line.starts_with("[Merger]")
+                || line.starts_with("[ExtractAudio]")
+                || line.starts_with("[download] Destination:")
+            {
+                println!("\n{}", line);
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
+
     if status.success() {
+        println!(
+            "\r[download] [{}] 100.0% Complete!                                        ",
+            "=".repeat(25)
+        );
         Ok(())
     } else {
+        println!();
         Err("yt-dlp process exited with an error".to_string())
     }
 }

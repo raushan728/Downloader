@@ -140,7 +140,8 @@ pub fn process_url(url: &str, config: &mut DwdrConfig) {
                         println!(
                             "{}",
                             format!(
-                                "SUCCESS: Download completed successfully! File saved to: {}",
+                                "SUCCESS: Download completed successfully! File saved: \"{}\" in {}",
+                                info.title,
                                 config.download_path
                             )
                             .green()

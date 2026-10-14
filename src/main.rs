@@ -14,6 +14,9 @@ use engine::updater::{ensure_dependencies, ensure_ffmpeg, update_self};
 fn main() {
     #[cfg(target_os = "windows")]
     {
+        if colored::control::set_virtual_terminal(true).is_err() {
+            colored::control::set_override(false);
+        }
         if let Ok(current_exe) = std::env::current_exe() {
             let old_exe = current_exe.with_extension("old");
             if old_exe.exists() {
