@@ -56,17 +56,87 @@ impl MediaFormat {
 
 pub fn map_height_to_resolution(height: u64) -> Option<&'static str> {
     match height {
-        4320 => Some("8K"),
-        2160 => Some("4K"),
-        1440 => Some("2K"),
-        1080 => Some("1080p"),
-        720 => Some("720p"),
-        480 => Some("480p"),
-        360 => Some("360p"),
-        240 => Some("240p"),
-        144 => Some("144p"),
+        4320.. => Some("8K"),
+        2000..=4319 => Some("4K"),
+        1300..=1999 => Some("2K"),
+        900..=1299 => Some("1080p"),
+        600..=899 => Some("720p"),
+        400..=599 => Some("480p"),
+        300..=399 => Some("360p"),
+        200..=299 => Some("240p"),
+        120..=199 => Some("144p"),
         _ => None,
     }
+}
+
+pub fn resolve_resolution(
+    height: Option<u64>,
+    width: Option<u64>,
+    format_note: Option<&str>,
+) -> Option<(&'static str, u64)> {
+    if let Some(note) = format_note {
+        let lower = note.to_lowercase();
+        if lower.contains("4320") || lower.contains("8k") {
+            return Some(("8K", 4320));
+        } else if lower.contains("2160") || lower.contains("4k") {
+            return Some(("4K", 2160));
+        } else if lower.contains("1440") || lower.contains("2k") {
+            return Some(("2K", 1440));
+        } else if lower.contains("1080") {
+            return Some(("1080p", 1080));
+        } else if lower.contains("720") {
+            return Some(("720p", 720));
+        } else if lower.contains("480") {
+            return Some(("480p", 480));
+        } else if lower.contains("360") {
+            return Some(("360p", 360));
+        } else if lower.contains("240") {
+            return Some(("240p", 240));
+        } else if lower.contains("144") {
+            return Some(("144p", 144));
+        }
+    }
+
+    if let Some(w) = width {
+        if w >= 7680 {
+            return Some(("8K", 4320));
+        } else if w >= 3840 {
+            return Some(("4K", 2160));
+        } else if w >= 2560 {
+            return Some(("2K", 1440));
+        } else if w >= 1920 {
+            return Some(("1080p", 1080));
+        } else if w >= 1280 {
+            return Some(("720p", 720));
+        } else if w >= 854 {
+            return Some(("480p", 480));
+        } else if w >= 640 {
+            return Some(("360p", 360));
+        } else if w >= 426 {
+            return Some(("240p", 240));
+        } else if w >= 256 {
+            return Some(("144p", 144));
+        }
+    }
+
+    if let Some(h) = height
+        && let Some(res) = map_height_to_resolution(h) {
+            let rank = match res {
+                "8K" => 4320,
+                "4K" => 2160,
+                "2K" => 1440,
+                "1080p" => 1080,
+                "720p" => 720,
+                "480p" => 480,
+                "360p" => 360,
+                "240p" => 240,
+                "144p" => 144,
+                _ => h,
+            };
+            return Some((res, rank));
+        }
+
+    None
 }
 
 pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, String> {
@@ -138,18 +208,17 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
                 continue;
             }
 
-            let height = match f["height"].as_u64() {
-                Some(h) if h > 0 => h,
-                _ => continue,
-            };
+            let height = f["height"].as_u64();
+            let width = f["width"].as_u64();
+            let note = f["format_note"].as_str();
 
-            let resolution = match map_height_to_resolution(height) {
-                Some(res) => res,
+            let (resolution, rank) = match resolve_resolution(height, width, note) {
+                Some(r) => r,
                 None => continue,
             };
 
             video_candidates.push((
-                height,
+                rank,
                 size,
                 MediaFormat {
                     format_id,
@@ -158,7 +227,7 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
                     filesize: Some(size),
                     vcodec: vcodec.to_string(),
                     acodec: acodec.to_string(),
-                    height: Some(height as u32),
+                    height: height.map(|h| h as u32),
                 },
             ));
         } else if acodec != "none" {
@@ -400,5 +469,30 @@ mod tests {
         };
         assert_eq!(format_without_size.format_filesize(), "Unknown Size");
         assert_eq!(format_without_size.size_in_mb(), "Unknown Size");
+    }
+
+    #[test]
+    fn test_resolve_resolution() {
+        assert_eq!(
+            resolve_resolution(Some(1012), Some(1920), Some("1080p50")),
+            Some(("1080p", 1080))
+        );
+        assert_eq!(
+            resolve_resolution(Some(2026), Some(3840), Some("2160p50")),
+            Some(("4K", 2160))
+        );
+        assert_eq!(
+            resolve_resolution(Some(1350), Some(2560), Some("1440p50")),
+            Some(("2K", 1440))
+        );
+        assert_eq!(
+            resolve_resolution(Some(676), Some(1280), Some("720p50")),
+            Some(("720p", 720))
+        );
+        assert_eq!(
+            resolve_resolution(Some(1080), Some(1920), None),
+            Some(("1080p", 1080))
+        );
+        assert_eq!(resolve_resolution(None, None, None), None);
     }
 }
