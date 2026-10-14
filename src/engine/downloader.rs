@@ -1,8 +1,10 @@
+use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Write, stdout};
+use std::io::{BufRead, BufReader, Read, Write, stdout};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::thread;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VideoInfo {
@@ -280,6 +282,69 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
     })
 }
 
+pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, String)> {
+    let rest = line.strip_prefix("PROGRESS|")?;
+    let parts: Vec<&str> = rest.split('|').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+
+    let percent_str = parts[0].trim().trim_end_matches('%').trim();
+    let downloaded_str = parts[1].trim();
+    let total_str = parts[2].trim();
+    let speed_str = parts[3].trim();
+    let eta_str = parts[4].trim();
+
+    let percent = percent_str.parse::<f64>().unwrap_or(0.0);
+    let downloaded_clean = if downloaded_str.is_empty() || downloaded_str == "NA" {
+        "Unknown".to_string()
+    } else {
+        downloaded_str.to_string()
+    };
+    let total_clean = if total_str.is_empty() || total_str == "NA" {
+        "Unknown".to_string()
+    } else {
+        total_str.to_string()
+    };
+    let speed_clean = if speed_str.is_empty() || speed_str == "NA" {
+        "Unknown".to_string()
+    } else {
+        speed_str.to_string()
+    };
+    let eta_clean = if eta_str.is_empty() || eta_str == "NA" {
+        "--:--".to_string()
+    } else {
+        eta_str.to_string()
+    };
+
+    Some((
+        percent,
+        downloaded_clean,
+        total_clean,
+        speed_clean,
+        eta_clean,
+    ))
+}
+
+pub fn render_progress_bar(
+    percent: f64,
+    downloaded: &str,
+    total: &str,
+    speed: &str,
+    eta: &str,
+) -> String {
+    let bar_width: usize = 25;
+    let filled = ((percent / 100.0) * bar_width as f64).clamp(0.0, bar_width as f64) as usize;
+    let empty = bar_width.saturating_sub(filled + if filled < bar_width { 1 } else { 0 });
+    let arrow = if filled < bar_width { ">" } else { "" };
+    let bar = format!("[{}{}{}]", "=".repeat(filled), arrow, " ".repeat(empty));
+
+    format!(
+        "\r[download] {} {:>5.1}% [{:>9} / {:>9}] at {:>10} ETA {:>5}   ",
+        bar, percent, downloaded, total, speed, eta
+    )
+}
+
 pub fn download_media(
     url: &str,
     format_id: &str,
@@ -301,7 +366,9 @@ pub fn download_media(
         .arg("mp4")
         .arg("--newline")
         .arg("--progress-template")
-        .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
+        .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str,progress._total_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
+        .arg("--progress-template")
+        .arg("postprocess:POSTPROCESS|%(progress.status)s")
         .arg("--no-warnings")
         .arg("--no-playlist");
 
@@ -310,45 +377,47 @@ pub fn download_media(
     }
 
     cmd.arg(url);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::inherit());
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
+
+    let mut stderr_handle = child.stderr.take();
+    let stderr_thread = thread::spawn(move || {
+        let mut err_output = Vec::new();
+        if let Some(err_pipe) = stderr_handle.as_mut() {
+            let _ = err_pipe.read_to_end(&mut err_output);
+        }
+        String::from_utf8_lossy(&err_output).to_string()
+    });
+
+    let mut postprocess_started = false;
 
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
 
         for line in reader.lines().map_while(Result::ok) {
             let line = line.trim();
-            if let Some(rest) = line.strip_prefix("PROGRESS|") {
-                let parts: Vec<&str> = rest.split('|').collect();
-                if parts.len() >= 4 {
-                    let percent_str = parts[0].trim().trim_end_matches('%').trim();
-                    let total_str = parts[1].trim();
-                    let speed_str = parts[2].trim();
-                    let eta_str = parts[3].trim();
-
-                    let percent = percent_str.parse::<f64>().unwrap_or(0.0);
-                    let bar_width: usize = 25;
-                    let filled = ((percent / 100.0) * bar_width as f64).clamp(0.0, bar_width as f64)
-                        as usize;
-                    let empty =
-                        bar_width.saturating_sub(filled + if filled < bar_width { 1 } else { 0 });
-                    let arrow = if filled < bar_width { ">" } else { "" };
-                    let bar = format!("[{}{}{}]", "=".repeat(filled), arrow, " ".repeat(empty));
-
-                    print!(
-                        "\r[download] {} {:>5.1}% of {:>9} at {:>11} ETA {:>5}",
-                        bar, percent, total_str, speed_str, eta_str
-                    );
-                    let _ = stdout().flush();
-                }
-            } else if line.starts_with("[Merger]")
+            if let Some((percent, downloaded, total, speed, eta)) = parse_progress_line(line) {
+                print!(
+                    "{}",
+                    render_progress_bar(percent, &downloaded, &total, &speed, &eta)
+                );
+                let _ = stdout().flush();
+            } else if (line.starts_with("POSTPROCESS|")
+                || line.starts_with("[Merger]")
                 || line.starts_with("[ExtractAudio]")
-                || line.starts_with("[download] Destination:")
+                || line.contains("Merging formats"))
+                && !postprocess_started
             {
-                println!("\n{}", line);
+                postprocess_started = true;
+                println!(
+                    "\r[download] [{}] 100.0% Complete!                                                  ",
+                    "=".repeat(25)
+                );
+                println!("{}", "INFO: Extracting and finalizing media...".cyan());
+                let _ = stdout().flush();
             }
         }
     }
@@ -357,15 +426,30 @@ pub fn download_media(
         .wait()
         .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
 
+    let stderr_output = stderr_thread.join().unwrap_or_default();
+
     if status.success() {
-        println!(
-            "\r[download] [{}] 100.0% Complete!                                        ",
-            "=".repeat(25)
-        );
+        if !postprocess_started {
+            println!(
+                "\r[download] [{}] 100.0% Complete!                                                  ",
+                "=".repeat(25)
+            );
+        }
+        println!("{}", "SUCCESS: Finalizing complete!".green());
         Ok(())
     } else {
         println!();
-        Err("yt-dlp process exited with an error".to_string())
+        let trimmed_err = stderr_output.trim();
+        if !trimmed_err.is_empty() {
+            let error_line = trimmed_err
+                .lines()
+                .rev()
+                .find(|l| l.contains("ERROR:") || l.contains("error:"))
+                .unwrap_or_else(|| trimmed_err.lines().next_back().unwrap_or(trimmed_err));
+            Err(error_line.to_string())
+        } else {
+            Err("yt-dlp process exited with an error".to_string())
+        }
     }
 }
 
@@ -543,5 +627,38 @@ mod tests {
             Some(("1080p", 1080))
         );
         assert_eq!(resolve_resolution(None, None, None), None);
+    }
+
+    #[test]
+    fn test_parse_progress_line() {
+        let line = "PROGRESS| 45.2%|35.40MiB|78.20MiB|2.10MiB/s|00:20";
+        let parsed = parse_progress_line(line);
+        assert!(parsed.is_some());
+        let (percent, downloaded, total, speed, eta) = parsed.unwrap();
+        assert!((percent - 45.2).abs() < f64::EPSILON);
+        assert_eq!(downloaded, "35.40MiB");
+        assert_eq!(total, "78.20MiB");
+        assert_eq!(speed, "2.10MiB/s");
+        assert_eq!(eta, "00:20");
+
+        let fallback_line = "PROGRESS|100.0%|NA|NA|NA|NA";
+        let (p, d, t, s, e) = parse_progress_line(fallback_line).unwrap();
+        assert!((p - 100.0).abs() < f64::EPSILON);
+        assert_eq!(d, "Unknown");
+        assert_eq!(t, "Unknown");
+        assert_eq!(s, "Unknown");
+        assert_eq!(e, "--:--");
+
+        assert!(parse_progress_line("INVALID|FORMAT").is_none());
+        assert!(parse_progress_line("PROGRESS|10%|10MB").is_none());
+    }
+
+    #[test]
+    fn test_render_progress_bar() {
+        let bar = render_progress_bar(50.0, "35.40MiB", "78.20MiB", "2.10MiB/s", "00:20");
+        assert!(bar.contains("50.0%"));
+        assert!(bar.contains("35.40MiB /  78.20MiB"));
+        assert!(bar.contains("2.10MiB/s"));
+        assert!(bar.contains("00:20"));
     }
 }

@@ -19,8 +19,10 @@ INFO: Fetching media details from the server...
 Successfully fetched data for: Rick Astley - Never Gonna Give You Up (Official Music Video)
 Extracted 9 formats.
 INFO: Exact quality (1080p) found! Auto-starting download...
-[download] [=============>           ]  52.1% of   42.10MiB at    4.25MiB/s ETA 00:04
+[download] [=============>           ]  52.1% [  21.93MiB /   42.10MiB] at    4.25MiB/s ETA 00:04
 [download] [=========================] 100.0% Complete!
+INFO: Extracting and finalizing media...
+SUCCESS: Finalizing complete!
 SUCCESS: Download completed successfully! File saved: "Rick Astley - Never Gonna Give You Up (Official Music Video)" in /home/user/Downloads/DWDR
 ```
 
