@@ -120,21 +120,22 @@ pub fn resolve_resolution(
     }
 
     if let Some(h) = height
-        && let Some(res) = map_height_to_resolution(h) {
-            let rank = match res {
-                "8K" => 4320,
-                "4K" => 2160,
-                "2K" => 1440,
-                "1080p" => 1080,
-                "720p" => 720,
-                "480p" => 480,
-                "360p" => 360,
-                "240p" => 240,
-                "144p" => 144,
-                _ => h,
-            };
-            return Some((res, rank));
-        }
+        && let Some(res) = map_height_to_resolution(h)
+    {
+        let rank = match res {
+            "8K" => 4320,
+            "4K" => 2160,
+            "2K" => 1440,
+            "1080p" => 1080,
+            "720p" => 720,
+            "480p" => 480,
+            "360p" => 360,
+            "240p" => 240,
+            "144p" => 144,
+            _ => h,
+        };
+        return Some((res, rank));
+    }
 
     None
 }
