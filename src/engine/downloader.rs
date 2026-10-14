@@ -1,9 +1,7 @@
-use indicatif::{ProgressBar, ProgressStyle};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader};
+use std::collections::HashSet;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VideoInfo {
@@ -12,7 +10,7 @@ pub struct VideoInfo {
     pub formats: Vec<MediaFormat>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MediaFormat {
     pub format_id: String,
     pub ext: String,
@@ -20,14 +18,54 @@ pub struct MediaFormat {
     pub filesize: Option<f64>,
     pub vcodec: String,
     pub acodec: String,
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+pub fn format_bytes(bytes: f64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    const TB: f64 = GB * 1024.0;
+
+    if bytes < KB {
+        format!("{:.0} B", bytes)
+    } else if bytes < MB {
+        format!("{:.1} KB", bytes / KB)
+    } else if bytes < GB {
+        format!("{:.1} MB", bytes / MB)
+    } else if bytes < TB {
+        format!("{:.1} GB", bytes / GB)
+    } else {
+        format!("{:.1} TB", bytes / TB)
+    }
 }
 
 impl MediaFormat {
-    pub fn size_in_mb(&self) -> String {
+    pub fn format_filesize(&self) -> String {
         match self.filesize {
-            Some(bytes) => format!("{:.1} MB", bytes / 1_048_576.0),
+            Some(bytes) => format_bytes(bytes),
             None => "Unknown Size".to_string(),
         }
+    }
+
+    pub fn size_in_mb(&self) -> String {
+        self.format_filesize()
+    }
+}
+
+pub fn map_height_to_resolution(height: u64) -> Option<&'static str> {
+    match height {
+        4320 => Some("8K"),
+        2160 => Some("4K"),
+        1440 => Some("2K"),
+        1080 => Some("1080p"),
+        720 => Some("720p"),
+        480 => Some("480p"),
+        360 => Some("360p"),
+        240 => Some("240p"),
+        144 => Some("144p"),
+        _ => None,
     }
 }
 
@@ -57,40 +95,109 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
         .as_array()
         .ok_or("No formats found in JSON")?;
 
-    let mut formats = Vec::new();
+    let mut video_candidates = Vec::new();
+    let mut audio_candidates = Vec::new();
 
     for f in raw_formats {
-        let vcodec = f["vcodec"].as_str().unwrap_or("none").to_string();
-        let acodec = f["acodec"].as_str().unwrap_or("none").to_string();
+        let vcodec = f["vcodec"].as_str().unwrap_or("none");
+        let acodec = f["acodec"].as_str().unwrap_or("none");
 
         if vcodec == "none" && acodec == "none" {
-            continue; // Skip broken formats
+            continue;
+        }
+
+        let ext = f["ext"].as_str().unwrap_or("unknown");
+        if ext == "mhtml" || ext == "weba" {
+            continue;
+        }
+
+        if f["format_note"]
+            .as_str()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains("storyboard")
+        {
+            continue;
         }
 
         let format_id = f["format_id"].as_str().unwrap_or("unknown").to_string();
-        let ext = f["ext"].as_str().unwrap_or("unknown").to_string();
         let filesize = f["filesize"]
             .as_f64()
             .or_else(|| f["filesize_approx"].as_f64());
 
-        let resolution = if let Some(note) = f["format_note"].as_str() {
-            note.to_string()
-        } else if let Some(res) = f["resolution"].as_str() {
-            res.to_string()
-        } else if vcodec == "none" {
-            "Audio".to_string()
-        } else {
-            "Unknown".to_string()
-        };
+        if vcodec != "none" {
+            let size = match filesize {
+                Some(s) => s,
+                None => continue,
+            };
 
-        formats.push(MediaFormat {
-            format_id,
-            ext,
-            resolution,
-            filesize,
-            vcodec,
-            acodec,
-        });
+            if let (Some(w), Some(h)) = (f["width"].as_u64(), f["height"].as_u64())
+                && w == h && w > 0 {
+                    continue;
+                }
+
+            let height = match f["height"].as_u64() {
+                Some(h) if h > 0 => h,
+                _ => continue,
+            };
+
+            let resolution = match map_height_to_resolution(height) {
+                Some(res) => res,
+                None => continue,
+            };
+
+            video_candidates.push((
+                height,
+                size,
+                MediaFormat {
+                    format_id,
+                    ext: ext.to_string(),
+                    resolution: resolution.to_string(),
+                    filesize: Some(size),
+                    vcodec: vcodec.to_string(),
+                    acodec: acodec.to_string(),
+                    height: Some(height as u32),
+                },
+            ));
+        } else if acodec != "none" {
+            let size = match filesize {
+                Some(s) => s,
+                None => continue,
+            };
+
+            audio_candidates.push((
+                size,
+                MediaFormat {
+                    format_id,
+                    ext: ext.to_string(),
+                    resolution: "Audio".to_string(),
+                    filesize: Some(size),
+                    vcodec: "none".to_string(),
+                    acodec: acodec.to_string(),
+                    height: None,
+                },
+            ));
+        }
+    }
+
+    video_candidates.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+    });
+
+    let mut formats = Vec::new();
+    let mut seen_resolutions = HashSet::new();
+
+    for (_, _, format) in video_candidates {
+        if seen_resolutions.insert(format.resolution.clone()) {
+            formats.push(format);
+        }
+    }
+
+    audio_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    if let Some((_, best_audio)) = audio_candidates.into_iter().next() {
+        formats.push(best_audio);
     }
 
     Ok(VideoInfo {
@@ -107,14 +214,18 @@ pub fn download_media(
     ffmpeg_path: &Path,
     download_dir: &str,
 ) -> Result<(), String> {
+    let clean_dir = download_dir.trim_end_matches(['/', '\\']);
+    let output_template = format!("{}/%(title)s.%(ext)s", clean_dir);
+
     let mut cmd = Command::new(yt_dlp_path);
     cmd.arg("-f")
         .arg(format!("{}+bestaudio/best", format_id))
         .arg("-N")
         .arg("8")
-        .arg("-P")
-        .arg(download_dir)
-        .arg("--newline")
+        .arg("-o")
+        .arg(&output_template)
+        .arg("--merge-output-format")
+        .arg("mp4")
         .arg("--no-warnings")
         .arg("--no-playlist");
 
@@ -123,40 +234,17 @@ pub fn download_media(
     }
 
     cmd.arg(url);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
 
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::default_spinner()
-            .template("{spinner:.green} {msg:.cyan}")
-            .unwrap_or_else(|_| ProgressStyle::default_spinner()),
-    );
-    pb.enable_steady_tick(Duration::from_millis(100));
-    pb.set_message("Starting download...");
-
-    let mut child = cmd
-        .spawn()
+    let status = cmd
+        .status()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
-    if let Some(stdout) = child.stdout.take() {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if line.contains("[download]") && line.contains('%') {
-                let clean = line.replace("[download]", "").trim().to_string();
-                pb.set_message(clean);
-            }
-        }
-    }
-
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
-
     if status.success() {
-        pb.finish_with_message("SUCCESS: Download complete!");
         Ok(())
     } else {
-        pb.finish_with_message("ERROR: Download failed.");
         Err("yt-dlp process exited with an error".to_string())
     }
 }
@@ -197,18 +285,20 @@ mod tests {
             MediaFormat {
                 format_id: "313".to_string(),
                 ext: "webm".to_string(),
-                resolution: "2160p".to_string(),
+                resolution: "4K".to_string(),
                 filesize: Some(100_000_000.0),
                 vcodec: "vp9".to_string(),
                 acodec: "none".to_string(),
+                height: Some(2160),
             },
             MediaFormat {
                 format_id: "271".to_string(),
                 ext: "webm".to_string(),
-                resolution: "1440p".to_string(),
+                resolution: "2K".to_string(),
                 filesize: Some(50_000_000.0),
                 vcodec: "vp9".to_string(),
                 acodec: "none".to_string(),
+                height: Some(1440),
             },
             MediaFormat {
                 format_id: "22".to_string(),
@@ -217,6 +307,7 @@ mod tests {
                 filesize: Some(25_000_000.0),
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
+                height: Some(720),
             },
             MediaFormat {
                 format_id: "18".to_string(),
@@ -225,6 +316,7 @@ mod tests {
                 filesize: Some(10_000_000.0),
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
+                height: Some(360),
             },
         ];
 
@@ -249,7 +341,7 @@ mod tests {
     }
 
     #[test]
-    fn test_media_format_size_in_mb() {
+    fn test_media_format_filesize_formatting() {
         let format_with_size = MediaFormat {
             format_id: "1".to_string(),
             ext: "mp4".to_string(),
@@ -257,17 +349,54 @@ mod tests {
             filesize: Some(10_485_760.0),
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
+            height: Some(720),
         };
+        assert_eq!(format_with_size.format_filesize(), "10.0 MB");
         assert_eq!(format_with_size.size_in_mb(), "10.0 MB");
 
-        let format_without_size = MediaFormat {
+        let format_bytes_test = MediaFormat {
             format_id: "2".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "720p".to_string(),
+            filesize: Some(500.0),
+            vcodec: "avc1".to_string(),
+            acodec: "mp4a".to_string(),
+            height: Some(720),
+        };
+        assert_eq!(format_bytes_test.format_filesize(), "500 B");
+
+        let format_mb_test = MediaFormat {
+            format_id: "3".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "720p".to_string(),
+            filesize: Some(1_500_000.0),
+            vcodec: "avc1".to_string(),
+            acodec: "mp4a".to_string(),
+            height: Some(720),
+        };
+        assert_eq!(format_mb_test.format_filesize(), "1.4 MB");
+
+        let format_gb_test = MediaFormat {
+            format_id: "4".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "720p".to_string(),
+            filesize: Some(2_500_000_000.0),
+            vcodec: "avc1".to_string(),
+            acodec: "mp4a".to_string(),
+            height: Some(720),
+        };
+        assert_eq!(format_gb_test.format_filesize(), "2.3 GB");
+
+        let format_without_size = MediaFormat {
+            format_id: "5".to_string(),
             ext: "mp4".to_string(),
             resolution: "Audio".to_string(),
             filesize: None,
             vcodec: "none".to_string(),
             acodec: "opus".to_string(),
+            height: None,
         };
+        assert_eq!(format_without_size.format_filesize(), "Unknown Size");
         assert_eq!(format_without_size.size_in_mb(), "Unknown Size");
     }
 }

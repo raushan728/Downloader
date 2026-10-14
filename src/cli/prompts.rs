@@ -1,15 +1,160 @@
+use std::fmt::Display;
+use std::io::{IsTerminal, Write, stdout};
+
 use colored::Colorize;
-use inquire::Select;
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+    execute,
+    style::{Color, Print, ResetColor, SetForegroundColor},
+    terminal::{self, Clear, ClearType},
+};
 use rfd::FileDialog;
 
 use crate::config::manager::{ConfigManager, DwdrConfig};
 use crate::engine::downloader::MediaFormat;
 
+pub struct Select<T: Display> {
+    message: String,
+    options: Vec<T>,
+}
+
+impl<T: Display> Select<T> {
+    pub fn new(message: &str, options: Vec<T>) -> Self {
+        Self {
+            message: message.to_string(),
+            options,
+        }
+    }
+
+    pub fn prompt(self) -> Result<T, ()> {
+        if self.options.is_empty() {
+            return Err(());
+        }
+
+        if !std::io::stdin().is_terminal() || !stdout().is_terminal() {
+            return Ok(self.options.into_iter().next().unwrap());
+        }
+
+        let mut selected = 0;
+        let count = self.options.len();
+        let mut stdout = stdout();
+
+        terminal::enable_raw_mode().map_err(|_| ())?;
+        let _ = execute!(stdout, cursor::Hide);
+
+        let _ = execute!(
+            stdout,
+            SetForegroundColor(Color::Cyan),
+            Print("? "),
+            Print(&self.message),
+            Print("\r\n"),
+            ResetColor
+        );
+
+        let render =
+            |stdout: &mut std::io::Stdout, selected: usize, first: bool| -> Result<(), ()> {
+                if !first {
+                    let _ = execute!(stdout, cursor::MoveUp(count as u16));
+                }
+                for (i, opt) in self.options.iter().enumerate() {
+                    let _ = execute!(stdout, Clear(ClearType::CurrentLine));
+                    if i == selected {
+                        let _ = execute!(
+                            stdout,
+                            SetForegroundColor(Color::Cyan),
+                            Print(format!(" > {}\r\n", opt)),
+                            ResetColor
+                        );
+                    } else {
+                        let _ = execute!(stdout, Print(format!("   {}\r\n", opt)));
+                    }
+                }
+                stdout.flush().map_err(|_| ())?;
+                Ok(())
+            };
+
+        if render(&mut stdout, selected, true).is_err() {
+            let _ = terminal::disable_raw_mode();
+            let _ = execute!(stdout, cursor::Show);
+            return Err(());
+        }
+
+        let selection_result = loop {
+            match event::read() {
+                Ok(Event::Key(KeyEvent {
+                    code,
+                    modifiers,
+                    kind,
+                    ..
+                })) => {
+                    if kind == KeyEventKind::Release {
+                        continue;
+                    }
+                    match code {
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if selected > 0 {
+                                selected -= 1;
+                                let _ = render(&mut stdout, selected, false);
+                            }
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if selected + 1 < count {
+                                selected += 1;
+                                let _ = render(&mut stdout, selected, false);
+                            }
+                        }
+                        KeyCode::Home => {
+                            if selected != 0 {
+                                selected = 0;
+                                let _ = render(&mut stdout, selected, false);
+                            }
+                        }
+                        KeyCode::End => {
+                            if selected != count - 1 {
+                                selected = count - 1;
+                                let _ = render(&mut stdout, selected, false);
+                            }
+                        }
+                        KeyCode::Enter => {
+                            break Ok(selected);
+                        }
+                        KeyCode::Esc => {
+                            break Err(());
+                        }
+                        KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                            break Err(());
+                        }
+                        _ => {}
+                    }
+                }
+                Err(_) => {
+                    break Err(());
+                }
+                _ => {}
+            }
+        };
+
+        let _ = execute!(stdout, cursor::MoveUp(count as u16));
+        for _ in 0..count {
+            let _ = execute!(stdout, Clear(ClearType::CurrentLine), cursor::MoveDown(1));
+        }
+        let _ = execute!(stdout, cursor::MoveUp(count as u16));
+
+        let _ = execute!(stdout, cursor::Show);
+        let _ = terminal::disable_raw_mode();
+
+        match selection_result {
+            Ok(idx) => Ok(self.options.into_iter().nth(idx).unwrap()),
+            Err(()) => Err(()),
+        }
+    }
+}
+
 pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
     let mut options = Vec::new();
 
-    // Reverse iterate so highest quality is top of the list
-    for format in formats.iter().rev() {
+    for format in formats {
         let tag = if format.vcodec == "none" {
             "[AUDIO]"
         } else {
@@ -17,11 +162,11 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
         };
 
         let option_str = format!(
-            "{:<7} | {:<10} | {:<5} | {}",
+            "{:<7} | {:<6} | {:<4} | {}",
             tag,
             format.resolution,
             format.ext,
-            format.size_in_mb()
+            format.format_filesize()
         );
         options.push(option_str);
     }
@@ -33,12 +178,7 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
     .prompt()
     {
         Ok(choice) => {
-            if let Some(index) = options.iter().position(|r| r == &choice) {
-                let format_index = formats.len() - 1 - index;
-                Some(formats[format_index].format_id.clone())
-            } else {
-                None
-            }
+            options.iter().position(|r| r == &choice).map(|index| formats[index].format_id.clone())
         }
         Err(_) => None,
     }
