@@ -29,7 +29,7 @@ default_quality = "1080p"
 | --- | --- | --- | --- | --- |
 | `download_path` | string | `~/Downloads/DWDR` | Destination folder where downloaded audio and video files are saved. | Any valid directory path |
 | `default_quality` | string | `"1080p"` | Preferred video resolution matched during Smart Fallback downloads, or manual prompt. | `"always ask"`, `"best"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"audio"` |
-| `max_parallel_downloads` | integer | `3` | Maximum number of concurrent media tasks allowed simultaneously. | `1` to `16` |
+| `max_parallel_downloads` | integer | `3` | Maximum number of concurrent media downloads allowed simultaneously in interactive mode (additional tasks wait in queue). | `1` to `16` |
 | `update_check_days` | integer | `0` | Frequency in days to check for dependency updates (`0` disables check). | Non-negative integer |
 
 ---

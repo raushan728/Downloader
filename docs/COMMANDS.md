@@ -1,6 +1,6 @@
 # Command Reference Catalog
 
-DWDR provides a total of **12 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
+DWDR provides a total of **16 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
 
 ---
 
