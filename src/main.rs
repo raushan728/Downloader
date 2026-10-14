@@ -14,9 +14,11 @@ use engine::updater::{ensure_dependencies, ensure_ffmpeg, update_self};
 fn main() {
     #[cfg(target_os = "windows")]
     {
+        // Enable VT100 emulation on Windows CMD/PowerShell so ANSI colors do not render as raw escape codes.
         if colored::control::set_virtual_terminal(true).is_err() {
             colored::control::set_override(false);
         }
+        // Windows locks running executables; self-updates rename the running binary to .old, purged here on next boot.
         if let Ok(current_exe) = std::env::current_exe() {
             let old_exe = current_exe.with_extension("old");
             if old_exe.exists() {
@@ -25,6 +27,7 @@ fn main() {
         }
     }
 
+    // Trap SIGINT/Ctrl+C to terminate child process trees and sweep orphaned partial download artifacts.
     let _ = ctrlc::set_handler(move || {
         crate::engine::downloader::cancel_direct_download();
         crate::engine::queue::cancel_global_downloads();

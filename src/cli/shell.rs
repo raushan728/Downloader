@@ -14,6 +14,7 @@ use crate::engine::queue::{EnqueueResult, QueueManager, set_global_queue};
 use crate::engine::updater::ensure_dependencies;
 use crate::utils::validator::is_valid_url;
 
+/// Validates the URL, fetches available formats, and resolves the target format and destination directory.
 pub fn resolve_media_to_download(
     url: &str,
     config: &mut DwdrConfig,
@@ -147,6 +148,7 @@ pub fn resolve_media_to_download(
     Some((info.title, format_id, yt_dlp_path, ffmpeg_path))
 }
 
+/// Single-URL direct execution entry point for non-interactive CLI usage.
 pub fn process_url(url: &str, config: &mut DwdrConfig) {
     if let Some((title, format_id, yt_dlp_path, ffmpeg_path)) =
         resolve_media_to_download(url, config)
@@ -179,6 +181,7 @@ pub fn process_url(url: &str, config: &mut DwdrConfig) {
     }
 }
 
+/// Interactive shell loop managing concurrent background downloads via the FIFO queue.
 pub fn start_repl(config: &mut DwdrConfig) {
     println!(
         "{}",

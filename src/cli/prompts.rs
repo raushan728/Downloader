@@ -14,6 +14,7 @@ use rfd::FileDialog;
 use crate::config::manager::{ConfigManager, DwdrConfig};
 use crate::engine::downloader::MediaFormat;
 
+/// Interactive raw-mode terminal selector with clamped index navigation.
 pub struct Select<T: Display> {
     message: String,
     options: Vec<T>,
@@ -32,6 +33,7 @@ impl<T: Display> Select<T> {
             return Err(());
         }
 
+        // Fall back to first option in non-interactive/piped environments where raw mode is unavailable.
         if !std::io::stdin().is_terminal() || !stdout().is_terminal() {
             return Ok(self.options.into_iter().next().unwrap());
         }
@@ -91,6 +93,7 @@ impl<T: Display> Select<T> {
                     if kind == KeyEventKind::Release {
                         continue;
                     }
+                    // Non-wrapping navigation bounds cursor to top/bottom to prevent accidental cycle-around selections.
                     match code {
                         KeyCode::Up | KeyCode::Char('k') => {
                             if selected > 0 {

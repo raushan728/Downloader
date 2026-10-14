@@ -132,6 +132,7 @@ pub fn map_height_to_resolution(height: u64) -> Option<&'static str> {
     }
 }
 
+/// Normalizes resolution labels across widescreen, ultrawide letterboxing, and vertical video formats.
 pub fn resolve_resolution(
     height: Option<u64>,
     width: Option<u64>,
@@ -160,6 +161,7 @@ pub fn resolve_resolution(
         }
     }
 
+    // For vertical videos (Shorts/Reels), width corresponds to the standard resolution tier.
     if let (Some(w), Some(h)) = (width, height)
         && h > w
         && let Some(res) = map_height_to_resolution(w)
@@ -179,6 +181,7 @@ pub fn resolve_resolution(
         return Some((res, rank));
     }
 
+    // Letterboxed widescreen streams (e.g. 1920x800) have reduced height, so check width first.
     if let Some(w) = width {
         if w >= 7680 {
             return Some(("8K", 4320));
@@ -486,6 +489,7 @@ pub fn render_progress_bar(
     render_progress_bar_with_width(percent, downloaded, total, speed, eta, get_terminal_width())
 }
 
+/// Purges incomplete download files (.part, .ytdl, unmerged chunks) while preserving completed .mp4 media.
 pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usize {
     let dir = Path::new(download_dir);
     if !dir.exists() || !dir.is_dir() {
@@ -554,6 +558,7 @@ pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usiz
     removed_count
 }
 
+// Tracks foreground download process metadata so signal handlers can perform targeted cleanup.
 struct DirectDownloadTracker {
     pid: Option<u32>,
     download_dir: String,
@@ -589,6 +594,7 @@ pub fn cancel_direct_download() {
     }
 }
 
+/// Downloads media in the foreground, streaming live progress and managing process lifecycle.
 pub fn download_media(
     url: &str,
     format_id: &str,
@@ -631,6 +637,7 @@ pub fn download_media(
     register_direct_download(pid, download_dir, "");
 
     let mut stderr_handle = child.stderr.take();
+    // Drain stderr asynchronously so unread process error buffers do not deadlock stdout pipe reading.
     let stderr_thread = thread::spawn(move || {
         let mut err_output = Vec::new();
         if let Some(err_pipe) = stderr_handle.as_mut() {
@@ -692,6 +699,7 @@ pub fn download_media(
     }
 }
 
+/// Downloads media asynchronously in worker threads, reporting progress and lifecycle via callbacks.
 pub fn download_media_background<F, G>(
     url: &str,
     format_id: &str,
@@ -739,6 +747,7 @@ where
     on_spawn(&mut child);
 
     let mut stderr_handle = child.stderr.take();
+    // Drain stderr asynchronously so unread process error buffers do not deadlock stdout pipe reading.
     let stderr_thread = thread::spawn(move || {
         let mut err_output = Vec::new();
         if let Some(err_pipe) = stderr_handle.as_mut() {

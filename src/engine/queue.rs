@@ -11,6 +11,7 @@ use crate::engine::downloader::{
     clean_partial_files, download_media_background, render_progress_bar,
 };
 
+/// Lifecycle states of a queued or active media download task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskStatus {
     Queued,
@@ -42,6 +43,7 @@ impl Default for TaskProgress {
     }
 }
 
+/// Download unit containing media metadata, destination, and live state.
 pub struct DownloadTask {
     pub id: usize,
     pub url: String,
@@ -67,6 +69,7 @@ pub enum EnqueueResult {
     },
 }
 
+/// FIFO worker pool bounding concurrent media downloads to `max_parallel`.
 pub struct QueueManager {
     pub max_parallel: usize,
     next_task_id: usize,
@@ -106,9 +109,11 @@ pub fn cancel_global_downloads() {
     }
 }
 
+/// Kills the entire process tree to prevent orphan child workers (e.g. ffmpeg) from surviving.
 pub fn kill_process_by_pid(pid: u32) {
     #[cfg(target_os = "windows")]
     {
+        // /T flag recurses through spawned child processes, /F forces immediate termination.
         let _ = Command::new("taskkill")
             .arg("/F")
             .arg("/T")
@@ -128,6 +133,7 @@ impl QueueManager {
         yt_dlp_path: PathBuf,
         ffmpeg_path: PathBuf,
     ) -> Arc<Mutex<Self>> {
+        // Prevent 0 concurrency causing tasks to queue indefinitely without processing.
         let max_parallel = if max_parallel == 0 { 1 } else { max_parallel };
         Arc::new(Mutex::new(Self {
             max_parallel,
@@ -302,6 +308,7 @@ impl QueueManager {
         });
     }
 
+    // Automatically promotes and spawns the next pending task in FIFO order.
     fn on_task_finished(manager_arc: &Arc<Mutex<Self>>) {
         let next_task = {
             let mut mgr = manager_arc.lock().unwrap();
@@ -345,6 +352,7 @@ impl QueueManager {
         }
     }
 
+    /// Cancels queued and active tasks, terminates child process trees, and purges partial files.
     pub fn cancel_all(&mut self) {
         self.cancelled.store(true, Ordering::SeqCst);
         self.queue.clear();

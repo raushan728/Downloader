@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use crate::cli::prompts::interactive_config;
 use crate::engine::queue::is_download_active;
 
+/// Global runtime configuration serialized in `~/.dwdr/config.toml`.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DwdrConfig {
     pub download_path: String,
@@ -41,6 +42,7 @@ impl Default for DwdrConfig {
     }
 }
 
+/// Thread-safe configuration manager enforcing filesystem isolation and recovery.
 pub struct ConfigManager;
 
 impl ConfigManager {
@@ -65,6 +67,7 @@ impl ConfigManager {
         Self::load_from_path(&path)
     }
 
+    /// Loads configuration from disk, self-healing with defaults if missing or corrupted.
     pub fn load_from_path(path: &std::path::Path) -> DwdrConfig {
         if path.exists()
             && let Ok(content) = fs::read_to_string(path)
