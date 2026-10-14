@@ -19,8 +19,11 @@ DWDR provides a total of **12 primary commands and subcommands** across three ex
 | `dwdr update` | Subcommand | None | Forces an immediate redownload and verification of internal `yt-dlp` and `ffmpeg` engine binaries. | `dwdr update` |
 | `dwdr self-update` | Subcommand | None | Downloads and atomically replaces the running DWDR CLI executable with the latest GitHub release. | `dwdr self-update` |
 | `config` / `settings` | Interactive Shell (REPL) | None | Opens the interactive configuration menu directly from within an active shell session. | `dwdr > settings` |
+| `queue` / `status` / `list` | Interactive Shell (REPL) | None | Displays real-time progress bars for active downloads and lists waiting tasks in the queue. | `dwdr > queue` |
+| `cancel` | Interactive Shell (REPL) | None | Cancels all currently running background downloads and flushes the waiting queue. | `dwdr > cancel` |
 | `cls` / `clear` | Interactive Shell (REPL) | None | Clears the terminal screen buffer within an active shell session. | `dwdr > clear` |
-| `exit` / `quit` | Interactive Shell (REPL) | None | Gracefully exits the interactive shell. | `dwdr > exit` |
+| `help` | Interactive Shell (REPL) | None | Displays interactive shell command summary and usage tips. | `dwdr > help` |
+| `exit` / `quit` | Interactive Shell (REPL) | None | Cancels active downloads and gracefully exits the interactive shell. | `dwdr > exit` |
 
 ---
 
@@ -32,12 +35,19 @@ DWDR provides a total of **12 primary commands and subcommands** across three ex
 - **Fallback Directory Prompt**: If `download_path` is not configured, triggers a native OS folder dialog (`rfd`) before writing files.
 
 ### 2. Interactive Terminal Shell (`dwdr`)
-- **Behavior**: Starts an persistent read-eval-print loop (`dwdr >`).
+- **Behavior**: Starts a persistent, non-blocking read-eval-print loop (`dwdr >`).
+- **Concurrent Task Queue**:
+  - Downloads run concurrently in the background up to `config.max_parallel_downloads` (default: `3`).
+  - Submitting more URLs automatically enqueues them into a FIFO queue.
+  - As soon as an active download finishes, the next queued download begins automatically.
+  - The shell prompt (`dwdr >`) returns immediately after submitting a URL so you can continue typing.
 - **Input Handling**:
-  - Entering a valid URL runs the extraction and download sequence.
+  - Entering a valid URL resolves formats and submits the download to the active worker pool.
+  - Typing `queue`, `status`, or `list` renders live progress bars and queued task positions.
+  - Typing `cancel` stops all running downloads and clears the queue immediately.
   - Typing `config` or `settings` opens the interactive settings menu.
   - Typing `cls` or `clear` clears the terminal screen buffer.
-  - Typing `exit`, `quit`, or pressing `Ctrl+C` terminates the shell.
+  - Typing `exit`, `quit`, or pressing `Ctrl+C` terminates active tasks and exits the shell.
 
 ### 3. Configuration Subcommands (`dwdr config`)
 - **Interactive Mode** (`dwdr config`):

@@ -53,10 +53,15 @@ INFO: Welcome to DWDR Interactive Shell. Type a URL to download, or 'exit' to qu
 dwdr >
 ```
 
-- Enter any supported media URL to inspect and download.
+- Enter any supported media URL to inspect, resolve format, and enqueue.
+- Downloads run concurrently in the background up to `max_parallel_downloads` without blocking the cursor.
+- Tasks exceeding the parallel limit wait in a FIFO queue and start automatically when slots free up.
+- Type `queue`, `status`, or `list` to inspect active download progress bars and queued items.
+- Type `cancel` to abort running downloads and flush the waiting queue.
 - Type `config` or `settings` to launch the interactive settings menu.
 - Type `cls` or `clear` to clear the terminal screen buffer.
-- Type `exit` or `quit` (or press `Ctrl+C`) to terminate the session.
+- Type `help` to display interactive shell command syntax.
+- Type `exit` or `quit` (or press `Ctrl+C`) to terminate active tasks and exit the session.
 
 ---
 

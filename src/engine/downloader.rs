@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write, stdout};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::thread;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -439,6 +439,105 @@ pub fn download_media(
         Ok(())
     } else {
         println!();
+        let trimmed_err = stderr_output.trim();
+        if !trimmed_err.is_empty() {
+            let error_line = trimmed_err
+                .lines()
+                .rev()
+                .find(|l| l.contains("ERROR:") || l.contains("error:"))
+                .unwrap_or_else(|| trimmed_err.lines().next_back().unwrap_or(trimmed_err));
+            Err(error_line.to_string())
+        } else {
+            Err("yt-dlp process exited with an error".to_string())
+        }
+    }
+}
+
+pub fn download_media_background<F, G>(
+    url: &str,
+    format_id: &str,
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    download_dir: &str,
+    on_spawn: F,
+    on_progress: G,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut Child),
+    G: Fn(f64, &str, &str, &str, &str, bool),
+{
+    let clean_dir = download_dir.trim_end_matches(['/', '\\']);
+    let output_template = format!("{}/%(title)s.%(ext)s", clean_dir);
+
+    let mut cmd = Command::new(yt_dlp_path);
+    cmd.arg("-f")
+        .arg(format!("{}+bestaudio/best", format_id))
+        .arg("-N")
+        .arg("8")
+        .arg("-o")
+        .arg(&output_template)
+        .arg("--merge-output-format")
+        .arg("mp4")
+        .arg("--newline")
+        .arg("--progress-template")
+        .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str,progress._total_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
+        .arg("--progress-template")
+        .arg("postprocess:POSTPROCESS|%(progress.status)s")
+        .arg("--no-warnings")
+        .arg("--no-playlist");
+
+    if ffmpeg_path.exists() {
+        cmd.arg("--ffmpeg-location").arg(ffmpeg_path);
+    }
+
+    cmd.arg(url);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
+
+    on_spawn(&mut child);
+
+    let mut stderr_handle = child.stderr.take();
+    let stderr_thread = thread::spawn(move || {
+        let mut err_output = Vec::new();
+        if let Some(err_pipe) = stderr_handle.as_mut() {
+            let _ = err_pipe.read_to_end(&mut err_output);
+        }
+        String::from_utf8_lossy(&err_output).to_string()
+    });
+
+    let mut postprocess_started = false;
+
+    if let Some(stdout_pipe) = child.stdout.take() {
+        let reader = BufReader::new(stdout_pipe);
+
+        for line in reader.lines().map_while(Result::ok) {
+            let line = line.trim();
+            if let Some((percent, downloaded, total, speed, eta)) = parse_progress_line(line) {
+                on_progress(percent, &downloaded, &total, &speed, &eta, false);
+            } else if (line.starts_with("POSTPROCESS|")
+                || line.starts_with("[Merger]")
+                || line.starts_with("[ExtractAudio]")
+                || line.contains("Merging formats"))
+                && !postprocess_started
+            {
+                postprocess_started = true;
+                on_progress(100.0, "", "", "", "", true);
+            }
+        }
+    }
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
+
+    let stderr_output = stderr_thread.join().unwrap_or_default();
+
+    if status.success() {
+        Ok(())
+    } else {
         let trimmed_err = stderr_output.trim();
         if !trimmed_err.is_empty() {
             let error_line = trimmed_err

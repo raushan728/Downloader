@@ -21,7 +21,7 @@ This is the main source code repository for [DWDR]. It contains the CLI engine, 
 
 - **Reliability:** Zero system pollution. Isolated engines ([yt-dlp], [FFmpeg]) reside exclusively in `~/.dwdr/deps/` without modifying system package managers. Single-video safeguards (`--no-playlist`) prevent accidental multi-track playlist dumps, and self-healing configuration handles corrupted settings automatically.
 
-- **Productivity:** Pure terminal ergonomics featuring an interactive REPL shell ([inquire]), clean non-looping format selection, native desktop folder selection dialogs ([rfd]), and smart quality fallback that directly grabs your preferred resolution without tedious menu navigation.
+- **Productivity:** Pure terminal ergonomics featuring an interactive non-blocking REPL shell ([inquire]), concurrent background download queue with parallel capacity controls (`max_parallel_downloads`), clean format selection, native desktop folder selection dialogs ([rfd]), and smart quality fallback.
 
 - **Portability:** Built on pure Rust TLS ([rustls]) via [reqwest], enabling zero-effort compilation across Linux, macOS, and Windows without OpenSSL dependencies.
 

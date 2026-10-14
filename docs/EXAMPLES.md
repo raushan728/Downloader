@@ -51,9 +51,20 @@ WARNING: Your selected default quality (720p) is not available in this video. Fa
    [VIDEO] | 480p   | mp4  | 18.5 MB
    [VIDEO] | 360p   | mp4  | 11.2 MB
    [AUDIO] | Audio  | m4a  | 3.4 MB
+SUCCESS: Selected Format ID: 137. Download sequence will start here.
+INFO: Download started for: "Rick Astley - Never Gonna Give You Up (Official Music Video)" [Active: 1/3, Queued: 0]
+
+dwdr > queue
+
+=== Active Downloads (1/3) ===
+  [#1] "Rick Astley - Never Gonna Give You Up (Official Music Video)"
+       [=============>           ]  52.1% [  21.93MiB /   42.10MiB] at    4.25MiB/s ETA 00:04
+
+=== Queued Downloads (0) ===
+  (None)
 ```
 
-Use the **Up/Down arrow keys** to navigate (the selection stops cleanly at top and bottom bounds) and press **Enter** to confirm your format selection.
+The prompt returns immediately after submitting a download. You can paste more URLs at any time; downloads exceeding your configured parallel capacity (e.g. `3`) automatically wait in the queue and start as slots free up.
 
 ---
 

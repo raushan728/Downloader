@@ -30,3 +30,10 @@ All download invocations execute with `-N 8`, splitting downloads into 8 concurr
 
 ### 5. Native OS File System Integration
 Configuration and folder selection workflows integrate with `rfd::FileDialog`, enabling desktop users to browse and select download directories visually while preserving a headless terminal fallback.
+
+### 6. Concurrent Worker Pool & FIFO Task Queue
+In interactive shell mode, DWDR orchestrates multi-media downloads via `QueueManager`:
+- **Worker Concurrency Limit**: Active downloads running simultaneously are bounded by `config.max_parallel_downloads`.
+- **FIFO Waiting Queue**: Tasks exceeding parallel capacity enter a waiting queue; as worker threads finish, queued tasks automatically transition to active downloading.
+- **Process Isolation & Clean Cancellation**: Worker threads track child process IDs (`u32`). On shell exit, `Ctrl+C`, or explicit `cancel`, DWDR purges the waiting queue and executes atomic process tree termination (`taskkill /F /T` on Windows, `kill -9` on Unix), eliminating zombie background processes.
+- **State Protection**: `is_download_active()` queries the global queue to prevent destructive settings edits while downloads are in flight unless overridden by `--force`.
