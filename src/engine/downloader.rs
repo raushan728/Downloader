@@ -263,20 +263,20 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
     let title = raw["title"].as_str().unwrap_or("Unknown Title").to_string();
     let duration = raw["duration"].as_f64();
 
-    let raw_formats = raw["formats"]
-        .as_array()
-        .ok_or("No formats found in JSON")?;
+    let empty_formats = Vec::new();
+    let raw_formats = raw["formats"].as_array().unwrap_or(&empty_formats);
 
     let mut video_candidates = Vec::new();
     let mut audio_candidates = Vec::new();
 
     for f in raw_formats {
-        let vcodec = f["vcodec"].as_str().unwrap_or("none");
-        let acodec = f["acodec"].as_str().unwrap_or("none");
+        let vcodec_opt = f["vcodec"].as_str();
+        let acodec_opt = f["acodec"].as_str();
 
-        if vcodec == "none" && acodec == "none" {
-            continue;
-        }
+        let is_vcodec_none = vcodec_opt == Some("none");
+        let is_acodec_none = acodec_opt == Some("none");
+        let has_vcodec = vcodec_opt.is_some_and(|c| c != "none");
+        let has_acodec = acodec_opt.is_some_and(|c| c != "none");
 
         let ext = f["ext"].as_str().unwrap_or("unknown");
         if ext == "mhtml" || ext == "weba" {
@@ -292,20 +292,40 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
             continue;
         }
 
+        let height = f["height"].as_u64();
+        let width = f["width"].as_u64();
+
+        // Categorize into video vs audio:
+        // 1. Explicit video codec -> Video
+        // 2. Unprobed codec (not explicitly 'none'), with video dimensions or container -> Video
+        // 3. Explicit audio codec with vcodec == 'none' -> Audio
+        // 4. Not video and audio indicator present -> Audio
+        let is_video = has_vcodec
+            || (!is_vcodec_none
+                && (height.is_some()
+                    || width.is_some()
+                    || matches!(ext, "mp4" | "webm" | "mkv" | "avi" | "flv" | "mov" | "3gp")));
+        let is_audio = (is_vcodec_none && has_acodec)
+            || (!is_video
+                && !is_acodec_none
+                && (has_acodec || matches!(ext, "mp3" | "m4a" | "aac" | "wav" | "ogg" | "opus")));
+
+        if !is_video && !is_audio {
+            continue;
+        }
+
         let format_id = f["format_id"].as_str().unwrap_or("unknown").to_string();
         let exact = f["filesize"].as_f64();
         let approx = f["filesize_approx"].as_f64();
         let tbr = f["tbr"].as_f64();
         let vbr = f["vbr"].as_f64();
         let abr = f["abr"].as_f64();
-        let height = f["height"].as_u64();
-        let width = f["width"].as_u64();
         let note = f["format_note"].as_str();
         let protocol = f["protocol"].as_str().unwrap_or("https");
         let is_direct = !protocol.contains("m3u8");
         let is_exact = exact.is_some();
 
-        if vcodec != "none" {
+        if is_video {
             if let (Some(w), Some(h)) = (width, height)
                 && w == h
                 && w > 0
@@ -314,8 +334,16 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
             }
 
             let (resolution, rank) = match resolve_resolution(height, width, note) {
-                Some(r) => r,
-                None => continue,
+                Some(r) => (r.0.to_string(), r.1),
+                None => {
+                    // Fall back to note, height label, or "Default" if resolution cannot be mapped to standard dimensions.
+                    let label = match note {
+                        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+                        _ if height.is_some() => format!("{}p", height.unwrap()),
+                        _ => "Default".to_string(),
+                    };
+                    (label, height.unwrap_or(500))
+                }
             };
 
             let total_bitrate = tbr.or_else(|| {
@@ -327,6 +355,19 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
                 calculate_media_filesize(exact, approx, total_bitrate, duration, height, true);
             let size_ranking = filesize.unwrap_or(0.0);
 
+            let vcodec_str = if has_vcodec {
+                vcodec_opt.unwrap().to_string()
+            } else {
+                "unknown".to_string()
+            };
+            let acodec_str = if has_acodec {
+                acodec_opt.unwrap().to_string()
+            } else if is_acodec_none {
+                "none".to_string()
+            } else {
+                "unknown".to_string()
+            };
+
             video_candidates.push((
                 rank,
                 is_direct,
@@ -335,19 +376,25 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
                 MediaFormat {
                     format_id,
                     ext: ext.to_string(),
-                    resolution: resolution.to_string(),
+                    resolution,
                     filesize,
                     is_estimated,
-                    vcodec: vcodec.to_string(),
-                    acodec: acodec.to_string(),
+                    vcodec: vcodec_str,
+                    acodec: acodec_str,
                     height: height.map(|h| h as u32),
                 },
             ));
-        } else if acodec != "none" {
+        } else if is_audio {
             let total_bitrate = abr.or(tbr);
             let (filesize, is_estimated) =
                 calculate_media_filesize(exact, approx, total_bitrate, duration, height, false);
             let size_ranking = filesize.unwrap_or(0.0);
+
+            let acodec_str = if has_acodec {
+                acodec_opt.unwrap().to_string()
+            } else {
+                "unknown".to_string()
+            };
 
             audio_candidates.push((
                 is_direct,
@@ -360,7 +407,7 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
                     filesize,
                     is_estimated,
                     vcodec: "none".to_string(),
-                    acodec: acodec.to_string(),
+                    acodec: acodec_str,
                     height: None,
                 },
             ));
@@ -391,6 +438,30 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
 
     if let Some((_, _, _, best_audio)) = audio_candidates.into_iter().next() {
         formats.push(best_audio);
+    }
+
+    // Synthesize fallback format when platforms return direct unpartitioned media without format tiers.
+    if formats.is_empty() {
+        let fallback_ext = raw["ext"].as_str().unwrap_or("mp4").to_string();
+        let fallback_id = raw["format_id"].as_str().unwrap_or("best").to_string();
+        let (filesize, is_estimated) = calculate_media_filesize(
+            raw["filesize"].as_f64(),
+            raw["filesize_approx"].as_f64(),
+            raw["tbr"].as_f64(),
+            duration,
+            raw["height"].as_u64(),
+            true,
+        );
+        formats.push(MediaFormat {
+            format_id: fallback_id,
+            ext: fallback_ext,
+            resolution: "Default".to_string(),
+            filesize,
+            is_estimated,
+            vcodec: raw["vcodec"].as_str().unwrap_or("unknown").to_string(),
+            acodec: raw["acodec"].as_str().unwrap_or("unknown").to_string(),
+            height: raw["height"].as_u64().map(|h| h as u32),
+        });
     }
 
     Ok(VideoInfo {
@@ -628,8 +699,13 @@ pub fn build_ytdlp_download_cmd(
     let mut cmd = Command::new(yt_dlp_path);
     // yt-dlp requires separate -P directory and -o template; combined -o paths cause mixed slashes and [Errno 22] on Windows.
     // --windows-filenames and --trim-filenames sanitize special unicode (e.g. accents) and keep filenames within Windows MAX_PATH.
+    let format_arg = if format_id == "best" {
+        "bestvideo+bestaudio/best".to_string()
+    } else {
+        format!("{}+bestaudio/best", format_id)
+    };
     cmd.arg("-f")
-        .arg(format!("{}+bestaudio/best", format_id))
+        .arg(format_arg)
         .arg("-P")
         .arg(clean_dir)
         .arg("-o")
@@ -1315,6 +1391,15 @@ mod tests {
         assert!(args.contains(&"--no-warnings".to_string()));
         assert!(args.contains(&"--merge-output-format".to_string()));
         assert!(args.contains(&"mp4".to_string()));
+        assert!(args.contains(&"302+bestaudio/best".to_string()));
+
+        let cmd_best =
+            build_ytdlp_download_cmd(yt, ff, "https://youtu.be/123", "best", "/downloads/path");
+        let args_best: Vec<String> = cmd_best
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args_best.contains(&"bestvideo+bestaudio/best".to_string()));
     }
 
     #[test]
@@ -1324,10 +1409,77 @@ mod tests {
         assert!(invalid.is_err());
         assert!(invalid.unwrap_err().contains("Failed to parse JSON"));
 
-        // Missing formats
-        let missing_formats = parse_video_info_json(r#"{"title": "Test Video"}"#);
-        assert!(missing_formats.is_err());
-        assert_eq!(missing_formats.unwrap_err(), "No formats found in JSON");
+        // Missing formats array synthesizes fallback format
+        let fallback = parse_video_info_json(r#"{"title": "Test Video"}"#).unwrap();
+        assert_eq!(fallback.title, "Test Video");
+        assert_eq!(fallback.formats.len(), 1);
+        assert_eq!(fallback.formats[0].format_id, "best");
+        assert_eq!(fallback.formats[0].resolution, "Default");
+
+        // Formats with unprobed codecs (vcodec/acodec null) detected via extension/dimensions
+        let unprobed_json = r#"{
+            "title": "Unprobed Video",
+            "formats": [
+                {
+                    "format_id": "http-720p",
+                    "ext": "mp4",
+                    "width": 1280,
+                    "height": 720
+                }
+            ]
+        }"#;
+        let unprobed = parse_video_info_json(unprobed_json).unwrap();
+        assert_eq!(unprobed.formats.len(), 1);
+        assert_eq!(unprobed.formats[0].format_id, "http-720p");
+        assert_eq!(unprobed.formats[0].resolution, "720p");
+        assert_eq!(unprobed.formats[0].vcodec, "unknown");
+
+        // Formats with non-standard format_note fallback
+        let non_standard_json = r#"{
+            "title": "Custom Note Video",
+            "formats": [
+                {
+                    "format_id": "src",
+                    "ext": "mp4",
+                    "format_note": "Source"
+                }
+            ]
+        }"#;
+        let non_standard = parse_video_info_json(non_standard_json).unwrap();
+        assert_eq!(non_standard.formats.len(), 1);
+        assert_eq!(non_standard.formats[0].format_id, "src");
+        assert_eq!(non_standard.formats[0].resolution, "Source");
+
+        // WebM audio streams (e.g. YouTube format 251: vcodec "none", acodec "opus") must be classified as Audio
+        let webm_audio_json = r#"{
+            "title": "WebM Audio Video",
+            "formats": [
+                {
+                    "format_id": "251",
+                    "ext": "webm",
+                    "vcodec": "none",
+                    "acodec": "opus",
+                    "abr": 160.0,
+                    "filesize": 3500000.0
+                }
+            ]
+        }"#;
+        let webm_audio = parse_video_info_json(webm_audio_json).unwrap();
+        assert_eq!(webm_audio.formats.len(), 1);
+        assert_eq!(webm_audio.formats[0].format_id, "251");
+        assert_eq!(webm_audio.formats[0].resolution, "Audio");
+        assert_eq!(webm_audio.formats[0].vcodec, "none");
+
+        // Fallback format calculation computes estimated filesize from approximate size and bitrate
+        let fallback_with_size_json = r#"{
+            "title": "Fallback Size Video",
+            "duration": 60.0,
+            "filesize_approx": 12000000.0
+        }"#;
+        let fallback_with_size = parse_video_info_json(fallback_with_size_json).unwrap();
+        assert_eq!(fallback_with_size.formats.len(), 1);
+        assert_eq!(fallback_with_size.formats[0].filesize, Some(12000000.0));
+        assert!(fallback_with_size.formats[0].is_estimated);
 
         // Valid minimal payload
         let valid_json = r#"{

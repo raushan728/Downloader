@@ -158,7 +158,7 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
     let mut options = Vec::new();
 
     for format in formats {
-        let tag = if format.vcodec == "none" {
+        let tag = if format.resolution == "Audio" {
             "[AUDIO]"
         } else {
             "[VIDEO]"

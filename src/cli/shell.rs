@@ -70,7 +70,26 @@ pub fn resolve_media_to_download(
         }
     };
 
-    let chosen_format = if config.default_quality == "always ask" {
+    let chosen_format = if info.formats.is_empty() {
+        // Fall back directly to the best available stream when platforms provide unpartitioned media.
+        println!(
+            "{}",
+            "INFO: No stream formats enumerated. Auto-selecting default stream...".cyan()
+        );
+        Some("best".to_string())
+    } else if info.formats.len() == 1 {
+        // Skip manual prompts when only a single format exists to avoid unnecessary confirmation.
+        let single_fmt = &info.formats[0];
+        println!(
+            "{}",
+            format!(
+                "INFO: Single available format ({}) detected. Auto-starting download...",
+                single_fmt.resolution
+            )
+            .green()
+        );
+        Some(single_fmt.format_id.clone())
+    } else if config.default_quality == "always ask" {
         println!("{}", "INFO: Manual selection requested...".cyan());
         if let Some(format_id) = select_format(&info.formats) {
             println!(
@@ -83,7 +102,7 @@ pub fn resolve_media_to_download(
             );
             Some(format_id)
         } else {
-            println!("{}", "WARNING: Download cancelled by user.".red());
+            println!("{}", "WARNING: Download cancelled by user.".yellow());
             None
         }
     } else if let Some(format_id) = find_format_by_quality(&info.formats, &config.default_quality) {
@@ -116,7 +135,7 @@ pub fn resolve_media_to_download(
             );
             Some(format_id)
         } else {
-            println!("{}", "WARNING: Download cancelled by user.".red());
+            println!("{}", "WARNING: Download cancelled by user.".yellow());
             None
         }
     };

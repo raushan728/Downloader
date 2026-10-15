@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comprehensive Test Suite**: Expanded test coverage to 47 automated tests (34 unit tests and 13 integration tests) covering vertical video aspect ratios, queue cancellation, CLI subcommands, progress parsing, and simulated engine mock errors.
 
 ### Fixed
+- **Unprobed Media Codec Support & Generic Fallback**: Fixed format extraction failures on non-YouTube platforms where `vcodec` and `acodec` are returned as `null` or `none`. Media candidates are now recognized via file extension and spatial dimensions, with fallback to format notes or `"Default"` synthesis.
+- **Single-Stream Auto-Selection & False Cancellation Fix**: Resolved false `WARNING: Download cancelled by user.` messages when downloading videos with 0 or 1 format available. Single streams now download immediately without redundant interactive prompts.
 - **Windows Filesystem Path & Filename Sanitization**: Fixed `[Errno 22] Invalid argument` crashes on Windows by separating output directory (`-P`) from filename template (`-o`), enforcing `--windows-filenames` character sanitization, and clamping filename lengths via `--trim-filenames 160`.
 - **Nested Error Formatting**: Stripped duplicate `ERROR:` tags in `extract_engine_error` to ensure clean error messages across CLI and queue workers.
 - **Unrecognized Shell Command Handling**: Replaced misleading `Invalid URL provided` errors with guidance to type `help` when unknown commands are entered into the interactive shell.
