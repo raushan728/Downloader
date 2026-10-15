@@ -291,6 +291,9 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
         let height = f["height"].as_u64();
         let width = f["width"].as_u64();
         let note = f["format_note"].as_str();
+        let protocol = f["protocol"].as_str().unwrap_or("https");
+        let is_direct = !protocol.contains("m3u8");
+        let is_exact = exact.is_some();
 
         if vcodec != "none" {
             if let (Some(w), Some(h)) = (width, height)
@@ -316,6 +319,8 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
 
             video_candidates.push((
                 rank,
+                is_direct,
+                is_exact,
                 size_ranking,
                 MediaFormat {
                     format_id,
@@ -335,6 +340,8 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
             let size_ranking = filesize.unwrap_or(0.0);
 
             audio_candidates.push((
+                is_direct,
+                is_exact,
                 size_ranking,
                 MediaFormat {
                     format_id,
@@ -352,21 +359,27 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
 
     video_candidates.sort_by(|a, b| {
         b.0.cmp(&a.0)
-            .then_with(|| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
     });
 
     let mut formats = Vec::new();
     let mut seen_resolutions = HashSet::new();
 
-    for (_, _, format) in video_candidates {
+    for (_, _, _, _, format) in video_candidates {
         if seen_resolutions.insert(format.resolution.clone()) {
             formats.push(format);
         }
     }
 
-    audio_candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    audio_candidates.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+    });
 
-    if let Some((_, best_audio)) = audio_candidates.into_iter().next() {
+    if let Some((_, _, _, best_audio)) = audio_candidates.into_iter().next() {
         formats.push(best_audio);
     }
 
@@ -608,8 +621,6 @@ pub fn download_media(
     let mut cmd = Command::new(yt_dlp_path);
     cmd.arg("-f")
         .arg(format!("{}+bestaudio/best", format_id))
-        .arg("-N")
-        .arg("8")
         .arg("-o")
         .arg(&output_template)
         .arg("--merge-output-format")
@@ -719,8 +730,6 @@ where
     let mut cmd = Command::new(yt_dlp_path);
     cmd.arg("-f")
         .arg(format!("{}+bestaudio/best", format_id))
-        .arg("-N")
-        .arg("8")
         .arg("-o")
         .arg(&output_template)
         .arg("--merge-output-format")
@@ -1379,5 +1388,93 @@ mod tests {
         assert!(!ytdl_file.exists());
         assert!(completed_file.exists());
         assert!(unrelated_file.exists());
+    }
+
+    #[test]
+    fn test_parse_video_info_prefers_exact_progressive_over_hls_estimate() {
+        let json_payload = r#"{
+            "title": "Exact vs Estimate Test",
+            "duration": 100.0,
+            "formats": [
+                {
+                    "format_id": "312",
+                    "ext": "mp4",
+                    "width": 1920,
+                    "height": 1080,
+                    "vcodec": "avc1.64002",
+                    "acodec": "none",
+                    "tbr": 6000.0,
+                    "protocol": "m3u8_native"
+                },
+                {
+                    "format_id": "299",
+                    "ext": "mp4",
+                    "width": 1920,
+                    "height": 1080,
+                    "vcodec": "avc1.64002",
+                    "acodec": "none",
+                    "filesize": 75000000.0,
+                    "protocol": "https"
+                },
+                {
+                    "format_id": "999",
+                    "ext": "m4a",
+                    "vcodec": "none",
+                    "acodec": "mp4a",
+                    "tbr": 320.0,
+                    "protocol": "m3u8_native"
+                },
+                {
+                    "format_id": "140",
+                    "ext": "m4a",
+                    "vcodec": "none",
+                    "acodec": "mp4a",
+                    "filesize": 4000000.0,
+                    "protocol": "https"
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.formats.len(), 2);
+
+        // 1080p must select format 299 with exact filesize and is_estimated: false
+        assert_eq!(parsed.formats[0].format_id, "299");
+        assert_eq!(parsed.formats[0].resolution, "1080p");
+        assert_eq!(parsed.formats[0].filesize, Some(75000000.0));
+        assert!(!parsed.formats[0].is_estimated);
+
+        // Audio must select format 140 with exact filesize and is_estimated: false
+        assert_eq!(parsed.formats[1].format_id, "140");
+        assert_eq!(parsed.formats[1].resolution, "Audio");
+        assert_eq!(parsed.formats[1].filesize, Some(4000000.0));
+        assert!(!parsed.formats[1].is_estimated);
+    }
+
+    #[test]
+    fn test_parse_video_info_falls_back_to_estimate_when_no_exact_size() {
+        let json_payload = r#"{
+            "title": "Fallback Estimate Test",
+            "duration": 60.0,
+            "formats": [
+                {
+                    "format_id": "hls_720",
+                    "ext": "mp4",
+                    "width": 1280,
+                    "height": 720,
+                    "vcodec": "avc1",
+                    "acodec": "none",
+                    "tbr": 2500.0,
+                    "protocol": "m3u8_native"
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.formats.len(), 1);
+        assert_eq!(parsed.formats[0].format_id, "hls_720");
+        assert_eq!(parsed.formats[0].resolution, "720p");
+        assert!(parsed.formats[0].is_estimated);
+        assert!(parsed.formats[0].filesize.is_some());
     }
 }
