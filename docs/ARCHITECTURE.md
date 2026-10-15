@@ -43,3 +43,15 @@ DWDR registers cross-platform interrupt signal handlers (`ctrlc`) across both di
 - **Interruption Trapping**: Traps `SIGINT` (Unix) and `CTRL_C_EVENT` (Windows) during active downloads.
 - **Process Tree Killing**: Child processes (`yt-dlp` and `ffmpeg`) are forcefully terminated immediately.
 - **Partial File Deletion**: Scans the target download directory to purge all `.part`, `.ytdl`, `.temp`, and unmerged intermediate stream chunks (`.f<id>.*`), preventing broken or orphaned partial files from lingering on user storage.
+
+### 8. Windows Path Separation & Filename Sanitization
+To prevent filesystem failures and `[Errno 22] Invalid argument` errors on Windows:
+- **Separated Path and Output Template**: `yt-dlp` commands pass the download folder explicitly via `-P <download_dir>` and the filename template via `-o "%(title)s.%(ext)s"`. This avoids mixing Windows backslashes with forward slashes inside a single `-o` string.
+- **Windows-Compatible Character Sanitization**: `--windows-filenames` forces sanitization of forbidden NTFS characters, reserved names (`CON`, `PRN`, `AUX`), and accented unicode characters across all environments.
+- **Path Length Clamping**: `--trim-filenames 160` restricts generated filename lengths to prevent exceeding the standard 260-character Windows `MAX_PATH` limit.
+
+### 9. Real-Time In-Place Shell Monitoring & Automation Fallback
+Interactive shell commands provide differentiated observability into background downloads:
+- **`status` Live View**: Dynamically refreshes in-place using ANSI cursor controls (`MoveUp` and `Clear`) at 200ms intervals, giving real-time feedback without terminal flicker, returning cleanly to the REPL upon pressing Enter or task completion.
+- **Non-TTY Automation Fallback**: Both the interactive prompt (`read_shell_input`) and the status monitor detect terminal capabilities via `is_terminal()`. In automated pipelines, tests, or piped stdin scripts, the shell falls back to buffered line reading and static snapshot outputs without blocking or hanging.
+- **Session Reporting (`list`) & Queue Inspection (`queue`)**: `list` summarizes full task lifecycles (active progress, completed file locations, failed error details) while `queue` exposes waiting positions and worker slots.

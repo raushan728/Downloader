@@ -3,11 +3,13 @@ use std::fs;
 use std::io::Seek;
 use std::io::Write;
 
+use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
+
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 pub fn ensure_dependencies() -> Result<(), String> {
-    let yt_dlp_path = crate::engine::paths::get_ytdlp_path();
+    let yt_dlp_path = get_ytdlp_path();
 
     if !yt_dlp_path.exists() {
         println!(
@@ -78,7 +80,7 @@ fn get_ffmpeg_download_url() -> &'static str {
 }
 
 pub fn ensure_ffmpeg() -> Result<(), String> {
-    let ffmpeg_path = crate::engine::paths::get_ffmpeg_path();
+    let ffmpeg_path = get_ffmpeg_path();
     if ffmpeg_path.exists() {
         return Ok(());
     }

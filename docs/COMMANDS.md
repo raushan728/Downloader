@@ -1,6 +1,6 @@
 # Command Reference Catalog
 
-DWDR provides a total of **16 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
+DWDR provides a total of **19 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
 
 ---
 
@@ -10,7 +10,7 @@ DWDR provides a total of **16 primary commands and subcommands** across three ex
 | :--- | :--- | :--- | :--- | :--- |
 | `dwdr <URL>` | Direct CLI | `<URL>` (string) | Downloads media immediately using Smart Quality Fallback without opening interactive prompts. | `dwdr "https://youtu.be/VIDEO_ID"` |
 | `dwdr` | Direct CLI | None | Launches the interactive terminal REPL shell for continuous URL inspection and downloading. | `dwdr` |
-| `dwdr -h`, `--help` | Direct CLI | None | Prints command syntax, global flags, and usage examples. | `dwdr --help` |
+| `dwdr -h`, `--help` | Direct CLI | None | Prints command syntax, global flags, usage examples, and interactive shell commands. | `dwdr --help` |
 | `dwdr -V`, `--version` | Direct CLI | None | Prints the compiled DWDR binary version string. | `dwdr --version` |
 | `dwdr config` | Subcommand | None | Launches the guided terminal menu to configure download folders, resolutions, and parallel limits. | `dwdr config` |
 | `dwdr config show` | Subcommand | None | Displays current persistent configuration values from `~/.dwdr/config.toml`. | `dwdr config show` |
@@ -19,7 +19,10 @@ DWDR provides a total of **16 primary commands and subcommands** across three ex
 | `dwdr update` | Subcommand | None | Forces an immediate redownload and verification of internal `yt-dlp` and `ffmpeg` engine binaries. | `dwdr update` |
 | `dwdr self-update` | Subcommand | None | Downloads and atomically replaces the running DWDR CLI executable with the latest GitHub release. | `dwdr self-update` |
 | `config` / `settings` | Interactive Shell (REPL) | None | Opens the interactive configuration menu directly from within an active shell session. | `dwdr > settings` |
-| `queue` / `status` / `list` | Interactive Shell (REPL) | None | Displays real-time progress bars for active downloads and lists waiting tasks in the queue. | `dwdr > queue` |
+| `status` | Interactive Shell (REPL) | None | Launches an in-place real-time visual progress monitor of active downloads and queued items. | `dwdr > status` |
+| `list` | Interactive Shell (REPL) | None | Displays a clean session report of all downloads (active, completed, queued, and failed). | `dwdr > list` |
+| `queue` | Interactive Shell (REPL) | None | Inspects queued waiting tasks, ordered queue positions, and parallel concurrency limits. | `dwdr > queue` |
+| `active` | Interactive Shell (REPL) | None | Displays an instantaneous snapshot of currently downloading tasks without entering live view. | `dwdr > active` |
 | `cancel` | Interactive Shell (REPL) | None | Cancels all currently running background downloads and flushes the waiting queue. | `dwdr > cancel` |
 | `cls` / `clear` | Interactive Shell (REPL) | None | Clears the terminal screen buffer within an active shell session. | `dwdr > clear` |
 | `help` | Interactive Shell (REPL) | None | Displays interactive shell command summary and usage tips. | `dwdr > help` |
@@ -41,13 +44,18 @@ DWDR provides a total of **16 primary commands and subcommands** across three ex
   - Submitting more URLs automatically enqueues them into a FIFO queue.
   - As soon as an active download finishes, the next queued download begins automatically.
   - The shell prompt (`dwdr >`) returns immediately after submitting a URL so you can continue typing.
-- **Input Handling**:
-  - Entering a valid URL resolves formats and submits the download to the active worker pool.
-  - Typing `queue`, `status`, or `list` renders live progress bars and queued task positions.
+- **Input Handling & Commands**:
+  - Entering a valid media URL (`http://` or `https://`) resolves formats and submits the task to the queue worker pool.
+  - Typing `status` launches an in-place live progress monitor that refreshes every 200ms until Enter or `q` is pressed (or all tasks complete).
+  - Typing `list` outputs a session history report detailing active progress, completed destinations, queued items, and failure reasons.
+  - Typing `queue` displays queue slot capacity (`Active Slots: X/Y`) and ordered waiting positions.
+  - Typing `active` prints a fast static progress snapshot of currently downloading tasks.
+  - Typing unrecognized commands produces helpful guidance to type `help` rather than treating input as an invalid URL.
   - Typing `cancel` stops all running downloads and clears the queue immediately.
   - Typing `config` or `settings` opens the interactive settings menu.
   - Typing `cls` or `clear` clears the terminal screen buffer.
   - Typing `exit`, `quit`, or pressing `Ctrl+C` terminates active tasks and exits the shell.
+  - Automated/piped input gracefully falls back from TTY raw-mode to standard line buffered reading.
 
 ### 3. Configuration Subcommands (`dwdr config`)
 - **Interactive Mode** (`dwdr config`):

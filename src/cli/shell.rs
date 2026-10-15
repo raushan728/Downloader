@@ -1,4 +1,4 @@
-use std::io::{self, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -181,11 +181,29 @@ pub fn process_url(url: &str, config: &mut DwdrConfig) {
     }
 }
 
+fn read_shell_input(prompt: &str) -> Option<String> {
+    // Fall back to line-based reading when non-interactive to prevent inquire hanging in piped/automated environments.
+    if io::stdin().is_terminal() {
+        Text::new(prompt).prompt().ok()
+    } else {
+        print!("{} ", prompt);
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        let stdin = io::stdin();
+        let mut handle = stdin.lock();
+        if handle.read_line(&mut line).unwrap_or(0) == 0 {
+            None
+        } else {
+            Some(line.trim_end_matches(['\r', '\n']).to_string())
+        }
+    }
+}
+
 /// Interactive shell loop managing concurrent background downloads via the FIFO queue.
 pub fn start_repl(config: &mut DwdrConfig) {
     println!(
         "{}",
-        "INFO: Welcome to DWDR Interactive Shell. Type a URL to download, or 'exit' to quit."
+        "INFO: Welcome to DWDR Interactive Shell. Type a URL to download, 'status' for live progress, 'help' for commands, or 'exit' to quit."
             .cyan()
     );
 
@@ -199,8 +217,8 @@ pub fn start_repl(config: &mut DwdrConfig) {
     set_global_queue(Arc::clone(&queue_manager));
 
     loop {
-        match Text::new("dwdr >").prompt() {
-            Ok(input) => {
+        match read_shell_input("dwdr >") {
+            Some(input) => {
                 let input = input.trim();
                 if input.is_empty() {
                     continue;
@@ -209,8 +227,13 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     println!("\n{}", "Available Commands:".bold());
                     println!("  <URL>             - Download media stream (managed via queue)");
                     println!(
-                        "  queue / status    - View live progress of active and queued downloads"
+                        "  status            - Live real-time progress monitor of active downloads"
                     );
+                    println!(
+                        "  list              - Session report of all downloads (active, completed, queued)"
+                    );
+                    println!("  queue             - Inspect pending queue and download limits");
+                    println!("  active            - View currently active downloads snapshot");
                     println!("  cancel            - Cancel all active downloads and clear queue");
                     println!(
                         "  config / settings - Configure download path, quality, and parallel limits"
@@ -219,10 +242,19 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     println!("  exit / quit       - Cancel tasks and exit shell\n");
                     continue;
                 }
-                if input.eq_ignore_ascii_case("queue")
-                    || input.eq_ignore_ascii_case("status")
-                    || input.eq_ignore_ascii_case("list")
-                {
+                if input.eq_ignore_ascii_case("status") {
+                    queue_manager.lock().unwrap().print_status_live();
+                    continue;
+                }
+                if input.eq_ignore_ascii_case("list") {
+                    queue_manager.lock().unwrap().print_list();
+                    continue;
+                }
+                if input.eq_ignore_ascii_case("queue") {
+                    queue_manager.lock().unwrap().print_queue();
+                    continue;
+                }
+                if input.eq_ignore_ascii_case("active") {
                     queue_manager.lock().unwrap().print_status();
                     continue;
                 }
@@ -251,6 +283,20 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     break;
                 }
 
+                // Distinguish unknown shell commands from media URLs to guide users to 'help' rather than reporting "Invalid URL".
+                if !input.starts_with("http://") && !input.starts_with("https://") {
+                    println!(
+                        "{}",
+                        format!(
+                            "\nERROR: Unrecognized command: \"{}\". Type a valid media URL, or 'help' for available commands.\n",
+                            input
+                        )
+                        .red()
+                        .bold()
+                    );
+                    continue;
+                }
+
                 if let Some((title, format_id, _, _)) = resolve_media_to_download(input, config) {
                     let result = QueueManager::enqueue(
                         &queue_manager,
@@ -269,7 +315,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                             println!(
                                 "{}",
                                 format!(
-                                    "INFO: Download started for: \"{}\" [Active: {}/{}, Queued: {}]",
+                                    "INFO: Download started for: \"{}\" [Active: {}/{}, Queued: {}] (Type 'status' for real-time progress)",
                                     title, active_count, max_p, queued_count
                                 )
                                 .green()
@@ -293,7 +339,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     }
                 }
             }
-            Err(_) => {
+            None => {
                 queue_manager.lock().unwrap().cancel_all();
                 println!("{}", "INFO: Thanks for using DWDR!".green());
                 break;

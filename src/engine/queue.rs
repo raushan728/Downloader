@@ -1,9 +1,13 @@
 use std::collections::VecDeque;
+#[cfg(not(test))]
+use std::io::{self, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+#[cfg(not(test))]
+use std::time::Duration;
 
 use colored::Colorize;
 
@@ -450,6 +454,231 @@ impl QueueManager {
         }
         println!();
     }
+
+    pub fn print_status_live(&self) {
+        #[cfg(test)]
+        {
+            self.print_status();
+        }
+        #[cfg(not(test))]
+        {
+            if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
+                self.print_status();
+                return;
+            }
+
+            if !self.is_active() {
+                println!("\n{}", "INFO: No active downloads in progress.".cyan());
+                self.print_status();
+                return;
+            }
+
+            println!(
+                "\n{}",
+                "=== Real-Time Download Status (Press Enter to exit live view) ===".bold()
+            );
+
+            let mut lines_printed: u16 = 0;
+
+            loop {
+                if let Ok(true) = crossterm::event::poll(Duration::from_millis(200))
+                    && let Ok(crossterm::event::Event::Key(_)) = crossterm::event::read()
+                {
+                    break;
+                }
+
+                let tasks_snapshot: Vec<(usize, String, TaskStatus, TaskProgress)> = self
+                    .tasks
+                    .iter()
+                    .map(|t| {
+                        let guard = t.lock().unwrap();
+                        (
+                            guard.id,
+                            guard.title.clone(),
+                            guard.status.clone(),
+                            guard.progress.clone(),
+                        )
+                    })
+                    .collect();
+
+                let active_tasks: Vec<_> = tasks_snapshot
+                    .iter()
+                    .filter(|(_, _, s, _)| {
+                        matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
+                    })
+                    .collect();
+
+                let queued_count = tasks_snapshot
+                    .iter()
+                    .filter(|(_, _, s, _)| matches!(s, TaskStatus::Queued))
+                    .count();
+
+                if lines_printed > 0 {
+                    let _ = crossterm::execute!(
+                        io::stdout(),
+                        crossterm::cursor::MoveUp(lines_printed),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+                    );
+                }
+
+                if active_tasks.is_empty() && queued_count == 0 {
+                    println!("{}", "SUCCESS: All active tasks completed!".green());
+                    break;
+                }
+
+                let mut count = 0;
+                println!(
+                    "Active Downloads: {}/{} | Queued in line: {}",
+                    active_tasks.len(),
+                    self.max_parallel,
+                    queued_count
+                );
+                count += 1;
+
+                for (id, title, status, prog) in &active_tasks {
+                    let bar = render_progress_bar(
+                        prog.percent,
+                        &prog.downloaded_str,
+                        &prog.total_str,
+                        &prog.speed_str,
+                        &prog.eta_str,
+                    );
+                    let bar_clean = bar.trim_start_matches('\r').trim_end();
+                    let status_str = if *status == TaskStatus::Finalizing {
+                        " [Finalizing media...]".yellow()
+                    } else {
+                        "".normal()
+                    };
+                    println!("  [#{}] \"{}\"{}", id, title, status_str);
+                    println!("       {}", bar_clean);
+                    count += 2;
+                }
+
+                let _ = io::stdout().flush();
+                lines_printed = count;
+            }
+
+            println!();
+        }
+    }
+
+    pub fn print_list(&self) {
+        let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = self
+            .tasks
+            .iter()
+            .map(|t| {
+                let guard = t.lock().unwrap();
+                (
+                    guard.id,
+                    guard.title.clone(),
+                    guard.download_dir.clone(),
+                    guard.status.clone(),
+                    guard.progress.clone(),
+                )
+            })
+            .collect();
+
+        if tasks_snapshot.is_empty() {
+            println!(
+                "\n{}\n",
+                "INFO: No downloads recorded in this session.".cyan()
+            );
+            return;
+        }
+
+        println!("\n{}", "=== Download History & Session Report ===".bold());
+        for (id, title, dir, status, prog) in &tasks_snapshot {
+            match status {
+                TaskStatus::Downloading => {
+                    println!(
+                        "  [#{}] \"{}\" - {} ({:.1}%)",
+                        id,
+                        title,
+                        "DOWNLOADING".cyan().bold(),
+                        prog.percent
+                    );
+                    println!(
+                        "       {} / {} at {} (ETA: {})",
+                        prog.downloaded_str, prog.total_str, prog.speed_str, prog.eta_str
+                    );
+                }
+                TaskStatus::Finalizing => {
+                    println!(
+                        "  [#{}] \"{}\" - {}",
+                        id,
+                        title,
+                        "FINALIZING MEDIA".yellow().bold()
+                    );
+                }
+                TaskStatus::Queued => {
+                    println!("  [#{}] \"{}\" - {}", id, title, "QUEUED".blue());
+                }
+                TaskStatus::Completed => {
+                    println!(
+                        "  [#{}] \"{}\" - {} -> {}",
+                        id,
+                        title,
+                        "COMPLETED".green().bold(),
+                        dir
+                    );
+                }
+                TaskStatus::Failed(err) => {
+                    println!(
+                        "  [#{}] \"{}\" - {} ({})",
+                        id,
+                        title,
+                        "FAILED".red().bold(),
+                        err
+                    );
+                }
+                TaskStatus::Cancelled => {
+                    println!("  [#{}] \"{}\" - {}", id, title, "CANCELLED".yellow());
+                }
+            }
+        }
+        println!();
+    }
+
+    pub fn print_queue(&self) {
+        let tasks_snapshot: Vec<(usize, String, TaskStatus)> = self
+            .tasks
+            .iter()
+            .map(|t| {
+                let guard = t.lock().unwrap();
+                (guard.id, guard.title.clone(), guard.status.clone())
+            })
+            .collect();
+
+        let queued_tasks: Vec<_> = tasks_snapshot
+            .iter()
+            .filter(|(_, _, s)| matches!(s, TaskStatus::Queued))
+            .collect();
+
+        let active_count = tasks_snapshot
+            .iter()
+            .filter(|(_, _, s)| matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing))
+            .count();
+
+        println!(
+            "\n{}",
+            format!(
+                "=== Download Queue (Active Slots: {}/{}, Queued in Line: {}) ===",
+                active_count,
+                self.max_parallel,
+                queued_tasks.len()
+            )
+            .bold()
+        );
+
+        if queued_tasks.is_empty() {
+            println!("  (Queue is empty)");
+        } else {
+            for (i, (id, title, _)) in queued_tasks.iter().enumerate() {
+                println!("  [#{}] Position #{}: \"{}\"", id, i + 1, title);
+            }
+        }
+        println!();
+    }
 }
 
 #[cfg(test)]
@@ -639,5 +868,121 @@ mod tests {
 
         mgr_arc.lock().unwrap().cancel_all();
         assert!(!mgr_arc.lock().unwrap().is_active());
+    }
+
+    #[test]
+    fn test_queue_print_list_with_various_task_statuses() {
+        let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        let mut mgr = mgr_arc.lock().unwrap();
+
+        mgr.print_list();
+
+        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+            id: 1,
+            url: "https://example.com/1".to_string(),
+            title: "Downloading Video".to_string(),
+            format_id: "137".to_string(),
+            download_dir: "/downloads".to_string(),
+            status: TaskStatus::Downloading,
+            progress: TaskProgress {
+                percent: 45.5,
+                downloaded_str: "45 MiB".to_string(),
+                total_str: "100 MiB".to_string(),
+                speed_str: "2.5 MiB/s".to_string(),
+                eta_str: "00:22".to_string(),
+            },
+        })));
+
+        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+            id: 2,
+            url: "https://example.com/2".to_string(),
+            title: "Finalizing Video".to_string(),
+            format_id: "137".to_string(),
+            download_dir: "/downloads".to_string(),
+            status: TaskStatus::Finalizing,
+            progress: TaskProgress::default(),
+        })));
+
+        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+            id: 3,
+            url: "https://example.com/3".to_string(),
+            title: "Queued Video".to_string(),
+            format_id: "137".to_string(),
+            download_dir: "/downloads".to_string(),
+            status: TaskStatus::Queued,
+            progress: TaskProgress::default(),
+        })));
+
+        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+            id: 4,
+            url: "https://example.com/4".to_string(),
+            title: "Completed Video".to_string(),
+            format_id: "137".to_string(),
+            download_dir: "/downloads".to_string(),
+            status: TaskStatus::Completed,
+            progress: TaskProgress {
+                percent: 100.0,
+                downloaded_str: "100 MiB".to_string(),
+                total_str: "100 MiB".to_string(),
+                speed_str: "0 B/s".to_string(),
+                eta_str: "00:00".to_string(),
+            },
+        })));
+
+        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+            id: 5,
+            url: "https://example.com/5".to_string(),
+            title: "Failed Video".to_string(),
+            format_id: "137".to_string(),
+            download_dir: "/downloads".to_string(),
+            status: TaskStatus::Failed("Disk space exhausted".to_string()),
+            progress: TaskProgress::default(),
+        })));
+
+        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+            id: 6,
+            url: "https://example.com/6".to_string(),
+            title: "Cancelled Video".to_string(),
+            format_id: "137".to_string(),
+            download_dir: "/downloads".to_string(),
+            status: TaskStatus::Cancelled,
+            progress: TaskProgress::default(),
+        })));
+
+        mgr.print_list();
+    }
+
+    #[test]
+    fn test_queue_print_queue_and_status_live_empty_and_populated() {
+        let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        let mut mgr = mgr_arc.lock().unwrap();
+
+        mgr.print_queue();
+        mgr.print_status_live();
+
+        mgr.queue.push_back(10);
+        mgr.queue.push_back(11);
+        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+            id: 10,
+            url: "url10".to_string(),
+            title: "Queued Task 10".to_string(),
+            format_id: "137".to_string(),
+            download_dir: "/tmp".to_string(),
+            status: TaskStatus::Queued,
+            progress: TaskProgress::default(),
+        })));
+        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+            id: 11,
+            url: "url11".to_string(),
+            title: "Queued Task 11".to_string(),
+            format_id: "137".to_string(),
+            download_dir: "/tmp".to_string(),
+            status: TaskStatus::Queued,
+            progress: TaskProgress::default(),
+        })));
+
+        assert!(mgr.is_active());
+        mgr.print_queue();
+        mgr.print_status_live();
     }
 }

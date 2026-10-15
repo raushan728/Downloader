@@ -8,6 +8,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
 
+use crate::engine::queue::kill_process_by_pid;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VideoInfo {
     pub title: String,
@@ -231,19 +233,27 @@ pub fn extract_engine_error(stderr: &str) -> String {
         return "yt-dlp process exited with an error".to_string();
     }
 
-    if let Some(err_line) = trimmed
+    let line = if let Some(err_line) = trimmed
         .lines()
         .rev()
         .find(|l| l.contains("ERROR:") || l.contains("error:"))
     {
-        return err_line.trim().to_string();
-    }
+        err_line.trim()
+    } else {
+        trimmed
+            .lines()
+            .next_back()
+            .map(|l| l.trim())
+            .unwrap_or(trimmed)
+    };
 
-    trimmed
-        .lines()
-        .next_back()
-        .map(|l| l.trim().to_string())
-        .unwrap_or_else(|| trimmed.to_string())
+    if let Some(stripped) = line.strip_prefix("ERROR:") {
+        stripped.trim().to_string()
+    } else if let Some(stripped) = line.strip_prefix("error:") {
+        stripped.trim().to_string()
+    } else {
+        line.to_string()
+    }
 }
 
 pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
@@ -601,28 +611,32 @@ pub fn cancel_direct_download() {
         && let Some(tracker) = g.take()
     {
         if let Some(pid) = tracker.pid {
-            crate::engine::queue::kill_process_by_pid(pid);
+            kill_process_by_pid(pid);
         }
         clean_partial_files(&tracker.download_dir, Some(&tracker.title));
     }
 }
 
-/// Downloads media in the foreground, streaming live progress and managing process lifecycle.
-pub fn download_media(
-    url: &str,
-    format_id: &str,
+pub fn build_ytdlp_download_cmd(
     yt_dlp_path: &Path,
     ffmpeg_path: &Path,
+    url: &str,
+    format_id: &str,
     download_dir: &str,
-) -> Result<(), String> {
+) -> Command {
     let clean_dir = download_dir.trim_end_matches(['/', '\\']);
-    let output_template = format!("{}/%(title)s.%(ext)s", clean_dir);
-
     let mut cmd = Command::new(yt_dlp_path);
+    // yt-dlp requires separate -P directory and -o template; combined -o paths cause mixed slashes and [Errno 22] on Windows.
+    // --windows-filenames and --trim-filenames sanitize special unicode (e.g. accents) and keep filenames within Windows MAX_PATH.
     cmd.arg("-f")
         .arg(format!("{}+bestaudio/best", format_id))
+        .arg("-P")
+        .arg(clean_dir)
         .arg("-o")
-        .arg(&output_template)
+        .arg("%(title)s.%(ext)s")
+        .arg("--windows-filenames")
+        .arg("--trim-filenames")
+        .arg("160")
         .arg("--merge-output-format")
         .arg("mp4")
         .arg("--newline")
@@ -639,6 +653,18 @@ pub fn download_media(
 
     cmd.arg(url);
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd
+}
+
+/// Downloads media in the foreground, streaming live progress and managing process lifecycle.
+pub fn download_media(
+    url: &str,
+    format_id: &str,
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    download_dir: &str,
+) -> Result<(), String> {
+    let mut cmd = build_ytdlp_download_cmd(yt_dlp_path, ffmpeg_path, url, format_id, download_dir);
 
     let mut child = cmd
         .spawn()
@@ -724,30 +750,7 @@ where
     F: FnOnce(&mut Child),
     G: Fn(f64, &str, &str, &str, &str, bool),
 {
-    let clean_dir = download_dir.trim_end_matches(['/', '\\']);
-    let output_template = format!("{}/%(title)s.%(ext)s", clean_dir);
-
-    let mut cmd = Command::new(yt_dlp_path);
-    cmd.arg("-f")
-        .arg(format!("{}+bestaudio/best", format_id))
-        .arg("-o")
-        .arg(&output_template)
-        .arg("--merge-output-format")
-        .arg("mp4")
-        .arg("--newline")
-        .arg("--progress-template")
-        .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str,progress._total_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
-        .arg("--progress-template")
-        .arg("postprocess:POSTPROCESS|%(progress.status)s")
-        .arg("--no-warnings")
-        .arg("--no-playlist");
-
-    if ffmpeg_path.exists() {
-        cmd.arg("--ffmpeg-location").arg(ffmpeg_path);
-    }
-
-    cmd.arg(url);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut cmd = build_ytdlp_download_cmd(yt_dlp_path, ffmpeg_path, url, format_id, download_dir);
 
     let mut child = cmd
         .spawn()
@@ -1245,21 +1248,28 @@ mod tests {
         let stderr_403 = "WARNING: [youtube] Some warning\nERROR: unable to download video data: HTTP Error 403: Forbidden\n";
         assert_eq!(
             extract_engine_error(stderr_403),
-            "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            "unable to download video data: HTTP Error 403: Forbidden"
         );
 
         // HTTP 429 Too Many Requests
         let stderr_429 = "ERROR: HTTP Error 429: Too Many Requests\n";
         assert_eq!(
             extract_engine_error(stderr_429),
-            "ERROR: HTTP Error 429: Too Many Requests"
+            "HTTP Error 429: Too Many Requests"
         );
 
         // Video unavailable
         let stderr_unavail = "ERROR: [youtube] rNpaYXAO2K4: Video unavailable\n";
         assert_eq!(
             extract_engine_error(stderr_unavail),
-            "ERROR: [youtube] rNpaYXAO2K4: Video unavailable"
+            "[youtube] rNpaYXAO2K4: Video unavailable"
+        );
+
+        // Filesystem error (Errno 22)
+        let stderr_errno22 = "ERROR: Unable to download video: [Errno 22] Invalid argument\n";
+        assert_eq!(
+            extract_engine_error(stderr_errno22),
+            "Unable to download video: [Errno 22] Invalid argument"
         );
 
         // Empty stderr fallback
@@ -1274,6 +1284,37 @@ mod tests {
             extract_engine_error(stderr_plain),
             "Command exited with status code 127"
         );
+
+        // Lowercase error tag
+        let stderr_lower = "error: connection reset by peer";
+        assert_eq!(
+            extract_engine_error(stderr_lower),
+            "connection reset by peer"
+        );
+    }
+
+    #[test]
+    fn test_build_ytdlp_download_cmd_flags() {
+        let yt = Path::new("yt-dlp");
+        let ff = Path::new("ffmpeg");
+        let cmd =
+            build_ytdlp_download_cmd(yt, ff, "https://youtu.be/123", "302", "/downloads/path");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.contains(&"-P".to_string()));
+        assert!(args.contains(&"/downloads/path".to_string()));
+        assert!(args.contains(&"-o".to_string()));
+        assert!(args.contains(&"%(title)s.%(ext)s".to_string()));
+        assert!(args.contains(&"--windows-filenames".to_string()));
+        assert!(args.contains(&"--trim-filenames".to_string()));
+        assert!(args.contains(&"160".to_string()));
+        assert!(args.contains(&"--no-playlist".to_string()));
+        assert!(args.contains(&"--no-warnings".to_string()));
+        assert!(args.contains(&"--merge-output-format".to_string()));
+        assert!(args.contains(&"mp4".to_string()));
     }
 
     #[test]
@@ -1341,7 +1382,7 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(
             result.unwrap_err(),
-            "ERROR: unable to download video data: HTTP Error 403: Forbidden"
+            "unable to download video data: HTTP Error 403: Forbidden"
         );
 
         // Update mock executable to simulate successful JSON extraction

@@ -8,7 +8,9 @@ use cli::router::{Cli, Commands};
 use cli::shell::{process_url, start_repl};
 use colored::Colorize;
 use config::manager::ConfigManager;
+use engine::downloader::cancel_direct_download;
 use engine::paths::{get_ffmpeg_path, get_ytdlp_path};
+use engine::queue::cancel_global_downloads;
 use engine::updater::{ensure_dependencies, ensure_ffmpeg, update_self};
 
 fn main() {
@@ -29,8 +31,8 @@ fn main() {
 
     // Trap SIGINT/Ctrl+C to terminate child process trees and sweep orphaned partial download artifacts.
     let _ = ctrlc::set_handler(move || {
-        crate::engine::downloader::cancel_direct_download();
-        crate::engine::queue::cancel_global_downloads();
+        cancel_direct_download();
+        cancel_global_downloads();
         eprintln!(
             "{}",
             "\nINFO: Interrupted by user. Cleaned up partial files.".yellow()

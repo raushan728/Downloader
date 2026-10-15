@@ -5,7 +5,7 @@
   [Installation] | [Commands] | [Examples] | [Configuration] | [Architecture] | [Changelog] | [Contributing]
 </div>
 
-This is the main source code repository for [DWDR]. It contains the CLI engine, interactive terminal shell, and configuration manager.
+Source code repository for [DWDR]. It contains the CLI engine, interactive terminal shell, and configuration manager.
 
 [DWDR]: https://github.com/raushan728/Downloader
 [Installation]: INSTALL.md
@@ -60,12 +60,14 @@ Comprehensive topic guides covering every subsystem:
 | Guide | Scope | Description |
 | :--- | :--- | :--- |
 | [CLI Reference Guide][cli-guide] | Syntax & Flags | CLI arguments, options, direct downloads, and exit codes. |
-| [Command Catalog][Commands] | Command Matrix | Complete reference table of all 16 CLI options, subcommands, and REPL actions. |
+| [Command Catalog][Commands] | Command Matrix | Complete reference table of all 19 CLI options, subcommands, and REPL actions. |
 | [Usage Examples][Examples] | Practical Walkthroughs | Step-by-step scenarios: single downloads, audio extraction, GUI folder pickers, and troubleshooting. |
 | [Configuration Guide][Configuration] | Settings & Schema | `config.toml` structure, default resolutions, parallel thread limits, and self-healing recovery. |
 | [Architecture Deep Dive][Architecture] | Core Mechanics | Process streaming, dependency lifecycle, single-video safeguards, and cross-platform compilation architecture. |
+| [Architecture Decisions (ADR)][ADR] | Decision Log | Historical context, rejected alternatives, and trade-offs for architectural choices. |
 
 [cli-guide]: docs/CLI.md
+[ADR]: docs/adr/README.md
 
 ## Getting Help
 

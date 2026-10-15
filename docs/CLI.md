@@ -49,14 +49,17 @@ dwdr
 You are greeted with the interactive prompt:
 
 ```text
-INFO: Welcome to DWDR Interactive Shell. Type a URL to download, or 'exit' to quit.
+INFO: Welcome to DWDR Interactive Shell. Type a URL to download, 'status' for live progress, 'help' for commands, or 'exit' to quit.
 dwdr >
 ```
 
 - Enter any supported media URL to inspect, resolve format, and enqueue.
 - Downloads run concurrently in the background up to `max_parallel_downloads` without blocking the cursor.
 - Tasks exceeding the parallel limit wait in a FIFO queue and start automatically when slots free up.
-- Type `queue`, `status`, or `list` to inspect active download progress bars and queued items.
+- Type `status` to launch the live in-place progress monitor of active downloads and queued counts (press Enter to exit).
+- Type `list` to view a complete session report with active download metrics, completed file locations, and failure reasons.
+- Type `queue` to inspect queue limits and waiting tasks in FIFO order.
+- Type `active` to take a fast static snapshot of active downloads without entering live view.
 - Type `cancel` to abort running downloads and flush the waiting queue.
 - Type `config` or `settings` to launch the interactive settings menu.
 - Type `cls` or `clear` to clear the terminal screen buffer.
