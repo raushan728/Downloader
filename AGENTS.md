@@ -25,6 +25,9 @@ This document establishes engineering conventions, core invariants, and workflow
    - Media downloads run synchronously with piped stdout streaming into terminal progress indicators.
    - Never block user input loops with unhandled zombie child processes or leaked file descriptors.
 
+6. **Direct Progressive Stream Priority**:
+   - When candidate streams are extracted for a given resolution, always prioritize direct progressive HTTPS streams with verified server filesizes over adaptive HLS manifests (`m3u8_native`) to avoid triggering CDN `HTTP Error 403: Forbidden` rate limits.
+
 ---
 
 ## Verification Checklist

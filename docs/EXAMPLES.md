@@ -173,3 +173,27 @@ dwdr config reset
 ```text
 SUCCESS: Configuration reset to defaults.
 ```
+
+---
+
+## Scenario 8: Social Media Downloads & Dynamic Filesize Estimates
+
+When downloading from platforms that omit explicit byte sizes (such as Instagram Reels, Facebook Videos, or X/Twitter clips), DWDR automatically calculates multi-tier bitrate and duration estimates:
+
+```bash
+dwdr "https://www.instagram.com/reel/EXAMPLE/"
+```
+
+### Format Selection Prompt
+```text
+INFO: Fetching media details from the server...
+Successfully fetched data for: Sample Reel
+Extracted 3 formats.
+INFO: Manual selection requested...
+? Select a format to download (Use arrow keys):
+ > [VIDEO] | 1080p  | mp4  | ~18.5 MB (Est.)
+   [VIDEO] | 720p   | mp4  | ~9.2 MB (Est.)
+   [AUDIO] | Audio  | m4a  | ~1.2 MB (Est.)
+```
+
+Formats with server-verified filesizes (e.g. YouTube) display clean exact sizes (e.g. `42.1 MB`), while platforms without explicit size metadata clearly show estimated totals (`~X.X MB (Est.)`) or `Stream Size Pending` for live broadcasts.

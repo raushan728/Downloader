@@ -22,11 +22,11 @@ DWDR enforces `--no-playlist` across:
 
 This guarantees immediate single-video resolution regardless of query parameters.
 
-### 3. Accelerated Download Engine
-All download invocations execute with `-N 8`, splitting downloads into 8 concurrent fragmented streams for maximum network throughput.
+### 3. Direct Progressive Stream Prioritization
+DWDR inspects format metadata and strictly prioritizes direct progressive streams (HTTPS byte ranges with server-verified filesizes) over adaptive HLS manifests (`m3u8_native`). This ensures maximum throughput without triggering anti-scraping rate limits or CDN `HTTP Error 403: Forbidden` errors, falling back to multi-tier dynamic estimation only for platforms lacking explicit size metadata.
 
-### 4. Real-Time Visual Progress Bar & MP4 Merging
-`download_media` spawns `yt-dlp` with piped stdout and stderr, `--newline`, and structured `--progress-template` arguments. DWDR captures process streams to eliminate background engine noise (webpage extraction, stream notices, and intermediate file deletions) while draining stderr in a dedicated worker thread. The stream is parsed in real time into an active in-place visual progress bar displaying completion percentage, downloaded and total file sizes (e.g. `[ 16.74MiB / 83.68MiB ]`), download speed, and ETA. When downloading concludes, DWDR transitions cleanly to a finalizing phase for audio/video merging via `--merge-output-format mp4`, ensuring clean single-file outputs named after the media title.
+### 4. Real-Time Responsive Visual Progress Bar & MP4 Merging
+`download_media` spawns `yt-dlp` with piped stdout and stderr, `--newline`, and structured `--progress-template` arguments. DWDR captures process streams to eliminate background engine noise (webpage extraction, stream notices, and intermediate file deletions) while draining stderr in a dedicated worker thread. The stream is parsed in real time into an active in-place visual progress bar displaying completion percentage, downloaded and total file sizes (e.g. `[ 16.74MiB / 83.68MiB ]`), download speed, and ETA. The visual progress bar dynamically adapts to terminal dimensions, scaling bar width down on standard 80-column terminals and collapsing to compact/ultra-compact layouts on narrow split panes (< 75 columns) to prevent line wrapping and cursor tearing. When downloading concludes, DWDR transitions cleanly to a finalizing phase for audio/video merging via `--merge-output-format mp4`, ensuring clean single-file outputs named after the media title.
 
 ### 5. Native OS File System Integration
 Configuration and folder selection workflows integrate with `rfd::FileDialog`, enabling desktop users to browse and select download directories visually while preserving a headless terminal fallback.

@@ -2,7 +2,7 @@
   <h1>DWDR (Downloader)</h1>
   <p>A high-performance, zero-dependency terminal media downloader for Windows, macOS, and Linux.</p>
 
-  [Installation] | [Commands] | [Examples] | [Configuration] | [Architecture] | [Contributing]
+  [Installation] | [Commands] | [Examples] | [Configuration] | [Architecture] | [Changelog] | [Contributing]
 </div>
 
 This is the main source code repository for [DWDR]. It contains the CLI engine, interactive terminal shell, and configuration manager.
@@ -13,11 +13,12 @@ This is the main source code repository for [DWDR]. It contains the CLI engine, 
 [Examples]: docs/EXAMPLES.md
 [Configuration]: docs/CONFIGURATION.md
 [Architecture]: docs/ARCHITECTURE.md
+[Changelog]: CHANGELOG.md
 [Contributing]: CONTRIBUTING.md
 
 ## Why DWDR?
 
-- **Performance:** Accelerated 8-thread fragmented downloading (`-N 8`) coupled with real-time visual progress bar tracking downloaded/total sizes, speed, percentage, and ETA metrics, plus clean background execution and strict MP4 audio/video merging.
+- **Performance:** Direct progressive stream downloading with multi-tier exact filesize resolution, real-time responsive visual progress bar tracking downloaded/total sizes, speed, percentage, and ETA metrics, plus clean background execution and strict MP4 audio/video merging.
 
 - **Reliability:** Zero system pollution. Isolated engines ([yt-dlp], [FFmpeg]) reside exclusively in `~/.dwdr/deps/` without modifying system package managers. Single-video safeguards (`--no-playlist`) prevent accidental multi-track playlist dumps, self-healing configuration handles corrupted settings automatically, and automated cleanup purges incomplete `.part` files on cancellation.
 
