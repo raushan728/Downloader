@@ -152,7 +152,7 @@ pub fn resolve_media_to_download(
             .pick_folder()
         {
             config.download_path = folder.to_string_lossy().to_string();
-            ConfigManager::save(config);
+            let _ = ConfigManager::save(config);
         } else {
             println!(
                 "{}",

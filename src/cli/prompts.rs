@@ -33,9 +33,9 @@ impl<T: Display> Select<T> {
             return Err(());
         }
 
-        // Fall back to first option in non-interactive/piped environments where raw mode is unavailable.
+        // Prevent hanging or unintended default selections in non-interactive/piped environments.
         if !std::io::stdin().is_terminal() || !stdout().is_terminal() {
-            return Ok(self.options.into_iter().next().unwrap());
+            return Err(());
         }
 
         let mut selected = 0;
@@ -189,13 +189,24 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
 }
 
 pub fn interactive_config(config: &mut DwdrConfig) {
+    if !std::io::stdin().is_terminal() || !stdout().is_terminal() {
+        println!(
+            "{}",
+            "\nERROR: Interactive configuration requires an interactive terminal (TTY).\nUse 'dwdr config set <key> <value>' for non-interactive configuration.\n"
+                .red()
+        );
+        return;
+    }
+
+    let mut working = config.clone();
+
     loop {
         let options = vec![
-            format!("1. Download Path (Current: {})", config.download_path),
-            format!("2. Default Quality (Current: {})", config.default_quality),
+            format!("1. Download Path (Current: {})", working.download_path),
+            format!("2. Default Quality (Current: {})", working.default_quality),
             format!(
                 "3. Max Parallel Downloads (Current: {})",
-                config.max_parallel_downloads
+                working.max_parallel_downloads
             ),
             "4. Save & Exit".to_string(),
             "5. Cancel".to_string(),
@@ -211,7 +222,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         .set_title("Select Download Folder")
                         .pick_folder()
                     {
-                        config.download_path = path.to_string_lossy().to_string();
+                        working.download_path = path.to_string_lossy().to_string();
                     }
                 } else if ans.starts_with("2") {
                     let quality_opts = vec![
@@ -227,7 +238,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                     if let Ok(quality) =
                         Select::new("Select Default Quality:", quality_opts).prompt()
                     {
-                        config.default_quality = quality.to_string();
+                        working.default_quality = quality.to_string();
                     }
                 } else if ans.starts_with("3") {
                     let parallel_opts = vec!["1", "3", "5", "8"];
@@ -236,11 +247,18 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                             .prompt()
                             .map(|s| s.parse::<u8>())
                     {
-                        config.max_parallel_downloads = parallel;
+                        working.max_parallel_downloads = parallel;
                     }
                 } else if ans.starts_with("4") {
-                    ConfigManager::save(config);
-                    println!("{}", "SUCCESS: Settings saved successfully!".green());
+                    *config = working;
+                    if let Err(e) = ConfigManager::save(config) {
+                        println!(
+                            "{}",
+                            format!("\nERROR: Failed to save settings: {}\n", e).red()
+                        );
+                    } else {
+                        println!("{}", "SUCCESS: Settings saved successfully!".green());
+                    }
                     break;
                 } else if ans.starts_with("5") {
                     println!("{}", "WARNING: Settings update cancelled.".red());

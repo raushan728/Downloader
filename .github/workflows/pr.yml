@@ -30,17 +30,3 @@ jobs:
 
       - name: Run Tests
         run: cargo test
-
-  auto-approve:
-    name: Auto Approve PR
-    needs: validate
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    if: github.event.pull_request.state == 'open'
-    steps:
-      - name: Approve PR
-        run: gh pr review --approve "$PR_URL" -b "All checks passed. Automatically approved by CI."
-        env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

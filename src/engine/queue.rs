@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use colored::Colorize;
 
+use crate::config::manager::ConfigManager;
 use crate::engine::downloader::{
     clean_partial_files, download_media_background, render_progress_bar,
 };
@@ -94,13 +95,147 @@ pub fn set_global_queue(queue: Arc<Mutex<QueueManager>>) {
     }
 }
 
+pub fn active_downloads_lock_path() -> Option<PathBuf> {
+    ConfigManager::config_path().and_then(|p| p.parent().map(|d| d.join("active_downloads.lock")))
+}
+
+pub fn record_active_download() {
+    if let Some(lock_path) = active_downloads_lock_path() {
+        if let Some(parent) = lock_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let my_pid = std::process::id();
+        let mut pids = Vec::new();
+        if let Ok(content) = std::fs::read_to_string(&lock_path) {
+            for line in content.lines() {
+                if let Ok(pid) = line.trim().parse::<u32>()
+                    && pid != 0
+                    && !pids.contains(&pid)
+                {
+                    pids.push(pid);
+                }
+            }
+        }
+        if !pids.contains(&my_pid) {
+            pids.push(my_pid);
+        }
+        let payload = pids
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let _ = std::fs::write(&lock_path, payload);
+    }
+}
+
+pub fn clear_active_download() {
+    if let Some(lock_path) = active_downloads_lock_path() {
+        let my_pid = std::process::id();
+        let mut pids = Vec::new();
+        if let Ok(content) = std::fs::read_to_string(&lock_path) {
+            for line in content.lines() {
+                if let Ok(pid) = line.trim().parse::<u32>()
+                    && pid != 0
+                    && pid != my_pid
+                    && !pids.contains(&pid)
+                {
+                    pids.push(pid);
+                }
+            }
+        }
+        if pids.is_empty() {
+            let _ = std::fs::remove_file(&lock_path);
+        } else {
+            let payload = pids
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = std::fs::write(&lock_path, payload);
+        }
+    }
+}
+
+#[cfg(unix)]
+pub fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    std::path::Path::new(&format!("/proc/{}", pid)).exists()
+        || Command::new("kill")
+            .arg("-0")
+            .arg(pid.to_string())
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+}
+
+#[cfg(windows)]
+pub fn is_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {}", pid), "/NH"])
+        .output()
+        .map(|o| {
+            let out = String::from_utf8_lossy(&o.stdout);
+            out.contains(&pid.to_string())
+        })
+        .unwrap_or(false)
+}
+
 pub fn is_download_active() -> bool {
     if let Ok(g) = GLOBAL_QUEUE.lock()
         && let Some(queue) = &*g
         && let Ok(guard) = queue.lock()
+        && guard.is_active()
     {
-        return guard.is_active();
+        return true;
     }
+
+    if crate::engine::downloader::is_direct_download_active() {
+        return true;
+    }
+
+    if let Some(lock_path) = active_downloads_lock_path()
+        && lock_path.exists()
+        && let Ok(content) = std::fs::read_to_string(&lock_path)
+    {
+        let my_pid = std::process::id();
+        let mut has_other_active = false;
+        let mut surviving_pids = Vec::new();
+
+        for line in content.lines() {
+            if let Ok(pid) = line.trim().parse::<u32>() {
+                if pid == 0 {
+                    continue;
+                }
+                if pid == my_pid {
+                    surviving_pids.push(pid);
+                } else if is_pid_alive(pid) {
+                    has_other_active = true;
+                    surviving_pids.push(pid);
+                }
+            }
+        }
+
+        if surviving_pids.is_empty() {
+            let _ = std::fs::remove_file(&lock_path);
+        } else if surviving_pids.len() != content.lines().count() {
+            let payload = surviving_pids
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let _ = std::fs::write(&lock_path, payload);
+        }
+
+        if has_other_active {
+            return true;
+        }
+    }
+
     false
 }
 
@@ -111,6 +246,7 @@ pub fn cancel_global_downloads() {
     {
         guard.cancel_all();
     }
+    clear_active_download();
 }
 
 /// Kills the entire process tree to prevent orphan child workers (e.g. ffmpeg) from surviving.
@@ -177,6 +313,7 @@ impl QueueManager {
         if mgr.active_count < mgr.max_parallel {
             mgr.active_count += 1;
             task.lock().unwrap().status = TaskStatus::Downloading;
+            record_active_download();
             let result = EnqueueResult::Started {
                 task_id,
                 active_count: mgr.active_count,
@@ -352,7 +489,16 @@ impl QueueManager {
                 )
                 .cyan()
             );
+            record_active_download();
             Self::spawn_worker(manager_arc, next_task);
+        } else {
+            let is_now_idle = {
+                let mgr = manager_arc.lock().unwrap();
+                mgr.active_count == 0
+            };
+            if is_now_idle {
+                clear_active_download();
+            }
         }
     }
 
@@ -377,6 +523,7 @@ impl QueueManager {
         }
         self.active_pids.clear();
         self.active_count = 0;
+        clear_active_download();
     }
 
     pub fn is_active(&self) -> bool {

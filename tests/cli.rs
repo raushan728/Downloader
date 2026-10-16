@@ -86,7 +86,21 @@ fn test_cli_self_update_help() {
 }
 
 #[test]
-fn test_config_reset_command() {
+fn test_cli_help_does_not_create_config_file() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .arg("--help")
+        .assert()
+        .success();
+
+    assert!(!config_file.exists());
+}
+
+#[test]
+fn test_config_reset_command_with_confirmation() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
 
@@ -100,6 +114,7 @@ fn test_config_reset_command() {
     cmd_reset
         .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
         .args(["config", "reset"])
+        .write_stdin("y\n")
         .assert()
         .success()
         .stdout(predicate::str::contains("Configuration reset to defaults"));
@@ -111,6 +126,145 @@ fn test_config_reset_command() {
         .assert()
         .success()
         .stdout(predicate::str::contains("1080p"));
+}
+
+#[test]
+fn test_config_reset_cancelled() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "quality", "720p"])
+        .assert()
+        .success();
+
+    let mut cmd_reset = Command::cargo_bin("dwdr").unwrap();
+    cmd_reset
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "reset"])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "WARNING: Configuration reset cancelled",
+        ));
+
+    let mut cmd_verify = Command::cargo_bin("dwdr").unwrap();
+    cmd_verify
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("720p"));
+}
+
+#[test]
+fn test_config_reset_force() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "quality", "720p"])
+        .assert()
+        .success();
+
+    let mut cmd_reset = Command::cargo_bin("dwdr").unwrap();
+    cmd_reset
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "reset", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Configuration reset to defaults"));
+}
+
+#[test]
+fn test_config_set_invalid_quality() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "quality", "arbitrary_invalid"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ERROR: Invalid quality value"));
+}
+
+#[test]
+fn test_config_set_invalid_path() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "path", "/nonexistent/test/path/dwdr"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ERROR: Download path does not exist",
+        ));
+}
+
+#[test]
+fn test_config_set_invalid_update_days() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "update-days", "9999"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ERROR: Invalid update-days value"));
+}
+
+#[test]
+fn test_interactive_config_non_tty_error() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .arg("config")
+        .write_stdin("")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ERROR: Interactive configuration requires an interactive terminal",
+        ));
+}
+
+#[test]
+fn test_cross_process_active_download_block() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+    let lock_file = temp_dir.path().join("active_downloads.lock");
+
+    // Write the current test runner's PID to simulate an active download in another process
+    std::fs::write(&lock_file, std::process::id().to_string()).unwrap();
+
+    // 1. Without --force, config set must be blocked
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "parallel", "5"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ERROR: Cannot change settings while downloads are active. Use --force to override.",
+        ));
+
+    // 2. With --force, config set succeeds
+    let mut cmd_force = Command::cargo_bin("dwdr").unwrap();
+    cmd_force
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "parallel", "5", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Successfully updated parallel to 5",
+        ));
 }
 
 #[test]

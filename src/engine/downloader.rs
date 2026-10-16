@@ -661,7 +661,16 @@ struct DirectDownloadTracker {
 
 static DIRECT_TRACKER: Mutex<Option<DirectDownloadTracker>> = Mutex::new(None);
 
+pub fn is_direct_download_active() -> bool {
+    if let Ok(g) = DIRECT_TRACKER.lock() {
+        g.is_some()
+    } else {
+        false
+    }
+}
+
 pub fn register_direct_download(pid: u32, download_dir: &str, title: &str) {
+    crate::engine::queue::record_active_download();
     if let Ok(mut g) = DIRECT_TRACKER.lock() {
         *g = Some(DirectDownloadTracker {
             pid: Some(pid),
@@ -675,6 +684,7 @@ pub fn unregister_direct_download() {
     if let Ok(mut g) = DIRECT_TRACKER.lock() {
         *g = None;
     }
+    crate::engine::queue::clear_active_download();
 }
 
 pub fn cancel_direct_download() {
@@ -686,6 +696,7 @@ pub fn cancel_direct_download() {
         }
         clean_partial_files(&tracker.download_dir, Some(&tracker.title));
     }
+    crate::engine::queue::clear_active_download();
 }
 
 pub fn build_ytdlp_download_cmd(

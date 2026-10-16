@@ -40,8 +40,8 @@ fn main() {
         std::process::exit(130);
     });
 
-    let mut config = ConfigManager::load();
     let cli = Cli::parse();
+    let mut config = ConfigManager::load();
 
     if let Some(url) = cli.url {
         process_url(&url, &mut config);
