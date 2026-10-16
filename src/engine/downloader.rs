@@ -890,7 +890,17 @@ pub fn download_media(
     download_dir: &str,
     title: Option<&str>,
 ) -> Result<(), String> {
-    let mut cmd = build_ytdlp_download_cmd(yt_dlp_path, ffmpeg_path, url, format_id, download_dir);
+    let validated_dir = crate::config::manager::validate_download_path(download_dir, true)
+        .map_err(|e| format!("Invalid download directory: {}", e))?;
+    let clean_download_dir = validated_dir.to_string_lossy();
+
+    let mut cmd = build_ytdlp_download_cmd(
+        yt_dlp_path,
+        ffmpeg_path,
+        url,
+        format_id,
+        &clean_download_dir,
+    );
 
     #[cfg(unix)]
     {
@@ -903,7 +913,7 @@ pub fn download_media(
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
     let pid = child.id();
-    register_direct_download(pid, download_dir, title.unwrap_or(""));
+    register_direct_download(pid, &clean_download_dir, title.unwrap_or(""));
 
     let mut stderr_handle = child.stderr.take();
     // Drain stderr asynchronously so unread process error buffers do not deadlock stdout pipe reading.
@@ -962,7 +972,7 @@ pub fn download_media(
         println!("{}", "SUCCESS: Finalizing complete!".green());
         Ok(())
     } else {
-        clean_partial_files(download_dir, title);
+        clean_partial_files(&clean_download_dir, title);
         println!();
         Err(extract_engine_error(&stderr_output))
     }
@@ -982,7 +992,17 @@ where
     F: FnOnce(&mut Child),
     G: Fn(f64, &str, &str, &str, &str, bool),
 {
-    let mut cmd = build_ytdlp_download_cmd(yt_dlp_path, ffmpeg_path, url, format_id, download_dir);
+    let validated_dir = crate::config::manager::validate_download_path(download_dir, true)
+        .map_err(|e| format!("Invalid download directory: {}", e))?;
+    let clean_download_dir = validated_dir.to_string_lossy();
+
+    let mut cmd = build_ytdlp_download_cmd(
+        yt_dlp_path,
+        ffmpeg_path,
+        url,
+        format_id,
+        &clean_download_dir,
+    );
 
     #[cfg(unix)]
     {

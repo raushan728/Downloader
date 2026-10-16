@@ -167,25 +167,61 @@ pub fn resolve_media_to_download(
         chosen_id
     };
 
-    if config.download_path.is_empty() {
-        println!(
-            "{}",
-            "INFO: No download path set. Opening file browser...".cyan()
-        );
-        if let Some(folder) = FileDialog::new()
-            .set_title("Select Download Folder")
-            .pick_folder()
-        {
-            config.download_path = folder.to_string_lossy().to_string();
-            let _ = ConfigManager::save(config);
-        } else {
-            println!(
-                "{}",
-                "\nERROR: No download folder selected. Download cancelled.\n"
-                    .red()
-                    .bold()
-            );
-            return None;
+    loop {
+        match crate::config::manager::validate_download_path(&config.download_path, true) {
+            Ok(valid_dir) => {
+                config.download_path = valid_dir.to_string_lossy().to_string();
+                break;
+            }
+            Err(e) => {
+                println!(
+                    "{}",
+                    format!(
+                        "\nWARNING: Invalid download path: {}\nOpening file browser...",
+                        e
+                    )
+                    .yellow()
+                );
+                if let Some(folder) = FileDialog::new()
+                    .set_title("Select Download Folder")
+                    .pick_folder()
+                {
+                    match crate::config::manager::validate_download_path(
+                        &folder.to_string_lossy(),
+                        true,
+                    ) {
+                        Ok(valid_dir) => {
+                            config.download_path = valid_dir.to_string_lossy().to_string();
+                            if let Err(save_err) = ConfigManager::save(config) {
+                                println!(
+                                    "{}",
+                                    format!(
+                                        "\nERROR: Failed to save download path: {}\n",
+                                        save_err
+                                    )
+                                    .red()
+                                );
+                            }
+                            break;
+                        }
+                        Err(val_err) => {
+                            println!(
+                                "{}",
+                                format!("\nWARNING: Selected folder is invalid: {}\n", val_err)
+                                    .yellow()
+                            );
+                        }
+                    }
+                } else {
+                    println!(
+                        "{}",
+                        "\nERROR: No valid download folder selected. Download cancelled.\n"
+                            .red()
+                            .bold()
+                    );
+                    return None;
+                }
+            }
         }
     }
 

@@ -8,3 +8,4 @@
 | [0004](0004-configuration-validation-and-concurrency-guards.md) | Configuration Validation, Error Propagation, and Concurrency Guards | accepted | 2026-10-15 |
 | [0005](0005-codec-hdr-prioritization-and-stream-extraction-resilience.md) | Codec and HDR Prioritization, Audio Stream Handling, and Extraction Resilience | accepted | 2026-10-16 |
 | [0006](0006-process-tree-management-and-updater-integrity.md) | Process Tree Management, Downloader Resilience, and Updater Integrity | accepted | 2026-10-16 |
+| [0007](0007-configuration-directory-resolution-and-pre-download-path-validation.md) | Configuration Directory Resolution and Pre-Download Path Validation | accepted | 2026-10-16 |

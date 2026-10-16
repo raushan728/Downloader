@@ -23,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Comprehensive Test Suite**: Expanded test coverage to 47 automated tests (34 unit tests and 13 integration tests) covering vertical video aspect ratios, queue cancellation, CLI subcommands, progress parsing, and simulated engine mock errors.
 
 ### Fixed
+- **Absolute Default Download Directory Fallback**: Replaced relative fallback (`PathBuf::from(".")`) in `DwdrConfig::default()` with absolute resolution via `std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir())`, preventing downloads from saving to relative paths in minimal environments.
+- **Directory Configuration Path Resolution**: Updated `config_path()` and `load_from_path()` to automatically resolve directory paths to `path.join("config.toml")`, allowing configuration loading and self-healing when directory paths are supplied.
+- **Pre-Download Directory Validation**: Added `validate_download_path` verifying directory existence, folder type, and write permissions via probe files prior to invoking `yt-dlp` in foreground and background downloads.
+- **Clean Configuration Error Propagation**: Removed raw unformatted `eprintln` writes from `save_config` and `save`, returning structured `Result<(), String>` errors to callers and handling them gracefully in the interactive shell.
 - **Unix Process Tree Orphan Prevention**: Configured `yt-dlp` child processes on Unix to spawn in isolated process groups (`process_group(0)`), allowing `kill_process_by_pid` to terminate the entire process group (`kill -9 -<pid>`) and eliminating orphaned background `ffmpeg` merger processes.
 - **Scoped Partial File & Directory Cleanup**: Fixed wildcard file deletion bug by rejecting empty titles (`Some("") => false`) in `clean_partial_files`, passing sanitized media titles from `download_media`, and recursively removing temporary `.temp`, `.tmp`, and `.part` directories matching task titles.
 - **Network Socket Hang Prevention**: Enforced `--socket-timeout 30` on all `yt-dlp` info queries and media downloads to prevent tasks from hanging indefinitely on stalled network connections.

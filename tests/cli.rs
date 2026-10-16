@@ -424,3 +424,28 @@ fn test_interactive_shell_uppercase_url() {
         ))
         .stdout(predicate::str::contains("Thanks for using DWDR!"));
 }
+
+#[test]
+fn test_config_path_pointing_to_directory_resolves_config_file() {
+    let temp_dir = tempdir().unwrap();
+    let dir_path = temp_dir.path();
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", dir_path.to_str().unwrap())
+        .args(["config", "set", "quality", "720p"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Successfully updated quality to 720p",
+        ));
+
+    assert!(dir_path.join("config.toml").is_file());
+
+    let mut cmd_show = Command::cargo_bin("dwdr").unwrap();
+    cmd_show
+        .env("DWDR_CONFIG_PATH", dir_path.to_str().unwrap())
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("720p"));
+}

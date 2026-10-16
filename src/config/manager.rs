@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cli::prompts::interactive_config;
 use crate::engine::queue::is_download_active;
@@ -28,7 +29,9 @@ impl Default for DwdrConfig {
                 // Headless or minimal environments may lack standard XDG user directories.
                 let mut path = BaseDirs::new()
                     .map(|d| d.home_dir().to_path_buf())
-                    .unwrap_or_else(|| PathBuf::from("."));
+                    .unwrap_or_else(|| {
+                        std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir())
+                    });
                 path.push("Downloads");
                 path.push("DWDR");
                 path.to_string_lossy().into_owned()
@@ -61,6 +64,66 @@ pub fn is_valid_quality(quality: &str) -> bool {
     )
 }
 
+static PROBE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Validates existence, directory type, and write access for a target download path.
+pub fn validate_download_path(path: &str, create_if_missing: bool) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Download path is not configured.".to_string());
+    }
+
+    let p = std::path::Path::new(trimmed);
+    if !p.exists() {
+        if create_if_missing {
+            fs::create_dir_all(p).map_err(|e| {
+                format!(
+                    "Download directory \"{}\" does not exist and could not be created: {}",
+                    trimmed, e
+                )
+            })?;
+        } else {
+            return Err("Download path does not exist.".to_string());
+        }
+    }
+
+    if !p.is_dir() {
+        return Err("Download path must be a directory, not a file.".to_string());
+    }
+
+    let probe_id = PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let probe_file = p.join(format!(
+        ".dwdr_write_test_{}_{}.tmp",
+        std::process::id(),
+        probe_id
+    ));
+    match fs::write(&probe_file, b"") {
+        Ok(_) => {
+            let _ = fs::remove_file(&probe_file);
+        }
+        Err(e) => {
+            return Err(format!("Download path is not writable: {}", e));
+        }
+    }
+
+    let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    #[cfg(windows)]
+    let canonical = canonical
+        .to_str()
+        .map(|s| {
+            if let Some(unc) = s.strip_prefix(r"\\?\UNC\") {
+                PathBuf::from(format!(r"\\{}", unc))
+            } else if let Some(local) = s.strip_prefix(r"\\?\") {
+                PathBuf::from(local)
+            } else {
+                PathBuf::from(s)
+            }
+        })
+        .unwrap_or(canonical);
+
+    Ok(canonical)
+}
+
 /// Thread-safe configuration manager enforcing filesystem isolation and recovery.
 pub struct ConfigManager;
 
@@ -78,7 +141,12 @@ impl ConfigManager {
                 } else {
                     path
                 };
-                return Some(abs_path);
+                let final_path = if abs_path.is_dir() {
+                    abs_path.join("config.toml")
+                } else {
+                    abs_path
+                };
+                return Some(final_path);
             }
         }
         BaseDirs::new().map(|dirs| dirs.home_dir().join(".dwdr").join("config.toml"))
@@ -99,37 +167,37 @@ impl ConfigManager {
 
     /// Loads configuration from disk, self-healing with defaults if missing or corrupted.
     pub fn load_from_path(path: &std::path::Path) -> DwdrConfig {
-        if path.is_file()
-            && let Ok(content) = fs::read_to_string(path)
+        let file_path = if path.is_dir() {
+            path.join("config.toml")
+        } else {
+            path.to_path_buf()
+        };
+
+        if file_path.is_file()
+            && let Ok(content) = fs::read_to_string(&file_path)
             && let Ok(config) = toml::from_str(&content)
         {
             return config;
         }
 
         let default_config = DwdrConfig::default();
-        let _ = Self::save_config(path, &default_config);
+        let _ = Self::save_config(&file_path, &default_config);
         default_config
     }
 
     pub fn save(config: &DwdrConfig) -> Result<(), String> {
         match Self::config_path() {
             Some(path) => Self::save_config(&path, config),
-            None => {
-                let err = "Failed to determine home directory for configuration.".to_string();
-                eprintln!("{}", err);
-                Err(err)
-            }
+            None => Err("Failed to determine home directory for configuration.".to_string()),
         }
     }
 
     pub fn save_config(path: &std::path::Path, config: &DwdrConfig) -> Result<(), String> {
         if path.is_dir() {
-            let err = format!(
+            return Err(format!(
                 "Config path points to a directory, expected a file: {}",
                 path.display()
-            );
-            eprintln!("{}", err);
-            return Err(err);
+            ));
         }
 
         if let Some(parent) = path.parent()
@@ -137,22 +205,14 @@ impl ConfigManager {
             && !parent.exists()
             && let Err(e) = fs::create_dir_all(parent)
         {
-            let err = format!("Failed to create config directory: {}", e);
-            eprintln!("{}", err);
-            return Err(err);
+            return Err(format!("Failed to create config directory: {}", e));
         }
 
         match toml::to_string(config) {
-            Ok(toml_str) => fs::write(path, toml_str).map_err(|e| {
-                let err = format!("Failed to write config file: {}", e);
-                eprintln!("{}", err);
-                err
-            }),
-            Err(e) => {
-                let err = format!("Failed to serialize config: {}", e);
-                eprintln!("{}", err);
-                Err(err)
+            Ok(toml_str) => {
+                fs::write(path, toml_str).map_err(|e| format!("Failed to write config file: {}", e))
             }
+            Err(e) => Err(format!("Failed to serialize config: {}", e)),
         }
     }
 
@@ -270,44 +330,15 @@ impl ConfigManager {
                     }
 
                     match key.as_str() {
-                        "path" => {
-                            let p = std::path::Path::new(value.trim());
-                            if value.trim().is_empty() || !p.exists() {
-                                println!("{}", "\nERROR: Download path does not exist.\n".red());
+                        "path" => match validate_download_path(&value, false) {
+                            Ok(canonical) => {
+                                config.download_path = canonical.to_string_lossy().to_string();
+                            }
+                            Err(e) => {
+                                println!("{}", format!("\nERROR: {}\n", e).red());
                                 return;
                             }
-                            if !p.is_dir() {
-                                println!(
-                                    "{}",
-                                    "\nERROR: Download path must be a directory, not a file.\n"
-                                        .red()
-                                );
-                                return;
-                            }
-                            let probe_file =
-                                p.join(format!(".dwdr_write_test_{}.tmp", std::process::id()));
-                            match fs::write(&probe_file, b"") {
-                                Ok(_) => {
-                                    let _ = fs::remove_file(&probe_file);
-                                }
-                                Err(e) => {
-                                    println!(
-                                        "{}",
-                                        format!("\nERROR: Download path is not writable: {}\n", e)
-                                            .red()
-                                    );
-                                    return;
-                                }
-                            }
-                            let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-                            #[cfg(windows)]
-                            let canonical = canonical
-                                .to_str()
-                                .and_then(|s| s.strip_prefix(r"\\?\"))
-                                .map(PathBuf::from)
-                                .unwrap_or(canonical);
-                            config.download_path = canonical.to_string_lossy().to_string();
-                        }
+                        },
                         "quality" => {
                             if !is_valid_quality(&value) {
                                 println!(
@@ -578,5 +609,59 @@ mod tests {
         assert!(is_valid_quality("audio"));
         assert!(!is_valid_quality("arbitrary_string"));
         assert!(!is_valid_quality(""));
+    }
+
+    #[test]
+    fn test_default_download_path_is_absolute() {
+        let config = DwdrConfig::default();
+        let path = std::path::Path::new(&config.download_path);
+        assert!(path.is_absolute());
+        assert!(!config.download_path.starts_with('.'));
+    }
+
+    #[test]
+    fn test_load_from_path_directory_resolves_config_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir_path = temp_dir.path();
+
+        let loaded = ConfigManager::load_from_path(dir_path);
+        assert_eq!(loaded.default_quality, "1080p");
+        assert!(dir_path.join("config.toml").is_file());
+
+        let mut modified = loaded;
+        modified.default_quality = "4k".to_string();
+        ConfigManager::save_config(&dir_path.join("config.toml"), &modified).unwrap();
+
+        let reloaded = ConfigManager::load_from_path(dir_path);
+        assert_eq!(reloaded.default_quality, "4k");
+    }
+
+    #[test]
+    fn test_validate_download_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir_path = temp_dir.path();
+
+        let valid = validate_download_path(dir_path.to_str().unwrap(), false);
+        assert!(valid.is_ok());
+
+        let new_subdir = dir_path.join("new_downloads_dir");
+        let created = validate_download_path(new_subdir.to_str().unwrap(), true);
+        assert!(created.is_ok());
+        assert!(new_subdir.is_dir());
+
+        let non_existent = dir_path.join("does_not_exist");
+        let missing = validate_download_path(non_existent.to_str().unwrap(), false);
+        assert!(missing.is_err());
+        assert!(missing.unwrap_err().contains("does not exist"));
+
+        let file_path = dir_path.join("test_file.txt");
+        std::fs::write(&file_path, b"data").unwrap();
+        let file_res = validate_download_path(file_path.to_str().unwrap(), false);
+        assert!(file_res.is_err());
+        assert!(file_res.unwrap_err().contains("not a file"));
+
+        let empty_res = validate_download_path("   ", false);
+        assert!(empty_res.is_err());
+        assert!(empty_res.unwrap_err().contains("not configured"));
     }
 }
