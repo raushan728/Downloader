@@ -57,18 +57,18 @@ pub fn is_valid_executable(path: &Path, is_ffmpeg: bool) -> bool {
 
     #[cfg(target_os = "macos")]
     {
-        let is_macho = (&header == &[0xfe, 0xed, 0xfa, 0xce])
-            || (&header == &[0xfe, 0xed, 0xfa, 0xcf])
-            || (&header == &[0xce, 0xfa, 0xed, 0xfe])
-            || (&header == &[0xcf, 0xfa, 0xed, 0xfe])
-            || (&header == &[0xca, 0xfe, 0xba, 0xbe]);
+        let is_macho = (header == [0xfe, 0xed, 0xfa, 0xce])
+            || (header == [0xfe, 0xed, 0xfa, 0xcf])
+            || (header == [0xce, 0xfa, 0xed, 0xfe])
+            || (header == [0xcf, 0xfa, 0xed, 0xfe])
+            || (header == [0xca, 0xfe, 0xba, 0xbe]);
         if is_ffmpeg {
             if !is_macho {
                 return false;
             }
         } else {
             let is_valid =
-                is_macho || (&header[0..2] == b"#!") || (&header == &[0x50, 0x4b, 0x03, 0x04]);
+                is_macho || (&header[0..2] == b"#!") || (header == [0x50, 0x4b, 0x03, 0x04]);
             if !is_valid {
                 return false;
             }
@@ -358,11 +358,11 @@ pub fn update_self() -> Result<(), String> {
             return Err("Downloaded binary is too small".to_string());
         }
         let header = &bytes[0..4];
-        let is_macho = (header == &[0xfe, 0xed, 0xfa, 0xce])
-            || (header == &[0xfe, 0xed, 0xfa, 0xcf])
-            || (header == &[0xce, 0xfa, 0xed, 0xfe])
-            || (header == &[0xcf, 0xfa, 0xed, 0xfe])
-            || (header == &[0xca, 0xfe, 0xba, 0xbe]);
+        let is_macho = (header == [0xfe, 0xed, 0xfa, 0xce])
+            || (header == [0xfe, 0xed, 0xfa, 0xcf])
+            || (header == [0xce, 0xfa, 0xed, 0xfe])
+            || (header == [0xcf, 0xfa, 0xed, 0xfe])
+            || (header == [0xca, 0xfe, 0xba, 0xbe]);
         if !is_macho {
             return Err(
                 "Downloaded binary does not have a valid Mach-O executable header".to_string(),
