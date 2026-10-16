@@ -68,6 +68,11 @@ impl MediaFormat {
     pub fn size_in_mb(&self) -> String {
         self.format_filesize()
     }
+
+    pub fn is_audio(&self) -> bool {
+        self.resolution.eq_ignore_ascii_case("audio")
+            || (self.vcodec == "none" && self.acodec != "none")
+    }
 }
 
 pub fn calculate_media_filesize(
@@ -183,6 +188,26 @@ pub fn resolve_resolution(
         return Some((res, rank));
     }
 
+    // Square videos (1:1 aspect ratio, e.g. Instagram/VR SBS): height equals width.
+    if let (Some(w), Some(h)) = (width, height)
+        && w == h
+        && let Some(res) = map_height_to_resolution(h)
+    {
+        let rank = match res {
+            "8K" => 4320,
+            "4K" => 2160,
+            "2K" => 1440,
+            "1080p" => 1080,
+            "720p" => 720,
+            "480p" => 480,
+            "360p" => 360,
+            "240p" => 240,
+            "144p" => 144,
+            _ => h,
+        };
+        return Some((res, rank));
+    }
+
     // Letterboxed widescreen streams (e.g. 1920x800) have reduced height, so check width first.
     if let Some(w) = width {
         if w >= 7680 {
@@ -256,6 +281,38 @@ pub fn extract_engine_error(stderr: &str) -> String {
     }
 }
 
+fn score_vcodec(vcodec: &str) -> u8 {
+    let lower = vcodec.to_lowercase();
+    if lower.starts_with("av01") || lower.starts_with("av1") {
+        4 // AV1: state-of-the-art compression & fidelity
+    } else if lower.starts_with("vp09") || lower.starts_with("vp9") {
+        3 // VP9
+    } else if lower.starts_with("hev1")
+        || lower.starts_with("hvc1")
+        || lower.starts_with("hevc")
+        || lower.starts_with("h265")
+    {
+        2 // HEVC / H.265
+    } else if lower.starts_with("avc1") || lower.starts_with("avc") || lower.starts_with("h264") {
+        1 // AVC / H.264
+    } else {
+        0 // Legacy / unknown
+    }
+}
+
+fn score_acodec(acodec: &str) -> u8 {
+    let lower = acodec.to_lowercase();
+    if lower.contains("opus") {
+        3 // Opus
+    } else if lower.contains("mp4a") || lower.contains("aac") {
+        2 // AAC
+    } else if lower.contains("mp3") {
+        1 // MP3
+    } else {
+        0
+    }
+}
+
 pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
     let raw: serde_json::Value =
         serde_json::from_str(stdout_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
@@ -292,8 +349,40 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
             continue;
         }
 
-        let height = f["height"].as_u64();
-        let width = f["width"].as_u64();
+        let mut height = f["height"].as_u64();
+        let mut width = f["width"].as_u64();
+
+        // Parse resolution string when integer width/height fields are null or unpopulated.
+        if (height.is_none() || width.is_none())
+            && let Some(res_str) = f["resolution"].as_str()
+        {
+            if let Some((w_str, h_str)) = res_str.split_once('x') {
+                if width.is_none() {
+                    width = w_str.trim().parse::<u64>().ok();
+                }
+                if height.is_none() {
+                    height = h_str.trim().parse::<u64>().ok();
+                }
+            } else if height.is_none() {
+                let cleaned = res_str.trim().trim_end_matches(['p', 'P']);
+                height = cleaned.parse::<u64>().ok();
+            }
+        }
+
+        if height.is_none() {
+            let note_str = f["format_note"].as_str().unwrap_or("");
+            let id_str = f["format_id"].as_str().unwrap_or("");
+            for s in [note_str, id_str] {
+                if let Some(h) = s
+                    .strip_suffix('p')
+                    .or_else(|| s.strip_suffix('P'))
+                    .and_then(|v| v.parse::<u64>().ok())
+                {
+                    height = Some(h);
+                    break;
+                }
+            }
+        }
 
         // Categorize into video vs audio:
         // 1. Explicit video codec -> Video
@@ -304,7 +393,13 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
             || (!is_vcodec_none
                 && (height.is_some()
                     || width.is_some()
-                    || matches!(ext, "mp4" | "webm" | "mkv" | "avi" | "flv" | "mov" | "3gp")));
+                    || f["resolution"]
+                        .as_str()
+                        .is_some_and(|r| !r.eq_ignore_ascii_case("audio only"))
+                    || matches!(
+                        ext,
+                        "mp4" | "webm" | "mkv" | "avi" | "flv" | "mov" | "3gp" | "m3u8" | "ts"
+                    )));
         let is_audio = (is_vcodec_none && has_acodec)
             || (!is_video
                 && !is_acodec_none
@@ -326,20 +421,14 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
         let is_exact = exact.is_some();
 
         if is_video {
-            if let (Some(w), Some(h)) = (width, height)
-                && w == h
-                && w > 0
-            {
-                continue;
-            }
-
             let (resolution, rank) = match resolve_resolution(height, width, note) {
                 Some(r) => (r.0.to_string(), r.1),
                 None => {
-                    // Fall back to note, height label, or "Default" if resolution cannot be mapped to standard dimensions.
+                    // Fall back to note, height label, format ID, or "Default" if resolution cannot be mapped to standard dimensions.
                     let label = match note {
                         Some(n) if !n.trim().is_empty() => n.trim().to_string(),
                         _ if height.is_some() => format!("{}p", height.unwrap()),
+                        _ if !format_id.is_empty() && format_id != "unknown" => format_id.clone(),
                         _ => "Default".to_string(),
                     };
                     (label, height.unwrap_or(500))
@@ -368,9 +457,17 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
                 "unknown".to_string()
             };
 
+            let is_hdr = f["dynamic_range"]
+                .as_str()
+                .is_some_and(|d| d.eq_ignore_ascii_case("hdr"))
+                || note.unwrap_or("").to_lowercase().contains("hdr");
+            let codec_score = score_vcodec(&vcodec_str);
+
             video_candidates.push((
                 rank,
                 is_direct,
+                is_hdr,
+                codec_score,
                 is_exact,
                 size_ranking,
                 MediaFormat {
@@ -395,10 +492,12 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
             } else {
                 "unknown".to_string()
             };
+            let codec_score = score_acodec(&acodec_str);
 
             audio_candidates.push((
                 is_direct,
                 is_exact,
+                codec_score,
                 size_ranking,
                 MediaFormat {
                     format_id,
@@ -418,13 +517,15 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
         b.0.cmp(&a.0)
             .then_with(|| b.1.cmp(&a.1))
             .then_with(|| b.2.cmp(&a.2))
-            .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| b.3.cmp(&a.3))
+            .then_with(|| b.4.cmp(&a.4))
+            .then_with(|| b.5.partial_cmp(&a.5).unwrap_or(std::cmp::Ordering::Equal))
     });
 
     let mut formats = Vec::new();
     let mut seen_resolutions = HashSet::new();
 
-    for (_, _, _, _, format) in video_candidates {
+    for (_, _, _, _, _, _, format) in video_candidates {
         if seen_resolutions.insert(format.resolution.clone()) {
             formats.push(format);
         }
@@ -433,10 +534,11 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
     audio_candidates.sort_by(|a, b| {
         b.0.cmp(&a.0)
             .then_with(|| b.1.cmp(&a.1))
-            .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| b.2.cmp(&a.2))
+            .then_with(|| b.3.partial_cmp(&a.3).unwrap_or(std::cmp::Ordering::Equal))
     });
 
-    if let Some((_, _, _, best_audio)) = audio_candidates.into_iter().next() {
+    if let Some((_, _, _, _, best_audio)) = audio_candidates.into_iter().next() {
         formats.push(best_audio);
     }
 
@@ -708,12 +810,24 @@ pub fn build_ytdlp_download_cmd(
 ) -> Command {
     let clean_dir = download_dir.trim_end_matches(['/', '\\']);
     let mut cmd = Command::new(yt_dlp_path);
+
+    let (is_audio, clean_format_id) = if let Some(stripped) = format_id.strip_prefix("audio:") {
+        (true, stripped)
+    } else if format_id.eq_ignore_ascii_case("audio") || format_id.eq_ignore_ascii_case("bestaudio")
+    {
+        (true, "bestaudio/best")
+    } else {
+        (false, format_id)
+    };
+
     // yt-dlp requires separate -P directory and -o template; combined -o paths cause mixed slashes and [Errno 22] on Windows.
     // --windows-filenames and --trim-filenames sanitize special unicode (e.g. accents) and keep filenames within Windows MAX_PATH.
-    let format_arg = if format_id == "best" {
+    let format_arg = if is_audio {
+        clean_format_id.to_string()
+    } else if clean_format_id == "best" {
         "bestvideo+bestaudio/best".to_string()
     } else {
-        format!("{}+bestaudio/best", format_id)
+        format!("{}+bestaudio/best", clean_format_id)
     };
     cmd.arg("-f")
         .arg(format_arg)
@@ -723,10 +837,13 @@ pub fn build_ytdlp_download_cmd(
         .arg("%(title)s.%(ext)s")
         .arg("--windows-filenames")
         .arg("--trim-filenames")
-        .arg("160")
-        .arg("--merge-output-format")
-        .arg("mp4")
-        .arg("--newline")
+        .arg("160");
+
+    if !is_audio {
+        cmd.arg("--merge-output-format").arg("mp4");
+    }
+
+    cmd.arg("--newline")
         .arg("--progress-template")
         .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str,progress._total_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
         .arg("--progress-template")
@@ -901,7 +1018,9 @@ pub fn find_format_by_quality(formats: &[MediaFormat], target_quality: &str) -> 
 
     for format in formats {
         let res_lower = format.resolution.to_lowercase();
-        let matched = if target == "4k" {
+        let matched = if target == "8k" {
+            res_lower.contains("4320") || res_lower.contains("8k")
+        } else if target == "4k" {
             res_lower.contains("2160") || res_lower.contains("4k")
         } else if target == "2k" {
             res_lower.contains("1440") || res_lower.contains("2k")
@@ -923,6 +1042,16 @@ mod tests {
     #[test]
     fn test_find_format_by_quality() {
         let formats = vec![
+            MediaFormat {
+                format_id: "571".to_string(),
+                ext: "webm".to_string(),
+                resolution: "4320p".to_string(),
+                filesize: Some(200_000_000.0),
+                is_estimated: false,
+                vcodec: "av01".to_string(),
+                acodec: "none".to_string(),
+                height: Some(4320),
+            },
             MediaFormat {
                 format_id: "313".to_string(),
                 ext: "webm".to_string(),
@@ -967,9 +1096,13 @@ mod tests {
 
         assert_eq!(
             find_format_by_quality(&formats, "best"),
-            Some("313".to_string())
+            Some("571".to_string())
         );
         assert_eq!(find_format_by_quality(&formats, "always ask"), None);
+        assert_eq!(
+            find_format_by_quality(&formats, "8k"),
+            Some("571".to_string())
+        );
         assert_eq!(
             find_format_by_quality(&formats, "4k"),
             Some("313".to_string())
@@ -1411,6 +1544,21 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert!(args_best.contains(&"bestvideo+bestaudio/best".to_string()));
+
+        let cmd_audio = build_ytdlp_download_cmd(
+            yt,
+            ff,
+            "https://youtu.be/123",
+            "audio:140",
+            "/downloads/path",
+        );
+        let args_audio: Vec<String> = cmd_audio
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args_audio.contains(&"140".to_string()));
+        assert!(!args_audio.contains(&"140+bestaudio/best".to_string()));
+        assert!(!args_audio.contains(&"--merge-output-format".to_string()));
     }
 
     #[test]
@@ -1680,5 +1828,120 @@ mod tests {
         assert_eq!(parsed.formats[0].resolution, "720p");
         assert!(parsed.formats[0].is_estimated);
         assert!(parsed.formats[0].filesize.is_some());
+    }
+
+    #[test]
+    fn test_resolve_resolution_square_and_vr() {
+        // Square videos (1:1 aspect ratio)
+        assert_eq!(
+            resolve_resolution(Some(1080), Some(1080), None),
+            Some(("1080p", 1080))
+        );
+        assert_eq!(
+            resolve_resolution(Some(720), Some(720), None),
+            Some(("720p", 720))
+        );
+        assert_eq!(
+            resolve_resolution(Some(2880), Some(2880), None),
+            Some(("4K", 2160))
+        );
+        assert_eq!(
+            resolve_resolution(Some(4320), Some(4320), None),
+            Some(("8K", 4320))
+        );
+
+        // 2:1 Equirectangular VR (e.g. 3840x1920)
+        assert_eq!(
+            resolve_resolution(Some(1920), Some(3840), None),
+            Some(("4K", 2160))
+        );
+    }
+
+    #[test]
+    fn test_parse_video_info_retains_square_video() {
+        let json_payload = r#"{
+            "title": "Square Video Test",
+            "duration": 30.0,
+            "formats": [
+                {
+                    "format_id": "sq_1080",
+                    "ext": "mp4",
+                    "width": 1080,
+                    "height": 1080,
+                    "vcodec": "avc1",
+                    "acodec": "mp4a",
+                    "filesize": 15000000.0,
+                    "protocol": "https"
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.formats.len(), 1);
+        assert_eq!(parsed.formats[0].format_id, "sq_1080");
+        assert_eq!(parsed.formats[0].resolution, "1080p");
+    }
+
+    #[test]
+    fn test_parse_video_info_parses_missing_width_height_from_resolution_string() {
+        let json_payload = r#"{
+            "title": "Resolution String Test",
+            "duration": 45.0,
+            "formats": [
+                {
+                    "format_id": "hls_no_dims",
+                    "ext": "mp4",
+                    "resolution": "1920x1080",
+                    "vcodec": "avc1",
+                    "acodec": "none",
+                    "tbr": 4000.0,
+                    "protocol": "https"
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.formats.len(), 1);
+        assert_eq!(parsed.formats[0].format_id, "hls_no_dims");
+        assert_eq!(parsed.formats[0].resolution, "1080p");
+        assert_eq!(parsed.formats[0].height, Some(1080));
+    }
+
+    #[test]
+    fn test_parse_video_info_hdr_and_codec_preference() {
+        let json_payload = r#"{
+            "title": "HDR and Codec Preference Test",
+            "duration": 120.0,
+            "formats": [
+                {
+                    "format_id": "4k_avc_sdr",
+                    "ext": "mp4",
+                    "width": 3840,
+                    "height": 2160,
+                    "vcodec": "avc1.640033",
+                    "acodec": "none",
+                    "dynamic_range": "SDR",
+                    "filesize": 150000000.0,
+                    "protocol": "https"
+                },
+                {
+                    "format_id": "4k_av1_hdr",
+                    "ext": "mp4",
+                    "width": 3840,
+                    "height": 2160,
+                    "vcodec": "av01.0.12M.10",
+                    "acodec": "none",
+                    "dynamic_range": "HDR",
+                    "filesize": 90000000.0,
+                    "protocol": "https"
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.formats.len(), 1);
+        // Must select the AV1 HDR format over the AVC SDR format despite smaller filesize
+        assert_eq!(parsed.formats[0].format_id, "4k_av1_hdr");
+        assert_eq!(parsed.formats[0].resolution, "4K");
     }
 }

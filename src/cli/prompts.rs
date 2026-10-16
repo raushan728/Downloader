@@ -155,6 +155,10 @@ impl<T: Display> Select<T> {
 }
 
 pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
+    if formats.is_empty() {
+        return None;
+    }
+
     let mut options = Vec::new();
 
     for format in formats {
@@ -228,6 +232,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                     let quality_opts = vec![
                         "always ask",
                         "best",
+                        "8k",
                         "4k",
                         "2k",
                         "1080p",

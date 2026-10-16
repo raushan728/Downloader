@@ -21,6 +21,8 @@ mod tests {
         ));
         assert!(is_valid_url("http://localhost:8080/stream"));
         assert!(is_valid_url("https://127.0.0.1:3000/video.mp4"));
+        assert!(is_valid_url("HTTP://example.com"));
+        assert!(is_valid_url("Https://YouTube.com/watch?v=123"));
     }
 
     #[test]

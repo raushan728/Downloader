@@ -70,14 +70,17 @@ pub fn resolve_media_to_download(
         }
     };
 
-    let chosen_format = if info.formats.is_empty() {
-        // Fall back directly to the best available stream when platforms provide unpartitioned media.
+    if info.formats.is_empty() {
         println!(
             "{}",
-            "INFO: No stream formats enumerated. Auto-selecting default stream...".cyan()
+            "\nERROR: No downloadable formats found for this media stream.\n"
+                .red()
+                .bold()
         );
-        Some("best".to_string())
-    } else if info.formats.len() == 1 {
+        return None;
+    }
+
+    let (chosen_id, is_audio) = if info.formats.len() == 1 {
         // Skip manual prompts when only a single format exists to avoid unnecessary confirmation.
         let single_fmt = &info.formats[0];
         println!(
@@ -88,10 +91,16 @@ pub fn resolve_media_to_download(
             )
             .green()
         );
-        Some(single_fmt.format_id.clone())
+        (single_fmt.format_id.clone(), single_fmt.is_audio())
     } else if config.default_quality == "always ask" {
         println!("{}", "INFO: Manual selection requested...".cyan());
         if let Some(format_id) = select_format(&info.formats) {
+            let is_aud = info
+                .formats
+                .iter()
+                .find(|f| f.format_id == format_id)
+                .map(|f| f.is_audio())
+                .unwrap_or(false);
             println!(
                 "{}",
                 format!(
@@ -100,12 +109,18 @@ pub fn resolve_media_to_download(
                 )
                 .green()
             );
-            Some(format_id)
+            (format_id, is_aud)
         } else {
             println!("{}", "WARNING: Download cancelled by user.".yellow());
-            None
+            return None;
         }
     } else if let Some(format_id) = find_format_by_quality(&info.formats, &config.default_quality) {
+        let is_aud = info
+            .formats
+            .iter()
+            .find(|f| f.format_id == format_id)
+            .map(|f| f.is_audio())
+            .unwrap_or(false);
         println!(
             "{}",
             format!(
@@ -114,7 +129,7 @@ pub fn resolve_media_to_download(
             )
             .green()
         );
-        Some(format_id)
+        (format_id, is_aud)
     } else {
         println!(
             "{}",
@@ -125,6 +140,12 @@ pub fn resolve_media_to_download(
             .yellow()
         );
         if let Some(format_id) = select_format(&info.formats) {
+            let is_aud = info
+                .formats
+                .iter()
+                .find(|f| f.format_id == format_id)
+                .map(|f| f.is_audio())
+                .unwrap_or(false);
             println!(
                 "{}",
                 format!(
@@ -133,14 +154,18 @@ pub fn resolve_media_to_download(
                 )
                 .green()
             );
-            Some(format_id)
+            (format_id, is_aud)
         } else {
             println!("{}", "WARNING: Download cancelled by user.".yellow());
-            None
+            return None;
         }
     };
 
-    let format_id = chosen_format?;
+    let format_id = if is_audio {
+        format!("audio:{}", chosen_id)
+    } else {
+        chosen_id
+    };
 
     if config.download_path.is_empty() {
         println!(
@@ -303,7 +328,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                 }
 
                 // Distinguish unknown shell commands from media URLs to guide users to 'help' rather than reporting "Invalid URL".
-                if !input.starts_with("http://") && !input.starts_with("https://") {
+                if !is_valid_url(input) {
                     println!(
                         "{}",
                         format!(

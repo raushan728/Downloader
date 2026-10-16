@@ -407,3 +407,20 @@ fn test_interactive_shell_url_extraction_failure_recovery() {
         ))
         .stdout(predicate::str::contains("Thanks for using DWDR!"));
 }
+
+#[test]
+fn test_interactive_shell_uppercase_url() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .write_stdin("HTTP://youtube.com/watch?v=123\nexit\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Valid URL detected"))
+        .stdout(predicate::str::contains(
+            "ERROR: Failed to extract video info",
+        ))
+        .stdout(predicate::str::contains("Thanks for using DWDR!"));
+}
