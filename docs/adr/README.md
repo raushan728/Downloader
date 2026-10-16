@@ -7,3 +7,4 @@
 | [0003](0003-unprobed-codecs-and-single-format-auto-selection.md) | Unprobed Codec Support and Single-Stream Auto-Selection | accepted | 2026-10-15 |
 | [0004](0004-configuration-validation-and-concurrency-guards.md) | Configuration Validation, Error Propagation, and Concurrency Guards | accepted | 2026-10-15 |
 | [0005](0005-codec-hdr-prioritization-and-stream-extraction-resilience.md) | Codec and HDR Prioritization, Audio Stream Handling, and Extraction Resilience | accepted | 2026-10-16 |
+| [0006](0006-process-tree-management-and-updater-integrity.md) | Process Tree Management, Downloader Resilience, and Updater Integrity | accepted | 2026-10-16 |

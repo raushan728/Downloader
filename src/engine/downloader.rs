@@ -578,6 +578,8 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
         .arg("-J")
         .arg("--no-warnings")
         .arg("--no-playlist")
+        .arg("--socket-timeout")
+        .arg("30")
         .arg(url)
         .output()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
@@ -685,7 +687,7 @@ pub fn render_progress_bar(
     render_progress_bar_with_width(percent, downloaded, total, speed, eta, get_terminal_width())
 }
 
-/// Purges incomplete download files (.part, .ytdl, unmerged chunks) while preserving completed .mp4 media.
+/// Purges incomplete download files (.part, .ytdl, unmerged chunks) and temp dirs while preserving completed media.
 pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usize {
     let dir = Path::new(download_dir);
     if !dir.exists() || !dir.is_dir() {
@@ -706,42 +708,46 @@ pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usiz
 
     for entry in read_dir.flatten() {
         let path = entry.path();
-        if !path.is_file() {
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let name_lower = name.to_lowercase();
+
+        // Support removing leftover temporary directories matching title or temp indicators.
+        if path.is_dir() {
+            let is_temp_dir = name_lower.ends_with(".temp")
+                || name_lower.ends_with(".tmp")
+                || name_lower.ends_with(".part");
+            let dir_matches = match &sanitized_title {
+                Some(title) if !title.trim().is_empty() => name.contains(title.as_str()),
+                Some(_) => false,
+                None => is_temp_dir,
+            };
+            if is_temp_dir && dir_matches && std::fs::remove_dir_all(&path).is_ok() {
+                removed_count += 1;
+            }
             continue;
         }
 
-        let file_name = match path.file_name().and_then(|n| n.to_str()) {
-            Some(name) => name,
-            None => continue,
+        let is_part_or_temp = name_lower.ends_with(".part")
+            || name_lower.ends_with(".ytdl")
+            || name_lower.ends_with(".temp");
+
+        let matches_title = match &sanitized_title {
+            Some(title) if !title.trim().is_empty() => name.contains(title.as_str()),
+            Some(_) => false,
+            None => true,
         };
 
-        let file_name_lower = file_name.to_lowercase();
-        let is_part_or_temp = file_name_lower.ends_with(".part")
-            || file_name_lower.ends_with(".ytdl")
-            || file_name_lower.ends_with(".temp");
-
-        let matches_title = if let Some(ref title) = sanitized_title {
-            if title.is_empty() {
-                true
-            } else {
-                let first_word = title.split_whitespace().next().unwrap_or(title.as_str());
-                file_name.contains(title.as_str()) || file_name.contains(first_word)
+        let is_unmerged_chunk = match &sanitized_title {
+            Some(title) if !title.trim().is_empty() => {
+                name.contains(title.as_str())
+                    && name.contains(".f")
+                    && !name_lower.ends_with(".mp4")
             }
-        } else {
-            true
-        };
-
-        let is_unmerged_chunk = if let Some(ref title) = sanitized_title {
-            if title.is_empty() {
-                file_name.contains(".f") && !file_name_lower.ends_with(".mp4")
-            } else {
-                let first_word = title.split_whitespace().next().unwrap_or(title.as_str());
-                (file_name.contains(title.as_str()) || file_name.contains(first_word))
-                    && file_name.contains(".f")
-                    && !file_name_lower.ends_with(".mp4")
-            }
-        } else {
-            false
+            Some(_) => false,
+            None => false,
         };
 
         if ((is_part_or_temp && matches_title) || is_unmerged_chunk)
@@ -773,31 +779,44 @@ pub fn is_direct_download_active() -> bool {
 
 pub fn register_direct_download(pid: u32, download_dir: &str, title: &str) {
     crate::engine::queue::record_active_download();
-    if let Ok(mut g) = DIRECT_TRACKER.lock() {
-        *g = Some(DirectDownloadTracker {
-            pid: Some(pid),
-            download_dir: download_dir.to_string(),
-            title: title.to_string(),
-        });
-    }
+    let mut guard = match DIRECT_TRACKER.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *guard = Some(DirectDownloadTracker {
+        pid: Some(pid),
+        download_dir: download_dir.to_string(),
+        title: title.to_string(),
+    });
 }
 
 pub fn unregister_direct_download() {
-    if let Ok(mut g) = DIRECT_TRACKER.lock() {
-        *g = None;
-    }
+    let mut guard = match DIRECT_TRACKER.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *guard = None;
+    drop(guard);
     crate::engine::queue::clear_active_download();
 }
 
 pub fn cancel_direct_download() {
-    if let Ok(mut g) = DIRECT_TRACKER.lock()
-        && let Some(tracker) = g.take()
-    {
+    let mut guard = match DIRECT_TRACKER.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(tracker) = guard.take() {
         if let Some(pid) = tracker.pid {
             kill_process_by_pid(pid);
         }
-        clean_partial_files(&tracker.download_dir, Some(&tracker.title));
+        let title_opt = if tracker.title.trim().is_empty() {
+            None
+        } else {
+            Some(tracker.title.as_str())
+        };
+        clean_partial_files(&tracker.download_dir, title_opt);
     }
+    drop(guard);
     crate::engine::queue::clear_active_download();
 }
 
@@ -849,7 +868,9 @@ pub fn build_ytdlp_download_cmd(
         .arg("--progress-template")
         .arg("postprocess:POSTPROCESS|%(progress.status)s")
         .arg("--no-warnings")
-        .arg("--no-playlist");
+        .arg("--no-playlist")
+        .arg("--socket-timeout")
+        .arg("30");
 
     if ffmpeg_path.exists() {
         cmd.arg("--ffmpeg-location").arg(ffmpeg_path);
@@ -867,15 +888,22 @@ pub fn download_media(
     yt_dlp_path: &Path,
     ffmpeg_path: &Path,
     download_dir: &str,
+    title: Option<&str>,
 ) -> Result<(), String> {
     let mut cmd = build_ytdlp_download_cmd(yt_dlp_path, ffmpeg_path, url, format_id, download_dir);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
     let pid = child.id();
-    register_direct_download(pid, download_dir, "");
+    register_direct_download(pid, download_dir, title.unwrap_or(""));
 
     let mut stderr_handle = child.stderr.take();
     // Drain stderr asynchronously so unread process error buffers do not deadlock stdout pipe reading.
@@ -934,7 +962,7 @@ pub fn download_media(
         println!("{}", "SUCCESS: Finalizing complete!".green());
         Ok(())
     } else {
-        clean_partial_files(download_dir, None);
+        clean_partial_files(download_dir, title);
         println!();
         Err(extract_engine_error(&stderr_output))
     }
@@ -955,6 +983,12 @@ where
     G: Fn(f64, &str, &str, &str, &str, bool),
 {
     let mut cmd = build_ytdlp_download_cmd(yt_dlp_path, ffmpeg_path, url, format_id, download_dir);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
 
     let mut child = cmd
         .spawn()
@@ -1002,7 +1036,6 @@ where
     if status.success() {
         Ok(())
     } else {
-        clean_partial_files(download_dir, None);
         Err(extract_engine_error(&stderr_output))
     }
 }
@@ -1533,6 +1566,8 @@ mod tests {
         assert!(args.contains(&"160".to_string()));
         assert!(args.contains(&"--no-playlist".to_string()));
         assert!(args.contains(&"--no-warnings".to_string()));
+        assert!(args.contains(&"--socket-timeout".to_string()));
+        assert!(args.contains(&"30".to_string()));
         assert!(args.contains(&"--merge-output-format".to_string()));
         assert!(args.contains(&"mp4".to_string()));
         assert!(args.contains(&"302+bestaudio/best".to_string()));
@@ -1740,6 +1775,20 @@ mod tests {
         assert!(!ytdl_file.exists());
         assert!(completed_file.exists());
         assert!(unrelated_file.exists());
+
+        // Empty title must not delete unrelated partial files
+        let other_part = dir_path.join("Important Video.part");
+        std::fs::write(&other_part, "other data").unwrap();
+        let removed_empty = clean_partial_files(dir_path.to_str().unwrap(), Some(""));
+        assert_eq!(removed_empty, 0);
+        assert!(other_part.exists());
+
+        // Temp directory removal
+        let temp_subdir = dir_path.join("Temp Video.temp");
+        std::fs::create_dir(&temp_subdir).unwrap();
+        let removed_dir = clean_partial_files(dir_path.to_str().unwrap(), Some("Temp Video"));
+        assert_eq!(removed_dir, 1);
+        assert!(!temp_subdir.exists());
     }
 
     #[test]

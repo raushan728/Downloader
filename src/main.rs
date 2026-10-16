@@ -30,7 +30,12 @@ fn main() {
     }
 
     // Trap SIGINT/Ctrl+C to terminate child process trees and sweep orphaned partial download artifacts.
+    static SIGNAL_RECEIVED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
     let _ = ctrlc::set_handler(move || {
+        if SIGNAL_RECEIVED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            std::process::exit(130);
+        }
         cancel_direct_download();
         cancel_global_downloads();
         eprintln!(

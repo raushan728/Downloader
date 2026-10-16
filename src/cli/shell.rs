@@ -203,6 +203,7 @@ pub fn process_url(url: &str, config: &mut DwdrConfig) {
             &yt_dlp_path,
             &ffmpeg_path,
             &config.download_path,
+            Some(&title),
         ) {
             Ok(()) => {
                 println!(

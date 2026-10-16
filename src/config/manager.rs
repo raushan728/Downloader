@@ -521,7 +521,7 @@ mod tests {
             Some("set".to_string()),
             Some("path".to_string()),
             Some(valid_path.clone()),
-            false,
+            true,
         );
         assert_eq!(
             std::path::Path::new(&config.download_path),
@@ -533,7 +533,7 @@ mod tests {
             Some("set".to_string()),
             Some("quality".to_string()),
             Some("4k".to_string()),
-            false,
+            true,
         );
         assert_eq!(config.default_quality, "4k");
 
@@ -542,7 +542,7 @@ mod tests {
             Some("set".to_string()),
             Some("parallel".to_string()),
             Some("16".to_string()),
-            false,
+            true,
         );
         assert_eq!(config.max_parallel_downloads, 16);
 
@@ -551,7 +551,7 @@ mod tests {
             Some("set".to_string()),
             Some("update-days".to_string()),
             Some("30".to_string()),
-            false,
+            true,
         );
         assert_eq!(config.update_check_days, 30);
     }

@@ -95,6 +95,12 @@ pub fn set_global_queue(queue: Arc<Mutex<QueueManager>>) {
     }
 }
 
+pub fn clear_global_queue() {
+    if let Ok(mut g) = GLOBAL_QUEUE.lock() {
+        *g = None;
+    }
+}
+
 pub fn active_downloads_lock_path() -> Option<PathBuf> {
     ConfigManager::config_path().and_then(|p| p.parent().map(|d| d.join("active_downloads.lock")))
 }
@@ -240,10 +246,15 @@ pub fn is_download_active() -> bool {
 }
 
 pub fn cancel_global_downloads() {
-    if let Ok(g) = GLOBAL_QUEUE.lock()
-        && let Some(queue) = &*g
-        && let Ok(mut guard) = queue.lock()
-    {
+    let g = match GLOBAL_QUEUE.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if let Some(queue) = &*g {
+        let mut guard = match queue.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         guard.cancel_all();
     }
     clear_active_download();
@@ -251,6 +262,10 @@ pub fn cancel_global_downloads() {
 
 /// Kills the entire process tree to prevent orphan child workers (e.g. ffmpeg) from surviving.
 pub fn kill_process_by_pid(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+
     #[cfg(target_os = "windows")]
     {
         // /T flag recurses through spawned child processes, /F forces immediate termination.
@@ -263,6 +278,12 @@ pub fn kill_process_by_pid(pid: u32) {
     }
     #[cfg(not(target_os = "windows"))]
     {
+        // Terminate the process group (-pid) to sweep both yt-dlp and child ffmpeg processes,
+        // then fall back to killing the single PID directly.
+        let _ = Command::new("kill")
+            .arg("-9")
+            .arg(format!("-{}", pid))
+            .output();
         let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
     }
 }
@@ -296,6 +317,9 @@ impl QueueManager {
         download_dir: String,
     ) -> EnqueueResult {
         let mut mgr = manager_arc.lock().unwrap();
+        if mgr.cancelled.load(Ordering::SeqCst) && mgr.active_count == 0 && mgr.queue.is_empty() {
+            mgr.cancelled = Arc::new(AtomicBool::new(false));
+        }
         let task_id = mgr.next_task_id;
         mgr.next_task_id += 1;
 
@@ -461,16 +485,20 @@ impl QueueManager {
                 return;
             }
 
-            if let Some(next_id) = mgr.queue.pop_front() {
-                let task_opt = mgr
-                    .tasks
-                    .iter()
-                    .find(|t| t.lock().unwrap().id == next_id)
-                    .cloned();
-                if let Some(task) = task_opt {
-                    mgr.active_count += 1;
-                    task.lock().unwrap().status = TaskStatus::Downloading;
-                    Some((task, mgr.active_count, mgr.queue.len(), mgr.max_parallel))
+            if mgr.active_count < mgr.max_parallel {
+                if let Some(next_id) = mgr.queue.pop_front() {
+                    let task_opt = mgr
+                        .tasks
+                        .iter()
+                        .find(|t| t.lock().unwrap().id == next_id)
+                        .cloned();
+                    if let Some(task) = task_opt {
+                        mgr.active_count += 1;
+                        task.lock().unwrap().status = TaskStatus::Downloading;
+                        Some((task, mgr.active_count, mgr.queue.len(), mgr.max_parallel))
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -508,7 +536,10 @@ impl QueueManager {
         self.queue.clear();
 
         for task in &self.tasks {
-            let mut t = task.lock().unwrap();
+            let mut t = match task.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             if matches!(
                 t.status,
                 TaskStatus::Queued | TaskStatus::Downloading | TaskStatus::Finalizing
@@ -611,12 +642,14 @@ impl QueueManager {
         {
             if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
                 self.print_status();
+                println!();
                 return;
             }
 
             if !self.is_active() {
                 println!("\n{}", "INFO: No active downloads in progress.".cyan());
                 self.print_status();
+                println!();
                 return;
             }
 
@@ -682,6 +715,8 @@ impl QueueManager {
                 );
                 count += 1;
 
+                let term_w = crate::engine::downloader::get_terminal_width();
+
                 for (id, title, status, prog) in &active_tasks {
                     let bar = render_progress_bar(
                         prog.percent,
@@ -696,7 +731,22 @@ impl QueueManager {
                     } else {
                         "".normal()
                     };
-                    println!("  [#{}] \"{}\"{}", id, title, status_str);
+                    let status_extra_len = if *status == TaskStatus::Finalizing {
+                        24
+                    } else {
+                        0
+                    };
+                    let max_title_len = term_w.saturating_sub(15 + status_extra_len).max(10);
+                    let title_display = if title.chars().count() > max_title_len {
+                        let truncated: String = title
+                            .chars()
+                            .take(max_title_len.saturating_sub(3))
+                            .collect();
+                        format!("{}...", truncated)
+                    } else {
+                        title.clone()
+                    };
+                    println!("  [#{}] \"{}\"{}", id, title_display, status_str);
                     println!("       {}", bar_clean);
                     count += 2;
                 }
@@ -705,6 +755,15 @@ impl QueueManager {
                 lines_printed = count;
             }
 
+            if lines_printed > 0 {
+                let _ = crossterm::execute!(
+                    io::stdout(),
+                    crossterm::cursor::MoveUp(lines_printed),
+                    crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+                );
+            }
+            println!("{}", "INFO: Exited real-time status monitor.".cyan());
+            self.print_status();
             println!();
         }
     }
@@ -938,17 +997,13 @@ mod tests {
         set_global_queue(Arc::clone(&mgr_arc));
         assert!(!is_download_active());
 
-        let _ = QueueManager::enqueue(
-            &mgr_arc,
-            "url1".to_string(),
-            "Title 1".to_string(),
-            "248".to_string(),
-            "/tmp".to_string(),
-        );
+        mgr_arc.lock().unwrap().active_count = 1;
         assert!(is_download_active());
 
         mgr_arc.lock().unwrap().cancel_all();
         assert!(!is_download_active());
+
+        clear_global_queue();
     }
     #[test]
     fn test_queue_zero_parallel() {
@@ -1131,5 +1186,59 @@ mod tests {
         assert!(mgr.is_active());
         mgr.print_queue();
         mgr.print_status_live();
+    }
+
+    #[test]
+    fn test_queue_max_parallel_reduction() {
+        let mgr_arc = QueueManager::new(3, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        {
+            let mut mgr = mgr_arc.lock().unwrap();
+            mgr.active_count = 3;
+            mgr.max_parallel = 1; // Dynamically reduced to 1
+            mgr.queue.push_back(100);
+            mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+                id: 100,
+                url: "url100".to_string(),
+                title: "Queued Task 100".to_string(),
+                format_id: "137".to_string(),
+                download_dir: "/tmp".to_string(),
+                status: TaskStatus::Queued,
+                progress: TaskProgress::default(),
+            })));
+        }
+
+        // Simulate one task finishing: active_count drops from 3 to 2.
+        // Because active_count (2) is still >= max_parallel (1), task 100 must NOT be promoted!
+        QueueManager::on_task_finished(&mgr_arc);
+
+        {
+            let mgr = mgr_arc.lock().unwrap();
+            assert_eq!(mgr.active_count, 2);
+            assert_eq!(mgr.queue.len(), 1);
+            assert_eq!(mgr.queue[0], 100);
+        }
+    }
+
+    #[test]
+    fn test_queue_cancelled_latch_resets_on_enqueue() {
+        let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        {
+            let mut mgr = mgr_arc.lock().unwrap();
+            mgr.cancel_all();
+            assert!(mgr.cancelled.load(Ordering::SeqCst));
+            assert_eq!(mgr.active_count, 0);
+            assert!(mgr.queue.is_empty());
+        }
+
+        let _ = QueueManager::enqueue(
+            &mgr_arc,
+            "url".to_string(),
+            "Title".to_string(),
+            "137".to_string(),
+            "/tmp".to_string(),
+        );
+
+        let mgr = mgr_arc.lock().unwrap();
+        assert!(!mgr.cancelled.load(Ordering::SeqCst));
     }
 }

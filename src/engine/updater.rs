@@ -2,14 +2,96 @@ use colored::Colorize;
 use std::fs;
 use std::io::Seek;
 use std::io::Write;
+use std::path::Path;
 
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+/// Validates binary file integrity via minimum filesize, executable magic headers, and test execution.
+pub fn is_valid_executable(path: &Path, is_ffmpeg: bool) -> bool {
+    if !path.exists() || !path.is_file() {
+        return false;
+    }
+    let metadata = match fs::metadata(path) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if metadata.len() < 100_000 {
+        return false;
+    }
+
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    use std::io::Read;
+    let mut header = [0u8; 4];
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if header[0] != b'M' || header[1] != b'Z' {
+            return false;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if is_ffmpeg {
+            if &header != b"\x7fELF" {
+                return false;
+            }
+        } else {
+            let is_valid = (&header == b"\x7fELF")
+                || (&header[0..2] == b"#!")
+                || (header == [0x50, 0x4b, 0x03, 0x04]);
+            if !is_valid {
+                return false;
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let is_macho = (&header == &[0xfe, 0xed, 0xfa, 0xce])
+            || (&header == &[0xfe, 0xed, 0xfa, 0xcf])
+            || (&header == &[0xce, 0xfa, 0xed, 0xfe])
+            || (&header == &[0xcf, 0xfa, 0xed, 0xfe])
+            || (&header == &[0xca, 0xfe, 0xba, 0xbe]);
+        if is_ffmpeg {
+            if !is_macho {
+                return false;
+            }
+        } else {
+            let is_valid =
+                is_macho || (&header[0..2] == b"#!") || (&header == &[0x50, 0x4b, 0x03, 0x04]);
+            if !is_valid {
+                return false;
+            }
+        }
+    }
+
+    let flag = if is_ffmpeg { "-version" } else { "--version" };
+    match std::process::Command::new(path).arg(flag).output() {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
+}
+
 pub fn ensure_dependencies() -> Result<(), String> {
     let yt_dlp_path = get_ytdlp_path();
+
+    if yt_dlp_path.exists() && !is_valid_executable(&yt_dlp_path, false) {
+        println!(
+            "{}",
+            "WARNING: Detected corrupted or invalid yt-dlp binary. Re-downloading...".yellow()
+        );
+        let _ = fs::remove_file(&yt_dlp_path);
+    }
 
     if !yt_dlp_path.exists() {
         println!(
@@ -24,8 +106,16 @@ pub fn ensure_dependencies() -> Result<(), String> {
             "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
         };
 
-        let response =
-            reqwest::blocking::get(url).map_err(|e| format!("Failed to download yt-dlp: {}", e))?;
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("dwdr-cli/1.0")
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+        let response = client
+            .get(url)
+            .send()
+            .map_err(|e| format!("Failed to download yt-dlp: {}", e))?;
 
         if !response.status().is_success() {
             return Err(format!(
@@ -45,21 +135,35 @@ pub fn ensure_dependencies() -> Result<(), String> {
                 .map_err(|e| format!("Failed to create deps directory: {}", e))?;
         }
 
-        let mut file = fs::File::create(&yt_dlp_path)
-            .map_err(|e| format!("Failed to create yt-dlp file: {}", e))?;
-
-        file.write_all(&bytes)
-            .map_err(|e| format!("Failed to write yt-dlp file: {}", e))?;
+        let tmp_path = if cfg!(target_os = "windows") {
+            yt_dlp_path.with_extension("tmp.exe")
+        } else {
+            yt_dlp_path.with_extension("tmp")
+        };
+        {
+            let mut file = fs::File::create(&tmp_path)
+                .map_err(|e| format!("Failed to create temporary yt-dlp file: {}", e))?;
+            file.write_all(&bytes)
+                .map_err(|e| format!("Failed to write temporary yt-dlp file: {}", e))?;
+        }
 
         #[cfg(unix)]
         {
-            let mut perms = fs::metadata(&yt_dlp_path)
+            let mut perms = fs::metadata(&tmp_path)
                 .map_err(|e| format!("Failed to read metadata: {}", e))?
                 .permissions();
             perms.set_mode(0o755);
-            fs::set_permissions(&yt_dlp_path, perms)
+            fs::set_permissions(&tmp_path, perms)
                 .map_err(|e| format!("Failed to set permissions: {}", e))?;
         }
+
+        if !is_valid_executable(&tmp_path, false) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err("Downloaded yt-dlp binary failed integrity validation".to_string());
+        }
+
+        fs::rename(&tmp_path, &yt_dlp_path)
+            .map_err(|e| format!("Failed to finalize yt-dlp binary: {}", e))?;
 
         println!("{}", "SUCCESS: Engine downloaded successfully!".green());
     }
@@ -82,7 +186,14 @@ fn get_ffmpeg_download_url() -> &'static str {
 pub fn ensure_ffmpeg() -> Result<(), String> {
     let ffmpeg_path = get_ffmpeg_path();
     if ffmpeg_path.exists() {
-        return Ok(());
+        if is_valid_executable(&ffmpeg_path, true) {
+            return Ok(());
+        }
+        println!(
+            "{}",
+            "WARNING: Detected corrupted or invalid FFmpeg binary. Re-downloading...".yellow()
+        );
+        let _ = fs::remove_file(&ffmpeg_path);
     }
 
     println!("{}", "INFO: Media Merger (FFmpeg) is missing. Downloading prebuilt binary... This will only happen once.".yellow());
@@ -91,6 +202,7 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
 
     let client = reqwest::blocking::Client::builder()
         .user_agent("dwdr-cli/1.0")
+        .timeout(std::time::Duration::from_secs(60))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
 
@@ -126,6 +238,11 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
         "ffmpeg"
     };
 
+    let tmp_ffmpeg = if cfg!(target_os = "windows") {
+        ffmpeg_path.with_extension("tmp.exe")
+    } else {
+        ffmpeg_path.with_extension("tmp")
+    };
     let mut found = false;
     for i in 0..archive.len() {
         let mut file = archive
@@ -139,28 +256,36 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
                     .map_err(|e| format!("Failed to create deps directory: {}", e))?;
             }
 
-            let mut out_file = std::fs::File::create(&ffmpeg_path)
-                .map_err(|e| format!("Failed to create FFmpeg file: {}", e))?;
+            let mut out_file = std::fs::File::create(&tmp_ffmpeg)
+                .map_err(|e| format!("Failed to create temporary FFmpeg file: {}", e))?;
             std::io::copy(&mut file, &mut out_file)
-                .map_err(|e| format!("Failed to write FFmpeg file: {}", e))?;
+                .map_err(|e| format!("Failed to write temporary FFmpeg file: {}", e))?;
             found = true;
             break;
         }
     }
 
     if !found {
+        let _ = fs::remove_file(&tmp_ffmpeg);
         return Err("FFmpeg executable not found in the downloaded archive".to_string());
     }
 
     #[cfg(unix)]
     {
-        let mut perms = fs::metadata(&ffmpeg_path)
+        let mut perms = fs::metadata(&tmp_ffmpeg)
             .map_err(|e| format!("Failed to read metadata: {}", e))?
             .permissions();
         perms.set_mode(0o755);
-        fs::set_permissions(&ffmpeg_path, perms)
-            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+        let _ = fs::set_permissions(&tmp_ffmpeg, perms);
     }
+
+    if !is_valid_executable(&tmp_ffmpeg, true) {
+        let _ = fs::remove_file(&tmp_ffmpeg);
+        return Err("Extracted FFmpeg binary failed integrity validation".to_string());
+    }
+
+    fs::rename(&tmp_ffmpeg, &ffmpeg_path)
+        .map_err(|e| format!("Failed to finalize FFmpeg binary: {}", e))?;
 
     println!(
         "{}",
@@ -183,8 +308,16 @@ pub fn update_self() -> Result<(), String> {
 
     println!("{}", "INFO: Downloading latest DWDR release...".cyan());
 
-    let response =
-        reqwest::blocking::get(url).map_err(|e| format!("Failed to download update: {}", e))?;
+    let client = reqwest::blocking::Client::builder()
+        .user_agent("dwdr-updater")
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| format!("Failed to download update: {}", e))?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -197,7 +330,51 @@ pub fn update_self() -> Result<(), String> {
         .bytes()
         .map_err(|e| format!("Failed to read update bytes: {}", e))?;
 
-    let tmp_exe = current_exe.with_extension("tmp");
+    if bytes.len() < 100_000 {
+        return Err("Downloaded update binary is too small or invalid".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if bytes.len() < 2 || bytes[0] != b'M' || bytes[1] != b'Z' {
+            return Err(
+                "Downloaded binary does not have a valid Windows executable header".to_string(),
+            );
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if bytes.len() < 4 || &bytes[0..4] != b"\x7fELF" {
+            return Err(
+                "Downloaded binary does not have a valid ELF executable header".to_string(),
+            );
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if bytes.len() < 4 {
+            return Err("Downloaded binary is too small".to_string());
+        }
+        let header = &bytes[0..4];
+        let is_macho = (header == &[0xfe, 0xed, 0xfa, 0xce])
+            || (header == &[0xfe, 0xed, 0xfa, 0xcf])
+            || (header == &[0xce, 0xfa, 0xed, 0xfe])
+            || (header == &[0xcf, 0xfa, 0xed, 0xfe])
+            || (header == &[0xca, 0xfe, 0xba, 0xbe]);
+        if !is_macho {
+            return Err(
+                "Downloaded binary does not have a valid Mach-O executable header".to_string(),
+            );
+        }
+    }
+
+    let tmp_exe = if cfg!(target_os = "windows") {
+        current_exe.with_extension("tmp.exe")
+    } else {
+        current_exe.with_extension("tmp")
+    };
 
     let mut file = fs::File::create(&tmp_exe)
         .map_err(|e| format!("Failed to create temporary executable: {}", e))?;
@@ -224,9 +401,17 @@ pub fn update_self() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let old_exe = current_exe.with_extension("old");
-        let _ = std::fs::rename(&current_exe, &old_exe);
-        std::fs::rename(&tmp_exe, &current_exe)
-            .map_err(|e| format!("Failed to replace binary: {}", e))?;
+        if old_exe.exists() {
+            let _ = std::fs::remove_file(&old_exe);
+        }
+        std::fs::rename(&current_exe, &old_exe)
+            .map_err(|e| format!("Failed to backup current executable: {}", e))?;
+
+        if let Err(e) = std::fs::rename(&tmp_exe, &current_exe) {
+            let _ = std::fs::rename(&old_exe, &current_exe);
+            let _ = std::fs::remove_file(&tmp_exe);
+            return Err(format!("Failed to replace binary (rolled back): {}", e));
+        }
     }
 
     println!(
@@ -235,4 +420,24 @@ pub fn update_self() -> Result<(), String> {
     );
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_valid_executable_rejects_missing_and_corrupt() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing = temp_dir.path().join("missing.exe");
+        assert!(!is_valid_executable(&missing, false));
+
+        let empty = temp_dir.path().join("empty.exe");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(!is_valid_executable(&empty, false));
+
+        let small = temp_dir.path().join("small.exe");
+        std::fs::write(&small, b"not enough bytes").unwrap();
+        assert!(!is_valid_executable(&small, false));
+    }
 }
