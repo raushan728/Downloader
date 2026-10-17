@@ -282,6 +282,7 @@ pub fn kill_process_by_pid(pid: u32) {
         // then fall back to killing the single PID directly.
         let _ = Command::new("kill")
             .arg("-9")
+            .arg("--")
             .arg(format!("-{}", pid))
             .output();
         let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
@@ -1609,20 +1610,27 @@ mod tests {
         let status = Command::new("kill")
             .arg("-0")
             .arg(child_pid.to_string())
+            .stderr(Stdio::null())
             .status()
             .unwrap();
         assert!(status.success());
 
         kill_process_by_pid(parent_pid);
 
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        let grandchild_status = Command::new("kill")
-            .arg("-0")
-            .arg(child_pid.to_string())
-            .status()
-            .unwrap();
-        assert!(!grandchild_status.success());
+        let mut terminated = false;
+        for _ in 0..40 {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let grandchild_status = Command::new("kill")
+                .arg("-0")
+                .arg(child_pid.to_string())
+                .stderr(Stdio::null())
+                .status();
+            if grandchild_status.map(|s| !s.success()).unwrap_or(true) {
+                terminated = true;
+                break;
+            }
+        }
+        assert!(terminated, "Grandchild process should have been terminated");
 
         let _ = child.wait();
     }
