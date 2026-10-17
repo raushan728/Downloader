@@ -77,6 +77,7 @@ fn test_config_set_invalid_parallel() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
 
+    // Non-numeric string
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
     cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
         .args(["config", "set", "parallel", "invalid"])
@@ -84,6 +85,50 @@ fn test_config_set_invalid_parallel() {
         .success()
         .stdout(predicate::str::contains(
             "ERROR: Invalid parallel downloads value",
+        ));
+
+    // Lower bound violation: 0
+    let mut cmd_zero = Command::cargo_bin("dwdr").unwrap();
+    cmd_zero
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "parallel", "0"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ERROR: Invalid parallel downloads value. Must be between 1 and 16.",
+        ));
+
+    // Upper bound violation: 17
+    let mut cmd_high = Command::cargo_bin("dwdr").unwrap();
+    cmd_high
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "parallel", "17"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ERROR: Invalid parallel downloads value. Must be between 1 and 16.",
+        ));
+
+    // Valid lower boundary: 1
+    let mut cmd_valid_low = Command::cargo_bin("dwdr").unwrap();
+    cmd_valid_low
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "parallel", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Successfully updated parallel to 1",
+        ));
+
+    // Valid upper boundary: 16
+    let mut cmd_valid_high = Command::cargo_bin("dwdr").unwrap();
+    cmd_valid_high
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "parallel", "16"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Successfully updated parallel to 16",
         ));
 }
 
@@ -230,12 +275,47 @@ fn test_config_set_invalid_update_days() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
 
-    let mut cmd = Command::cargo_bin("dwdr").unwrap();
-    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
-        .args(["config", "set", "update-days", "9999"])
+    // Non-numeric string
+    let mut cmd_str = Command::cargo_bin("dwdr").unwrap();
+    cmd_str
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "update-days", "invalid"])
         .assert()
         .success()
         .stdout(predicate::str::contains("ERROR: Invalid update-days value"));
+
+    // Upper bound violation: 366
+    let mut cmd_bound = Command::cargo_bin("dwdr").unwrap();
+    cmd_bound
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "update-days", "366"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ERROR: Invalid update-days value. Must be between 0 and 365.",
+        ));
+
+    // Valid lower boundary: 0
+    let mut cmd_zero = Command::cargo_bin("dwdr").unwrap();
+    cmd_zero
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "update-days", "0"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Successfully updated update-days to 0",
+        ));
+
+    // Valid upper boundary: 365
+    let mut cmd_max = Command::cargo_bin("dwdr").unwrap();
+    cmd_max
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "update-days", "365"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Successfully updated update-days to 365",
+        ));
 }
 
 #[test]

@@ -1177,6 +1177,12 @@ pub fn find_completed_file(download_dir: &str, title: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use serial_test::serial;
+    #[cfg(unix)]
+    use std::io::{BufRead, BufReader};
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
+    #[cfg(unix)]
+    use std::process::Stdio;
 
     #[test]
     fn test_queue_enqueue_and_capacity() {
@@ -1573,5 +1579,51 @@ mod tests {
         let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
         mgr_arc.lock().unwrap().print_queue_live();
         mgr_arc.lock().unwrap().print_queue();
+    }
+
+    #[test]
+    fn test_kill_process_by_pid_zero_noop() {
+        kill_process_by_pid(0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_kill_process_by_pid_tree_termination() {
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 60 & echo $! && wait")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Failed to spawn process group parent");
+
+        let parent_pid = child.id();
+        assert!(parent_pid > 0);
+
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let mut child_pid_str = String::new();
+        reader.read_line(&mut child_pid_str).unwrap();
+        let child_pid: u32 = child_pid_str.trim().parse().unwrap();
+        assert!(child_pid > 0);
+
+        let status = Command::new("kill")
+            .arg("-0")
+            .arg(child_pid.to_string())
+            .status()
+            .unwrap();
+        assert!(status.success());
+
+        kill_process_by_pid(parent_pid);
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let grandchild_status = Command::new("kill")
+            .arg("-0")
+            .arg(child_pid.to_string())
+            .status()
+            .unwrap();
+        assert!(!grandchild_status.success());
+
+        let _ = child.wait();
     }
 }
