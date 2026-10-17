@@ -1176,6 +1176,7 @@ pub fn find_completed_file(download_dir: &str, title: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_queue_enqueue_and_capacity() {
@@ -1278,6 +1279,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_global_queue_is_download_active() {
         let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
         set_global_queue(Arc::clone(&mgr_arc));

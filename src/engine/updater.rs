@@ -1,7 +1,6 @@
 use colored::Colorize;
 use std::fs;
-use std::io::Seek;
-use std::io::Write;
+use std::io::{Read, Seek, Write};
 use std::path::Path;
 
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
@@ -26,7 +25,6 @@ pub fn is_valid_executable(path: &Path, is_ffmpeg: bool) -> bool {
         Ok(f) => f,
         Err(_) => return false,
     };
-    use std::io::Read;
     let mut header = [0u8; 4];
     if file.read_exact(&mut header).is_err() {
         return false;

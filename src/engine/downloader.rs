@@ -3,6 +3,8 @@ use crossterm::terminal;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write, stdout};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
@@ -904,7 +906,6 @@ pub fn download_media(
 
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
 
@@ -1006,7 +1007,6 @@ where
 
     #[cfg(unix)]
     {
-        use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
 
@@ -1091,6 +1091,8 @@ pub fn find_format_by_quality(formats: &[MediaFormat], target_quality: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn test_find_format_by_quality() {
@@ -1730,8 +1732,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test_fetch_video_info_simulated_engine_errors() {
-        use std::os::unix::fs::PermissionsExt;
-
         let temp_dir = tempfile::tempdir().unwrap();
         let mock_engine = temp_dir.path().join("mock_ytdlp.sh");
 

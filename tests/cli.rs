@@ -1,5 +1,12 @@
+mod common;
+
 use assert_cmd::Command;
+use common::{
+    MockFfmpegBuilder, MockResponse, MockServer, MockYtDlpBuilder, sample_multi_format_json,
+    sample_single_format_json,
+};
 use predicates::prelude::*;
+use serial_test::serial;
 use tempfile::tempdir;
 
 #[test]
@@ -12,6 +19,7 @@ fn test_cli_invalid_url() {
 }
 
 #[test]
+#[serial]
 fn test_cli_valid_url() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -25,6 +33,7 @@ fn test_cli_valid_url() {
 }
 
 #[test]
+#[serial]
 fn test_config_show() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -39,6 +48,7 @@ fn test_config_show() {
 }
 
 #[test]
+#[serial]
 fn test_config_set_valid() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -62,6 +72,7 @@ fn test_config_set_valid() {
 }
 
 #[test]
+#[serial]
 fn test_config_set_invalid_parallel() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -86,6 +97,7 @@ fn test_cli_self_update_help() {
 }
 
 #[test]
+#[serial]
 fn test_cli_help_does_not_create_config_file() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -100,6 +112,7 @@ fn test_cli_help_does_not_create_config_file() {
 }
 
 #[test]
+#[serial]
 fn test_config_reset_command_with_confirmation() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -129,6 +142,7 @@ fn test_config_reset_command_with_confirmation() {
 }
 
 #[test]
+#[serial]
 fn test_config_reset_cancelled() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -160,6 +174,7 @@ fn test_config_reset_cancelled() {
 }
 
 #[test]
+#[serial]
 fn test_config_reset_force() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -180,6 +195,7 @@ fn test_config_reset_force() {
 }
 
 #[test]
+#[serial]
 fn test_config_set_invalid_quality() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -193,6 +209,7 @@ fn test_config_set_invalid_quality() {
 }
 
 #[test]
+#[serial]
 fn test_config_set_invalid_path() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -208,6 +225,7 @@ fn test_config_set_invalid_path() {
 }
 
 #[test]
+#[serial]
 fn test_config_set_invalid_update_days() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -221,6 +239,7 @@ fn test_config_set_invalid_update_days() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_config_non_tty_error() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -237,6 +256,7 @@ fn test_interactive_config_non_tty_error() {
 }
 
 #[test]
+#[serial]
 fn test_cross_process_active_download_block() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -292,6 +312,7 @@ fn test_cli_help_shows_all_subcommands() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_help_and_exit() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -312,6 +333,7 @@ fn test_interactive_shell_help_and_exit() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_status_list_queue_commands() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -327,6 +349,7 @@ fn test_interactive_shell_status_list_queue_commands() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_unrecognized_command_guidance() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -345,6 +368,7 @@ fn test_interactive_shell_unrecognized_command_guidance() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_empty_lines_and_eof() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -360,6 +384,7 @@ fn test_interactive_shell_empty_lines_and_eof() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_cancel_and_clear() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -376,6 +401,7 @@ fn test_interactive_shell_cancel_and_clear() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_case_insensitivity() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -392,6 +418,7 @@ fn test_interactive_shell_case_insensitivity() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_url_extraction_failure_recovery() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -409,6 +436,7 @@ fn test_interactive_shell_url_extraction_failure_recovery() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_uppercase_url() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -426,6 +454,7 @@ fn test_interactive_shell_uppercase_url() {
 }
 
 #[test]
+#[serial]
 fn test_config_path_pointing_to_directory_resolves_config_file() {
     let temp_dir = tempdir().unwrap();
     let dir_path = temp_dir.path();
@@ -451,6 +480,7 @@ fn test_config_path_pointing_to_directory_resolves_config_file() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_config_in_non_tty() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -470,6 +500,7 @@ fn test_interactive_shell_config_in_non_tty() {
 }
 
 #[test]
+#[serial]
 fn test_interactive_shell_queue_live_command() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -481,4 +512,103 @@ fn test_interactive_shell_queue_live_command() {
         .success()
         .stdout(predicate::str::contains("Download Queue"))
         .stdout(predicate::str::contains("Thanks for using DWDR!"));
+}
+
+#[test]
+fn test_mock_server_offline_responses() {
+    let server = MockServer::start();
+    server.mock_path("/api/version", MockResponse::ok(b"1.0.0"));
+    server.mock_path(
+        "/error/403",
+        MockResponse::status(403, "Forbidden", b"Access Denied"),
+    );
+    server.mock_path(
+        "/error/429",
+        MockResponse::status(429, "Too Many Requests", b"Rate limited"),
+    );
+
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
+
+    let resp200 = client.get(server.url("/api/version")).send().unwrap();
+    assert_eq!(resp200.status().as_u16(), 200);
+    assert_eq!(resp200.text().unwrap(), "1.0.0");
+
+    let resp403 = client.get(server.url("/error/403")).send().unwrap();
+    assert_eq!(resp403.status().as_u16(), 403);
+    assert_eq!(resp403.text().unwrap(), "Access Denied");
+
+    let resp429 = client.get(server.url("/error/429")).send().unwrap();
+    assert_eq!(resp429.status().as_u16(), 429);
+    assert_eq!(resp429.text().unwrap(), "Rate limited");
+
+    let resp404 = client.get(server.url("/unmocked")).send().unwrap();
+    assert_eq!(resp404.status().as_u16(), 404);
+}
+
+#[test]
+fn test_mock_ytdlp_and_ffmpeg_execution() {
+    let temp_dir = tempdir().unwrap();
+
+    // 1. Mock yt-dlp returning multi-format JSON with progress lines
+    let sample_json = sample_multi_format_json("Hermetic Mock Video");
+    let ytdlp_path = MockYtDlpBuilder::new()
+        .with_json(sample_json)
+        .with_progress_lines(vec![
+            "[download]  50.0% of ~ 10.00MiB at 2.00MiB/s ETA 00:05".to_string(),
+        ])
+        .build(temp_dir.path());
+
+    let ytdlp_output = std::process::Command::new(&ytdlp_path)
+        .output()
+        .expect("Failed to execute mock yt-dlp");
+    assert!(ytdlp_output.status.success());
+    let stdout = String::from_utf8_lossy(&ytdlp_output.stdout);
+    assert!(stdout.contains("Hermetic Mock Video"));
+    assert!(stdout.contains("1080p"));
+    assert!(stdout.contains("[download]  50.0%"));
+
+    // 2. Mock yt-dlp single-format JSON fixture and error simulation
+    let single_json = sample_single_format_json("Single Format Video");
+    assert!(single_json.contains("Single Format Video"));
+
+    let err_dir = temp_dir.path().join("err_sub");
+    std::fs::create_dir_all(&err_dir).unwrap();
+    let error_ytdlp_path = MockYtDlpBuilder::new()
+        .with_stderr("ERROR: Video unavailable")
+        .with_exit_code(1)
+        .build(&err_dir);
+    let err_output = std::process::Command::new(&error_ytdlp_path)
+        .output()
+        .expect("Failed to execute error mock yt-dlp");
+    assert!(!err_output.status.success());
+    assert_eq!(err_output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&err_output.stderr).contains("ERROR: Video unavailable"));
+
+    // 3. Mock ffmpeg handling -version probe
+    let ffmpeg_path = MockFfmpegBuilder::new().build(temp_dir.path());
+    let ffmpeg_output = std::process::Command::new(&ffmpeg_path)
+        .arg("-version")
+        .output()
+        .expect("Failed to execute mock ffmpeg");
+    assert!(ffmpeg_output.status.success());
+    let stdout_ff = String::from_utf8_lossy(&ffmpeg_output.stdout);
+    assert!(stdout_ff.contains("ffmpeg version"));
+    assert!(stdout_ff.contains("dwdr-mock"));
+
+    // 4. Mock ffmpeg error simulation
+    let ff_err_dir = temp_dir.path().join("ff_err");
+    std::fs::create_dir_all(&ff_err_dir).unwrap();
+    let err_ffmpeg_path = MockFfmpegBuilder::new()
+        .with_stderr("Conversion failed")
+        .with_exit_code(2)
+        .build(&ff_err_dir);
+    let ff_err_output = std::process::Command::new(&err_ffmpeg_path)
+        .output()
+        .expect("Failed to execute error mock ffmpeg");
+    assert!(!ff_err_output.status.success());
+    assert_eq!(ff_err_output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&ff_err_output.stderr).contains("Conversion failed"));
 }

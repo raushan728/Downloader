@@ -1,0 +1,111 @@
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+
+pub struct MockYtDlpBuilder {
+    json_output: Option<String>,
+    exit_code: i32,
+    stderr_output: Option<String>,
+    progress_lines: Vec<String>,
+}
+
+impl Default for MockYtDlpBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MockYtDlpBuilder {
+    pub fn new() -> Self {
+        Self {
+            json_output: None,
+            exit_code: 0,
+            stderr_output: None,
+            progress_lines: Vec::new(),
+        }
+    }
+
+    pub fn with_json(mut self, json: impl Into<String>) -> Self {
+        self.json_output = Some(json.into());
+        self
+    }
+
+    pub fn with_exit_code(mut self, code: i32) -> Self {
+        self.exit_code = code;
+        self
+    }
+
+    pub fn with_stderr(mut self, err: impl Into<String>) -> Self {
+        self.stderr_output = Some(err.into());
+        self
+    }
+
+    pub fn with_progress_lines(mut self, lines: Vec<String>) -> Self {
+        self.progress_lines = lines;
+        self
+    }
+
+    pub fn build(self, dir: &Path) -> PathBuf {
+        #[cfg(unix)]
+        {
+            let script_path = dir.join("yt-dlp");
+            let mut script = String::from("#!/bin/sh\n");
+
+            if let Some(err) = &self.stderr_output {
+                script.push_str(&format!("echo '{}' >&2\n", err.replace('\'', "'\\''")));
+            }
+
+            for line in &self.progress_lines {
+                script.push_str(&format!("echo '{}'\n", line.replace('\'', "'\\''")));
+            }
+
+            if let Some(json) = &self.json_output {
+                script.push_str(&format!("echo '{}'\n", json.replace('\'', "'\\''")));
+            }
+
+            script.push_str(&format!("exit {}\n", self.exit_code));
+
+            std::fs::write(&script_path, script).expect("Failed to write mock yt-dlp");
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+                .expect("Failed to set mock yt-dlp permissions");
+
+            script_path
+        }
+        #[cfg(windows)]
+        {
+            let script_path = dir.join("yt-dlp.bat");
+            let mut script = String::from("@echo off\r\n");
+
+            if let Some(err) = &self.stderr_output {
+                script.push_str(&format!("echo {} >&2\r\n", err));
+            }
+
+            for line in &self.progress_lines {
+                script.push_str(&format!("echo {}\r\n", line));
+            }
+
+            if let Some(json) = &self.json_output {
+                script.push_str(&format!("echo {}\r\n", json));
+            }
+
+            script.push_str(&format!("exit /b {}\r\n", self.exit_code));
+
+            std::fs::write(&script_path, script).expect("Failed to write mock yt-dlp.bat");
+            script_path
+        }
+    }
+}
+
+pub fn sample_single_format_json(title: &str) -> String {
+    format!(
+        r#"{{"title":"{}","duration":120.0,"formats":[{{"format_id":"22","ext":"mp4","resolution":"720p","filesize":15000000.0,"vcodec":"avc1","acodec":"mp4a"}}]}}"#,
+        title
+    )
+}
+
+pub fn sample_multi_format_json(title: &str) -> String {
+    format!(
+        r#"{{"title":"{}","duration":300.0,"formats":[{{"format_id":"137","ext":"mp4","resolution":"1080p","filesize":50000000.0,"vcodec":"avc1","acodec":"none"}},{{"format_id":"140","ext":"m4a","resolution":"Audio","filesize":5000000.0,"vcodec":"none","acodec":"mp4a"}}]}}"#,
+        title
+    )
+}
