@@ -2,6 +2,9 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+use super::mock_ytdlp::escape_batch_line;
+
 pub struct MockFfmpegBuilder {
     exit_code: i32,
     stderr_output: Option<String>,
@@ -68,7 +71,7 @@ impl MockFfmpegBuilder {
             script.push_str(")\r\n");
 
             if let Some(err) = &self.stderr_output {
-                script.push_str(&format!("echo {} >&2\r\n", err));
+                script.push_str(&format!("echo {} >&2\r\n", escape_batch_line(err)));
             }
 
             script.push_str(&format!("exit /b {}\r\n", self.exit_code));

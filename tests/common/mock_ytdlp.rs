@@ -77,15 +77,15 @@ impl MockYtDlpBuilder {
             let mut script = String::from("@echo off\r\n");
 
             if let Some(err) = &self.stderr_output {
-                script.push_str(&format!("echo {} >&2\r\n", err));
+                script.push_str(&format!("echo {} >&2\r\n", escape_batch_line(err)));
             }
 
             for line in &self.progress_lines {
-                script.push_str(&format!("echo {}\r\n", line));
+                script.push_str(&format!("echo {}\r\n", escape_batch_line(line)));
             }
 
             if let Some(json) = &self.json_output {
-                script.push_str(&format!("echo {}\r\n", json));
+                script.push_str(&format!("echo {}\r\n", escape_batch_line(json)));
             }
 
             script.push_str(&format!("exit /b {}\r\n", self.exit_code));
@@ -94,6 +94,15 @@ impl MockYtDlpBuilder {
             script_path
         }
     }
+}
+
+pub fn escape_batch_line(s: &str) -> String {
+    s.replace('^', "^^")
+        .replace('%', "%%")
+        .replace('&', "^&")
+        .replace('<', "^<")
+        .replace('>', "^>")
+        .replace('|', "^|")
 }
 
 pub fn sample_single_format_json(title: &str) -> String {
@@ -108,4 +117,21 @@ pub fn sample_multi_format_json(title: &str) -> String {
         r#"{{"title":"{}","duration":300.0,"formats":[{{"format_id":"137","ext":"mp4","resolution":"1080p","filesize":50000000.0,"vcodec":"avc1","acodec":"none"}},{{"format_id":"140","ext":"m4a","resolution":"Audio","filesize":5000000.0,"vcodec":"none","acodec":"mp4a"}}]}}"#,
         title
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_batch_line() {
+        assert_eq!(
+            escape_batch_line("[download]  50.0% of ~ 10.00MiB at 2.00MiB/s"),
+            "[download]  50.0%% of ~ 10.00MiB at 2.00MiB/s"
+        );
+        assert_eq!(
+            escape_batch_line("foo & bar < baz > qux | pipe ^ caret % percent"),
+            "foo ^& bar ^< baz ^> qux ^| pipe ^^ caret %% percent"
+        );
+    }
 }
