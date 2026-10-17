@@ -1,44 +1,23 @@
 # Contributing to DWDR
 
-Thank you for your interest in contributing to DWDR. This document outlines the contribution process and high-level architecture.
+Thank you for contributing to DWDR. This guide outlines conventions for submitting code.
 
-## Pull Request Process
+---
 
-1. **Open an Issue First**: If you plan to add a new feature, report a bug, or introduce architectural changes, please open an issue first to discuss the proposal with maintainers before implementing.
-2. **Fork** the repository.
-3. **Branch** off from `master` (`git checkout -b feature/your-feature`).
-4. **Commit** your changes with clear, descriptive messages following conventional commits.
-5. **Push** your branch to your fork.
-6. **Open a Pull Request** against the `master` branch. 
+## Development Workflow
 
-All pull requests are automatically validated by our CI/CD pipeline. 
-Code must pass standard formatting checks (`cargo fmt`), strict linting (`cargo clippy`), and the test suite (`cargo test`).
+- **Features**: Open an issue first to discuss the proposal and scope before implementing a new feature.
+- **Bug Fixes**: Add and commit a test reproducing or capturing the issue first (`test(scope): ...`), then implement and commit the fix (`fix(scope): ...`).
+- **Refactoring Before Fixes**: If refactoring is needed to support a fix, commit the refactor first (`refactor(scope): ...`) with no behavior change before applying the fix.
+- **Atomic Commits**: Every commit must represent exactly one logical change. Do not combine refactoring, fixes, or unrelated cleanups in a single commit.
+- **Commit Format**: Follow Conventional Commits: `type(scope): brief description` (e.g., `fix(engine): ...`, `feat(cli): ...`, `test(config): ...`).
 
-Automated agents and pair programming assistants must review [AGENTS.md](AGENTS.md) for architectural invariants and code conventions.
+---
 
-## Local Development & Verification
+## Codebase Overview
 
-Before submitting changes, ensure your environment is clean:
-
-```bash
-# Format codebase
-cargo fmt
-
-# Run unit and integration tests
-cargo test
-
-# Run strict linter checks
-cargo clippy --all-targets -- -D warnings
-```
-
-## High-Level Architecture
-
-The project is structured into distinct, decoupled modules:
-
-- `src/cli`: Manages the Interactive Shell, TUI prompts (using `inquire`), native file dialogs (`rfd`), and argument routing.
-- `src/engine`: The core media engine. Handles isolated dependencies, binary process management (`yt-dlp`, `ffmpeg`), and live progress streaming.
-- `src/config`: Manages persistent user configurations (`config.toml`).
-- `src/utils`: URL protocol and regex validation helpers.
-
-For full technical details on threading, safety, and process management, see the [Architecture Deep Dive](docs/ARCHITECTURE.md).
-
+- `src/cli`: Command-line interface, interactive REPL shell, prompts, and argument parsing.
+- `src/engine`: Media downloader, process lifecycle management (`yt-dlp`, `ffmpeg`), and background download queue.
+- `src/config`: Persistent user configuration (`config.toml`), path resolution, and concurrency locks.
+- `src/utils`: URL validation and string helpers.
+- `tests/common/`: Mock binary harness for offline, network-free integration testing.

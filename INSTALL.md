@@ -1,6 +1,6 @@
 # Installation Guide
 
-DWDR is built for Windows, macOS, and Linux desktop operating systems.
+DWDR is built for Windows, macOS, and Linux desktop operating systems across both **x86_64** and **ARM64** (Apple Silicon and Linux `aarch64`) architectures.
 
 ## Automated Scripts (Recommended)
 
@@ -27,6 +27,19 @@ cd Downloader
 2. Build and install globally via Cargo:
 ```bash
 cargo install --path .
+```
+
+## Network Proxy Configuration
+
+If you are running DWDR in an enterprise environment or behind a firewall, configure your proxy before running downloads or updates:
+
+```bash
+# Unix (Linux / macOS)
+export DWDR_PROXY="http://proxy.example.com:8080"
+# or export HTTPS_PROXY="http://proxy.example.com:8080"
+
+# Windows (PowerShell)
+$env:DWDR_PROXY = "http://proxy.example.com:8080"
 ```
 
 ## Uninstallation

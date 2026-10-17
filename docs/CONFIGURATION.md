@@ -27,10 +27,39 @@ default_quality = "1080p"
 
 | Key | Type | Default | Description | Valid Values |
 | --- | --- | --- | --- | --- |
-| `download_path` | string | `~/Downloads/DWDR` | Destination folder where downloaded audio and video files are saved. | Any valid directory path |
-| `default_quality` | string | `"1080p"` | Preferred video resolution matched during Smart Fallback downloads, or manual prompt. | `"always ask"`, `"best"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"audio"` |
+| `download_path` | string | `~/Downloads/DWDR` | Destination directory where downloaded media files are saved. Verified for write permissions. | Valid directory path |
+| `default_quality` | string | `"1080p"` | Preferred video resolution matched during Smart Fallback downloads, or manual prompt. | `"always ask"`, `"best"`, `"8k"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"360p"`, `"240p"`, `"144p"`, `"audio"` |
 | `max_parallel_downloads` | integer | `3` | Maximum number of concurrent media downloads allowed simultaneously in interactive mode (additional tasks wait in queue). | `1` to `16` |
-| `update_check_days` | integer | `0` | Frequency in days to check for dependency updates (`0` disables check). | Non-negative integer |
+| `update_check_days` | integer | `0` | Frequency in days to check for dependency updates (`0` disables automatic checks). | `0` to `365` |
+
+---
+
+## Environment Variables
+
+### Custom Configuration Path (`DWDR_CONFIG_PATH`)
+Set `DWDR_CONFIG_PATH` to specify a custom configuration destination:
+- If pointing to an existing directory, DWDR resolves to `<directory>/config.toml`.
+- Relative paths are automatically resolved to absolute paths.
+- Leading and trailing whitespace is trimmed. Empty or whitespace-only values are ignored and fall back to the default path.
+- Parent directories are automatically created if they do not exist.
+
+### Network Proxy Routing
+DWDR inspects standard proxy environment variables in the following order of precedence:
+1. `DWDR_PROXY` (application-specific override)
+2. `HTTPS_PROXY` / `https_proxy` (secure HTTPS requests)
+3. `ALL_PROXY` / `all_proxy` (general network traffic)
+4. `HTTP_PROXY` / `http_proxy` (plain HTTP requests)
+
+When set, all binary dependency downloads (`yt-dlp`, `ffmpeg`) and self-updates are routed through the configured HTTP/HTTPS/SOCKS proxy.
+
+---
+
+## Concurrency Protection & Locks
+
+To prevent race conditions and configuration corruption, DWDR tracks active downloads using an isolated lock file (`~/.dwdr/active_downloads.lock`):
+- Modifying settings via `dwdr config set` while another DWDR process is downloading is rejected.
+- To bypass this lock, pass `--force`.
+- DWDR validates PID liveness to automatically discard stale locks from terminated processes.
 
 ---
 
@@ -39,17 +68,28 @@ default_quality = "1080p"
 ### 1. Via Command Line
 
 ```bash
-# View all current values
+# View all current values and file path
 dwdr config show
 
-# Set specific settings
+# Set specific settings (enforces validation bounds)
 dwdr config set quality 720p
 dwdr config set parallel 5
+dwdr config set update-days 14
+dwdr config set path /media/downloads
+
+# Force update bypassing validation and concurrency locks
+dwdr config set parallel 16 --force
+
+# Reset configuration to defaults (prompts for confirmation [y/N] unless --force is passed)
+dwdr config reset
+dwdr config reset --force
 ```
 
 ### 2. Via Interactive CLI Menu
 
 Run `dwdr config` (or type `config` / `settings` inside the interactive shell) to step through guided prompts with native OS folder selection (`rfd`) and resolution pickers.
+
+In non-TTY or headless environments (e.g., automated scripts, CI), `dwdr config` fails fast with an error message instructing the user to use `dwdr config set` or edit the file directly, preventing interactive infinite loops.
 
 ### 3. Direct File Editing
 

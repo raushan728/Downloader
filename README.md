@@ -20,11 +20,11 @@ Source code repository for [DWDR]. It contains the CLI engine, interactive termi
 
 - **Performance:** Direct progressive stream downloading with multi-tier exact filesize resolution, real-time responsive visual progress bar tracking downloaded/total sizes, speed, percentage, and ETA metrics, plus clean background execution and strict MP4 audio/video merging.
 
-- **Reliability:** Zero system pollution. Isolated engines ([yt-dlp], [FFmpeg]) reside exclusively in `~/.dwdr/deps/` without modifying system package managers. Single-video safeguards (`--no-playlist`) prevent accidental multi-track playlist dumps, self-healing configuration handles corrupted settings automatically, and automated cleanup purges incomplete `.part` files on cancellation.
+- **Reliability:** Zero system pollution. Isolated engines ([yt-dlp], [FFmpeg]) reside exclusively in `~/.dwdr/deps/` without modifying system package managers. Process group isolation and signal handling terminate intermediate child processes cleanly on cancellation without orphans. Single-video safeguards (`--no-playlist`) prevent accidental multi-track playlist dumps, self-healing configuration handles corrupted settings automatically, active download locks prevent race conditions, and automated cleanup purges incomplete `.part` files on cancellation.
 
-- **Productivity:** Pure terminal ergonomics featuring an interactive non-blocking REPL shell ([inquire]), concurrent background download queue with parallel capacity controls (`max_parallel_downloads`), clean format selection, native desktop folder selection dialogs ([rfd]), and smart quality fallback.
+- **Productivity:** Pure terminal ergonomics featuring an interactive non-blocking REPL shell ([inquire]), concurrent background download queue with parallel capacity controls (`max_parallel_downloads`), in-place real-time monitoring (`status` and `queue live`), clean format selection, native desktop folder selection dialogs ([rfd]), and smart quality fallback.
 
-- **Portability:** Built on pure Rust TLS ([rustls]) via [reqwest], enabling zero-effort compilation across Linux, macOS, and Windows without OpenSSL dependencies.
+- **Portability:** Built on pure Rust TLS ([rustls]) via [reqwest], enabling zero-effort compilation across Linux, macOS, and Windows without OpenSSL dependencies. Features native ARM64 and x86_64 binary architecture detection, proxy environment routing, and exponential backoff retry.
 
 [yt-dlp]: https://github.com/yt-dlp/yt-dlp
 [FFmpeg]: https://ffmpeg.org/
@@ -60,7 +60,7 @@ Comprehensive topic guides covering every subsystem:
 | Guide | Scope | Description |
 | :--- | :--- | :--- |
 | [CLI Reference Guide][cli-guide] | Syntax & Flags | CLI arguments, options, direct downloads, and exit codes. |
-| [Command Catalog][Commands] | Command Matrix | Complete reference table of all 19 CLI options, subcommands, and REPL actions. |
+| [Command Catalog][Commands] | Command Matrix | Complete reference table of all 20 CLI options, subcommands, and REPL actions. |
 | [Usage Examples][Examples] | Practical Walkthroughs | Step-by-step scenarios: single downloads, audio extraction, GUI folder pickers, and troubleshooting. |
 | [Configuration Guide][Configuration] | Settings & Schema | `config.toml` structure, default resolutions, parallel thread limits, and self-healing recovery. |
 | [Architecture Deep Dive][Architecture] | Core Mechanics | Process streaming, dependency lifecycle, single-video safeguards, and cross-platform compilation architecture. |
