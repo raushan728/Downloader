@@ -262,21 +262,32 @@ pub fn process_url(url: &str, config: &mut DwdrConfig) {
     }
 }
 
-fn read_shell_input(prompt: &str) -> Option<String> {
-    // Fall back to line-based reading when non-interactive to prevent inquire hanging in piped/automated environments.
-    if io::stdin().is_terminal() {
-        Text::new(prompt).prompt().ok()
+fn read_line_fallback(prompt: &str) -> Option<String> {
+    print!("{} ", prompt);
+    let _ = io::stdout().flush();
+    let mut line = String::new();
+    let stdin = io::stdin();
+    let mut handle = stdin.lock();
+    if handle.read_line(&mut line).unwrap_or(0) == 0 {
+        None
     } else {
-        print!("{} ", prompt);
-        let _ = io::stdout().flush();
-        let mut line = String::new();
-        let stdin = io::stdin();
-        let mut handle = stdin.lock();
-        if handle.read_line(&mut line).unwrap_or(0) == 0 {
-            None
-        } else {
-            Some(line.trim_end_matches(['\r', '\n']).to_string())
+        Some(line.trim_end_matches(['\r', '\n']).to_string())
+    }
+}
+
+fn read_shell_input(prompt: &str) -> Option<String> {
+    // Fall back to line-based reading when non-interactive or when inquire encounters a terminal error.
+    if io::stdin().is_terminal() {
+        match Text::new(prompt).prompt() {
+            Ok(input) => Some(input),
+            Err(
+                inquire::InquireError::OperationCanceled
+                | inquire::InquireError::OperationInterrupted,
+            ) => None,
+            Err(_) => read_line_fallback(prompt),
         }
+    } else {
+        read_line_fallback(prompt)
     }
 }
 
@@ -313,7 +324,9 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     println!(
                         "  list              - Session report of all downloads (active, completed, queued)"
                     );
-                    println!("  queue             - Inspect pending queue and download limits");
+                    println!(
+                        "  queue [live]      - Inspect pending queue (use 'queue live' for real-time view)"
+                    );
                     println!("  active            - View currently active downloads snapshot");
                     println!("  cancel            - Cancel all active downloads and clear queue");
                     println!(
@@ -335,19 +348,37 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     queue_manager.lock().unwrap().print_queue();
                     continue;
                 }
+                if input.eq_ignore_ascii_case("queue live")
+                    || input.eq_ignore_ascii_case("queue -l")
+                {
+                    queue_manager.lock().unwrap().print_queue_live();
+                    continue;
+                }
                 if input.eq_ignore_ascii_case("active") {
                     queue_manager.lock().unwrap().print_status();
                     continue;
                 }
                 if input.eq_ignore_ascii_case("cancel") {
-                    queue_manager.lock().unwrap().cancel_all();
+                    QueueManager::cancel_and_join(&queue_manager);
                     println!(
                         "{}",
                         "INFO: Cancelled all active downloads and cleared queue.".yellow()
                     );
+                    println!(
+                        "{}",
+                        "Tip: Enter a new media URL to begin downloading or 'status' to verify idle state.".cyan()
+                    );
                     continue;
                 }
                 if input.eq_ignore_ascii_case("config") || input.eq_ignore_ascii_case("settings") {
+                    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+                        println!(
+                            "{}",
+                            "\nERROR: Interactive configuration requires an interactive terminal (TTY).\nTip: In scripts or headless environments, use 'dwdr config set <key> <value>' instead.\n     Type 'help' to see all available commands.\n"
+                                .red()
+                        );
+                        continue;
+                    }
                     interactive_config(config);
                     queue_manager.lock().unwrap().max_parallel =
                         config.max_parallel_downloads as usize;
@@ -359,7 +390,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     continue;
                 }
                 if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
-                    queue_manager.lock().unwrap().cancel_all();
+                    QueueManager::cancel_and_join(&queue_manager);
                     println!("{}", "INFO: Thanks for using DWDR!".green());
                     break;
                 }
@@ -369,7 +400,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     println!(
                         "{}",
                         format!(
-                            "\nERROR: Unrecognized command: \"{}\". Type a valid media URL, or 'help' for available commands.\n",
+                            "\nERROR: Unrecognized command: \"{}\". Type a valid media URL, or 'help' for available commands.\nTip: URLs must begin with http:// or https://\n",
                             input
                         )
                         .red()
@@ -421,7 +452,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                 }
             }
             None => {
-                queue_manager.lock().unwrap().cancel_all();
+                QueueManager::cancel_and_join(&queue_manager);
                 println!("{}", "INFO: Thanks for using DWDR!".green());
                 break;
             }

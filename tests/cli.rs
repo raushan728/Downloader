@@ -449,3 +449,36 @@ fn test_config_path_pointing_to_directory_resolves_config_file() {
         .success()
         .stdout(predicate::str::contains("720p"));
 }
+
+#[test]
+fn test_interactive_shell_config_in_non_tty() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .write_stdin("config\nexit\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "ERROR: Interactive configuration requires an interactive terminal (TTY)",
+        ))
+        .stdout(predicate::str::contains(
+            "Tip: In scripts or headless environments, use 'dwdr config set <key> <value>' instead.",
+        ))
+        .stdout(predicate::str::contains("Thanks for using DWDR!"));
+}
+
+#[test]
+fn test_interactive_shell_queue_live_command() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .write_stdin("queue live\nexit\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Download Queue"))
+        .stdout(predicate::str::contains("Thanks for using DWDR!"));
+}

@@ -9,3 +9,5 @@
 | [0005](0005-codec-hdr-prioritization-and-stream-extraction-resilience.md) | Codec and HDR Prioritization, Audio Stream Handling, and Extraction Resilience | accepted | 2026-10-16 |
 | [0006](0006-process-tree-management-and-updater-integrity.md) | Process Tree Management, Downloader Resilience, and Updater Integrity | accepted | 2026-10-16 |
 | [0007](0007-configuration-directory-resolution-and-pre-download-path-validation.md) | Configuration Directory Resolution and Pre-Download Path Validation | accepted | 2026-10-16 |
+| [0008](0008-repl-runtime-integrity-thread-joining-and-live-queue.md) | REPL Runtime Integrity, Thread Joining, and Live Queue Monitoring | accepted | 2026-10-17 |
+

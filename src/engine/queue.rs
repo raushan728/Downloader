@@ -82,6 +82,7 @@ pub struct QueueManager {
     queue: VecDeque<usize>,
     active_count: usize,
     active_pids: Vec<u32>,
+    worker_handles: Vec<thread::JoinHandle<()>>,
     cancelled: Arc<AtomicBool>,
     yt_dlp_path: PathBuf,
     ffmpeg_path: PathBuf,
@@ -246,16 +247,15 @@ pub fn is_download_active() -> bool {
 }
 
 pub fn cancel_global_downloads() {
-    let g = match GLOBAL_QUEUE.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if let Some(queue) = &*g {
-        let mut guard = match queue.lock() {
+    let queue_opt = {
+        let g = match GLOBAL_QUEUE.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        guard.cancel_all();
+        g.as_ref().map(Arc::clone)
+    };
+    if let Some(queue) = queue_opt {
+        QueueManager::cancel_and_join(&queue);
     }
     clear_active_download();
 }
@@ -303,6 +303,7 @@ impl QueueManager {
             queue: VecDeque::new(),
             active_count: 0,
             active_pids: Vec::new(),
+            worker_handles: Vec::new(),
             cancelled: Arc::new(AtomicBool::new(false)),
             yt_dlp_path,
             ffmpeg_path,
@@ -363,7 +364,7 @@ impl QueueManager {
         let mgr_clone = Arc::clone(manager_arc);
         let task_clone = Arc::clone(&task);
 
-        thread::spawn(move || {
+        let handle = thread::spawn(move || {
             let (url, format_id, yt_dlp_path, ffmpeg_path, download_dir, cancelled) = {
                 let mgr = mgr_clone.lock().unwrap();
                 let t = task_clone.lock().unwrap();
@@ -471,6 +472,11 @@ impl QueueManager {
 
             Self::on_task_finished(&mgr_clone);
         });
+
+        if let Ok(mut mgr) = manager_arc.lock() {
+            mgr.worker_handles.retain(|h| !h.is_finished());
+            mgr.worker_handles.push(handle);
+        }
     }
 
     // Automatically promotes and spawns the next pending task in FIFO order.
@@ -555,6 +561,35 @@ impl QueueManager {
         self.active_pids.clear();
         self.active_count = 0;
         clear_active_download();
+    }
+
+    /// Cancels queued and active tasks, terminates child process trees, and waits for all worker threads to cleanly exit.
+    pub fn cancel_and_join(manager_arc: &Arc<Mutex<Self>>) {
+        let handles = {
+            let mut mgr = match manager_arc.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            mgr.cancel_all();
+            std::mem::take(&mut mgr.worker_handles)
+        };
+        for handle in handles {
+            let _ = handle.join();
+        }
+    }
+
+    /// Waits for all currently running worker threads to finish.
+    pub fn join_workers(manager_arc: &Arc<Mutex<Self>>) {
+        let handles = {
+            let mut mgr = match manager_arc.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::mem::take(&mut mgr.worker_handles)
+        };
+        for handle in handles {
+            let _ = handle.join();
+        }
     }
 
     pub fn is_active(&self) -> bool {
@@ -655,16 +690,24 @@ impl QueueManager {
 
             println!(
                 "\n{}",
-                "=== Real-Time Download Status (Press Enter to exit live view) ===".bold()
+                "=== Real-Time Download Status (Press 'q' or Enter to exit live view) ===".bold()
             );
 
             let mut lines_printed: u16 = 0;
+            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Hide);
 
             loop {
                 if let Ok(true) = crossterm::event::poll(Duration::from_millis(200))
-                    && let Ok(crossterm::event::Event::Key(_)) = crossterm::event::read()
+                    && let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read()
+                    && key_event.kind != crossterm::event::KeyEventKind::Release
                 {
-                    break;
+                    match key_event.code {
+                        crossterm::event::KeyCode::Char('q')
+                        | crossterm::event::KeyCode::Char('Q')
+                        | crossterm::event::KeyCode::Enter
+                        | crossterm::event::KeyCode::Esc => break,
+                        _ => {}
+                    }
                 }
 
                 let tasks_snapshot: Vec<(usize, String, TaskStatus, TaskProgress)> = self
@@ -755,6 +798,8 @@ impl QueueManager {
                 lines_printed = count;
             }
 
+            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+
             if lines_printed > 0 {
                 let _ = crossterm::execute!(
                     io::stdout(),
@@ -764,6 +809,11 @@ impl QueueManager {
             }
             println!("{}", "INFO: Exited real-time status monitor.".cyan());
             self.print_status();
+            println!(
+                "{}",
+                "Tip: Type 'status' to reopen live view, or 'queue' to inspect pending queue."
+                    .cyan()
+            );
             println!();
         }
     }
@@ -788,6 +838,10 @@ impl QueueManager {
             println!(
                 "\n{}\n",
                 "INFO: No downloads recorded in this session.".cyan()
+            );
+            println!(
+                "{}",
+                "Tip: Enter a media URL to start a download, or type 'help' for available commands.".cyan()
             );
             return;
         }
@@ -820,13 +874,27 @@ impl QueueManager {
                     println!("  [#{}] \"{}\" - {}", id, title, "QUEUED".blue());
                 }
                 TaskStatus::Completed => {
-                    println!(
-                        "  [#{}] \"{}\" - {} -> {}",
-                        id,
-                        title,
-                        "COMPLETED".green().bold(),
-                        dir
-                    );
+                    if let Some(path) = find_completed_file(dir, title) {
+                        println!(
+                            "  [#{}] \"{}\" - {} -> {}",
+                            id,
+                            title,
+                            "COMPLETED".green().bold(),
+                            path.display()
+                        );
+                    } else {
+                        println!(
+                            "  [#{}] \"{}\" - {} -> {} (file not found)",
+                            id,
+                            title,
+                            "COMPLETED".yellow().bold(),
+                            dir
+                        );
+                        println!(
+                            "       {}",
+                            "Tip: The media file may have been moved, renamed, or deleted from the download directory.".cyan()
+                        );
+                    }
                 }
                 TaskStatus::Failed(err) => {
                     println!(
@@ -842,6 +910,10 @@ impl QueueManager {
                 }
             }
         }
+        println!(
+            "{}",
+            "Tip: Type 'status' for real-time progress of active tasks, or enter a URL to download.".cyan()
+        );
         println!();
     }
 
@@ -878,13 +950,227 @@ impl QueueManager {
 
         if queued_tasks.is_empty() {
             println!("  (Queue is empty)");
+            println!(
+                "  {}",
+                "Tip: Enter a media URL to start a download, or type 'help' for available commands.".cyan()
+            );
         } else {
             for (i, (id, title, _)) in queued_tasks.iter().enumerate() {
                 println!("  [#{}] Position #{}: \"{}\"", id, i + 1, title);
             }
+            println!(
+                "  {}",
+                "Tip: Type 'queue live' to watch queue positions advance in real time.".cyan()
+            );
         }
         println!();
     }
+
+    pub fn print_queue_live(&self) {
+        #[cfg(test)]
+        {
+            self.print_queue();
+        }
+        #[cfg(not(test))]
+        {
+            if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
+                self.print_queue();
+                return;
+            }
+
+            let (active_count, queued_count) = {
+                let tasks_snapshot: Vec<(usize, String, TaskStatus)> = self
+                    .tasks
+                    .iter()
+                    .map(|t| {
+                        let guard = t.lock().unwrap();
+                        (guard.id, guard.title.clone(), guard.status.clone())
+                    })
+                    .collect();
+
+                let active = tasks_snapshot
+                    .iter()
+                    .filter(|(_, _, s)| {
+                        matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
+                    })
+                    .count();
+
+                let queued = tasks_snapshot
+                    .iter()
+                    .filter(|(_, _, s)| matches!(s, TaskStatus::Queued))
+                    .count();
+
+                (active, queued)
+            };
+
+            if active_count == 0 && queued_count == 0 {
+                println!(
+                    "\n{}",
+                    "INFO: No queued or active downloads in progress.".cyan()
+                );
+                self.print_queue();
+                return;
+            }
+
+            println!(
+                "\n{}",
+                "=== Real-Time Download Queue Monitor (Press 'q' or Enter to exit live view) ==="
+                    .bold()
+            );
+
+            let mut lines_printed: u16 = 0;
+            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Hide);
+
+            loop {
+                if let Ok(true) = crossterm::event::poll(Duration::from_millis(200))
+                    && let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read()
+                    && key_event.kind != crossterm::event::KeyEventKind::Release
+                {
+                    match key_event.code {
+                        crossterm::event::KeyCode::Char('q')
+                        | crossterm::event::KeyCode::Char('Q')
+                        | crossterm::event::KeyCode::Enter
+                        | crossterm::event::KeyCode::Esc => break,
+                        _ => {}
+                    }
+                }
+
+                let tasks_snapshot: Vec<(usize, String, TaskStatus)> = self
+                    .tasks
+                    .iter()
+                    .map(|t| {
+                        let guard = t.lock().unwrap();
+                        (guard.id, guard.title.clone(), guard.status.clone())
+                    })
+                    .collect();
+
+                let queued_tasks: Vec<_> = tasks_snapshot
+                    .iter()
+                    .filter(|(_, _, s)| matches!(s, TaskStatus::Queued))
+                    .collect();
+
+                let active_tasks: Vec<_> = tasks_snapshot
+                    .iter()
+                    .filter(|(_, _, s)| {
+                        matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
+                    })
+                    .collect();
+
+                if lines_printed > 0 {
+                    let _ = crossterm::execute!(
+                        io::stdout(),
+                        crossterm::cursor::MoveUp(lines_printed),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+                    );
+                }
+
+                if active_tasks.is_empty() && queued_tasks.is_empty() {
+                    println!(
+                        "{}",
+                        "SUCCESS: All active and queued downloads finished!".green()
+                    );
+                    break;
+                }
+
+                let mut count = 0;
+                println!(
+                    "Active Slots: {}/{} | Queued in line: {}",
+                    active_tasks.len(),
+                    self.max_parallel,
+                    queued_tasks.len()
+                );
+                count += 1;
+
+                if !active_tasks.is_empty() {
+                    println!("  {}", "Currently Downloading:".cyan());
+                    count += 1;
+                    for (id, title, status) in &active_tasks {
+                        let status_tag = if *status == TaskStatus::Finalizing {
+                            " [Finalizing media...]".yellow()
+                        } else {
+                            " [Downloading]".green()
+                        };
+                        println!("    [#{}] \"{}\"{}", id, title, status_tag);
+                        count += 1;
+                    }
+                }
+
+                if !queued_tasks.is_empty() {
+                    println!("  {}", "Pending Queue:".blue());
+                    count += 1;
+                    for (i, (id, title, _)) in queued_tasks.iter().enumerate() {
+                        println!("    [#{}] Position #{}: \"{}\"", id, i + 1, title);
+                        count += 1;
+                    }
+                }
+
+                let _ = io::stdout().flush();
+                lines_printed = count;
+            }
+
+            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+
+            if lines_printed > 0 {
+                let _ = crossterm::execute!(
+                    io::stdout(),
+                    crossterm::cursor::MoveUp(lines_printed),
+                    crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+                );
+            }
+            println!("{}", "INFO: Exited real-time queue monitor.".cyan());
+            self.print_queue();
+            println!();
+        }
+    }
+}
+
+/// Locates a completed media file on disk matching the title within the download directory.
+pub fn find_completed_file(download_dir: &str, title: &str) -> Option<PathBuf> {
+    let dir_path = std::path::Path::new(download_dir);
+    if !dir_path.is_dir() {
+        return None;
+    }
+
+    let sanitized_title = title
+        .chars()
+        .filter(|c| !['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
+        .collect::<String>();
+
+    if sanitized_title.trim().is_empty() {
+        return None;
+    }
+
+    let words: Vec<String> = sanitized_title
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.to_lowercase())
+        .collect();
+
+    let read_dir = std::fs::read_dir(dir_path).ok()?;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if path.is_file()
+            && let Some(file_name) = path.file_name().and_then(|n| n.to_str())
+        {
+            let name_lower = file_name.to_lowercase();
+            if name_lower.ends_with(".part")
+                || name_lower.ends_with(".ytdl")
+                || name_lower.ends_with(".temp")
+            {
+                continue;
+            }
+            let check_len = sanitized_title.chars().count().min(50);
+            let title_prefix: String = sanitized_title.chars().take(check_len).collect();
+            if file_name.contains(&sanitized_title)
+                || file_name.starts_with(&title_prefix)
+                || (!words.is_empty() && words.iter().all(|w| name_lower.contains(w)))
+            {
+                return Some(path);
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -1240,5 +1526,50 @@ mod tests {
 
         let mgr = mgr_arc.lock().unwrap();
         assert!(!mgr.cancelled.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_queue_worker_threads_joined_on_cancel() {
+        let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_clone = Arc::clone(&finished);
+
+        let handle = thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(50));
+            finished_clone.store(true, Ordering::SeqCst);
+        });
+
+        mgr_arc.lock().unwrap().worker_handles.push(handle);
+        assert_eq!(mgr_arc.lock().unwrap().worker_handles.len(), 1);
+
+        QueueManager::cancel_and_join(&mgr_arc);
+        assert!(finished.load(Ordering::SeqCst));
+        assert!(mgr_arc.lock().unwrap().worker_handles.is_empty());
+    }
+
+    #[test]
+    fn test_queue_find_completed_file_verification() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let download_dir = temp_dir.path().to_str().unwrap();
+
+        let title = "Rust Concurrency Tutorial (2026)";
+        assert!(find_completed_file(download_dir, title).is_none());
+
+        let completed_path = temp_dir.path().join("Rust Concurrency Tutorial 2026.mp4");
+        std::fs::write(&completed_path, b"dummy media bytes").unwrap();
+
+        let found = find_completed_file(download_dir, title);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), completed_path);
+
+        std::fs::remove_file(&completed_path).unwrap();
+        assert!(find_completed_file(download_dir, title).is_none());
+    }
+
+    #[test]
+    fn test_queue_print_queue_live_fallback() {
+        let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        mgr_arc.lock().unwrap().print_queue_live();
+        mgr_arc.lock().unwrap().print_queue();
     }
 }

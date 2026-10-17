@@ -36,6 +36,8 @@ fn main() {
         if SIGNAL_RECEIVED.swap(true, std::sync::atomic::Ordering::SeqCst) {
             std::process::exit(130);
         }
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
         cancel_direct_download();
         cancel_global_downloads();
         eprintln!(
