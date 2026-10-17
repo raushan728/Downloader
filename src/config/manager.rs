@@ -556,7 +556,7 @@ mod tests {
         );
         assert_eq!(
             std::path::Path::new(&config.download_path),
-            std::path::Path::new(&valid_path).canonicalize().unwrap()
+            validate_download_path(&valid_path, false).unwrap()
         );
 
         ConfigManager::handle_cli(
