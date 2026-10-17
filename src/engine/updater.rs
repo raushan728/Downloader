@@ -2,6 +2,7 @@ use colored::Colorize;
 use std::fs;
 use std::io::{Read, Seek, Write};
 use std::path::Path;
+use std::time::Duration;
 
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
 
@@ -80,6 +81,141 @@ pub fn is_valid_executable(path: &Path, is_ffmpeg: bool) -> bool {
     }
 }
 
+/// Resolves the yt-dlp release URL based on target operating system and architecture.
+pub fn resolve_ytdlp_url(target_os: &str, target_arch: &str) -> &'static str {
+    match (target_os, target_arch) {
+        ("windows", "aarch64") => {
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_arm64.exe"
+        }
+        ("windows", _) => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe",
+        ("linux", "aarch64") => {
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64"
+        }
+        ("linux", _) => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+        ("macos", _) => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
+        _ => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+    }
+}
+
+pub fn get_ytdlp_download_url() -> &'static str {
+    resolve_ytdlp_url(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Resolves the FFmpeg release URL based on target operating system and architecture.
+pub fn resolve_ffmpeg_url(target_os: &str, target_arch: &str) -> &'static str {
+    match (target_os, target_arch) {
+        ("windows", _) => {
+            "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-win-64.zip"
+        }
+        ("linux", "aarch64") => {
+            "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-linux-arm-64.zip"
+        }
+        ("linux", _) => {
+            "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-linux-64.zip"
+        }
+        ("macos", "aarch64") => {
+            "https://github.com/eugeneware/ffmpeg-static/releases/download/b6.1.1/ffmpeg-darwin-arm64"
+        }
+        ("macos", _) => {
+            "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-osx-64.zip"
+        }
+        _ => {
+            "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-linux-64.zip"
+        }
+    }
+}
+
+pub fn get_ffmpeg_download_url() -> &'static str {
+    resolve_ffmpeg_url(std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// Inspects environment variables for proxy configuration in order of precedence.
+pub fn resolve_proxy_url() -> Option<String> {
+    for var in &[
+        "DWDR_PROXY",
+        "HTTPS_PROXY",
+        "https_proxy",
+        "ALL_PROXY",
+        "all_proxy",
+        "HTTP_PROXY",
+        "http_proxy",
+    ] {
+        if let Ok(val) = std::env::var(var) {
+            let trimmed = val.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Builds an HTTP client with configured proxy, user agent, and timeouts.
+pub fn create_http_client(user_agent: &str) -> Result<reqwest::blocking::Client, String> {
+    let mut builder = reqwest::blocking::Client::builder()
+        .user_agent(user_agent)
+        .timeout(Duration::from_secs(60));
+
+    if let Some(proxy_url) = resolve_proxy_url() {
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|e| format!("Invalid proxy URL '{}': {}", proxy_url, e))?;
+        builder = builder.proxy(proxy);
+    }
+
+    builder
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))
+}
+
+/// Determines whether an HTTP status code indicates a temporary, retryable condition.
+pub fn is_retryable_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
+}
+
+/// Executes an HTTP GET request with retries and exponential backoff for transient failures.
+pub fn download_with_retry(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    max_retries: u32,
+    initial_delay: Duration,
+) -> Result<reqwest::blocking::Response, String> {
+    let mut last_error = String::new();
+    let mut delay = initial_delay;
+
+    for attempt in 1..=max_retries {
+        match client.get(url).send() {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    return Ok(response);
+                }
+
+                if is_retryable_status(status) && attempt < max_retries {
+                    last_error = format!("HTTP {}", status);
+                    std::thread::sleep(delay);
+                    delay = delay.saturating_mul(2);
+                    continue;
+                }
+
+                return Err(format!("Download failed with status: {}", status));
+            }
+            Err(e) => {
+                last_error = format!("{}", e);
+                if attempt < max_retries {
+                    std::thread::sleep(delay);
+                    delay = delay.saturating_mul(2);
+                    continue;
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Download failed after {} attempts: {}",
+        max_retries, last_error
+    ))
+}
+
 pub fn ensure_dependencies() -> Result<(), String> {
     let yt_dlp_path = get_ytdlp_path();
 
@@ -98,29 +234,9 @@ pub fn ensure_dependencies() -> Result<(), String> {
                 .yellow()
         );
 
-        let url = if cfg!(target_os = "windows") {
-            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-        } else {
-            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
-        };
-
-        let client = reqwest::blocking::Client::builder()
-            .user_agent("dwdr-cli/1.0")
-            .timeout(std::time::Duration::from_secs(60))
-            .build()
-            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-        let response = client
-            .get(url)
-            .send()
-            .map_err(|e| format!("Failed to download yt-dlp: {}", e))?;
-
-        if !response.status().is_success() {
-            return Err(format!(
-                "Download failed with status: {}",
-                response.status()
-            ));
-        }
+        let url = get_ytdlp_download_url();
+        let client = create_http_client("dwdr-cli/1.0")?;
+        let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
 
         let bytes = response
             .bytes()
@@ -171,16 +287,6 @@ pub fn ensure_dependencies() -> Result<(), String> {
     Ok(())
 }
 
-fn get_ffmpeg_download_url() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-win-64.zip"
-    } else if cfg!(target_os = "macos") {
-        "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-osx-64.zip"
-    } else {
-        "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v4.4.1/ffmpeg-4.4.1-linux-64.zip"
-    }
-}
-
 pub fn ensure_ffmpeg() -> Result<(), String> {
     let ffmpeg_path = get_ffmpeg_path();
     if ffmpeg_path.exists() {
@@ -197,38 +303,8 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
     println!("{}", "INFO: Media Merger (FFmpeg) is missing. Downloading prebuilt binary... This will only happen once.".yellow());
 
     let url = get_ffmpeg_download_url();
-
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("dwdr-cli/1.0")
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {}", e))?;
-
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|e| format!("Failed to download FFmpeg: {}", e))?;
-
-    if !response.status().is_success() {
-        return Err(format!(
-            "FFmpeg download failed with HTTP status: {}",
-            response.status()
-        ));
-    }
-
-    let mut tmp_file =
-        tempfile::tempfile().map_err(|e| format!("Failed to create temp file: {}", e))?;
-
-    response
-        .copy_to(&mut tmp_file)
-        .map_err(|e| format!("Failed to write to temp file: {}", e))?;
-
-    tmp_file
-        .seek(std::io::SeekFrom::Start(0))
-        .map_err(|e| format!("Failed to seek temp file: {}", e))?;
-
-    let mut archive =
-        zip::ZipArchive::new(tmp_file).map_err(|e| format!("Failed to read zip archive: {}", e))?;
+    let client = create_http_client("dwdr-cli/1.0")?;
+    let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
 
     let expected_filename = if cfg!(target_os = "windows") {
         "ffmpeg.exe"
@@ -241,31 +317,58 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
     } else {
         ffmpeg_path.with_extension("tmp")
     };
-    let mut found = false;
-    for i in 0..archive.len() {
-        let mut file = archive
-            .by_index(i)
-            .map_err(|e| format!("Failed to read file from archive: {}", e))?;
-        if file.name() == expected_filename {
-            if let Some(parent) = ffmpeg_path.parent()
-                && !parent.exists()
-            {
-                fs::create_dir_all(parent)
-                    .map_err(|e| format!("Failed to create deps directory: {}", e))?;
-            }
 
-            let mut out_file = std::fs::File::create(&tmp_ffmpeg)
-                .map_err(|e| format!("Failed to create temporary FFmpeg file: {}", e))?;
-            std::io::copy(&mut file, &mut out_file)
-                .map_err(|e| format!("Failed to write temporary FFmpeg file: {}", e))?;
-            found = true;
-            break;
-        }
+    if let Some(parent) = ffmpeg_path.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create deps directory: {}", e))?;
     }
 
-    if !found {
-        let _ = fs::remove_file(&tmp_ffmpeg);
-        return Err("FFmpeg executable not found in the downloaded archive".to_string());
+    if url.ends_with(".zip") {
+        let mut tmp_file =
+            tempfile::tempfile().map_err(|e| format!("Failed to create temp file: {}", e))?;
+
+        let mut response = response;
+        response
+            .copy_to(&mut tmp_file)
+            .map_err(|e| format!("Failed to write to temp file: {}", e))?;
+
+        tmp_file
+            .seek(std::io::SeekFrom::Start(0))
+            .map_err(|e| format!("Failed to seek temp file: {}", e))?;
+
+        let mut archive = zip::ZipArchive::new(tmp_file)
+            .map_err(|e| format!("Failed to read zip archive: {}", e))?;
+
+        let mut found = false;
+        for i in 0..archive.len() {
+            let mut file = archive
+                .by_index(i)
+                .map_err(|e| format!("Failed to read file from archive: {}", e))?;
+            if file.name() == expected_filename {
+                let mut out_file = std::fs::File::create(&tmp_ffmpeg)
+                    .map_err(|e| format!("Failed to create temporary FFmpeg file: {}", e))?;
+                std::io::copy(&mut file, &mut out_file)
+                    .map_err(|e| format!("Failed to write temporary FFmpeg file: {}", e))?;
+                found = true;
+                break;
+            }
+        }
+
+        if !found {
+            let _ = fs::remove_file(&tmp_ffmpeg);
+            return Err("FFmpeg executable not found in the downloaded archive".to_string());
+        }
+    } else {
+        let bytes = response
+            .bytes()
+            .map_err(|e| format!("Failed to read response bytes: {}", e))?;
+        let mut out_file = std::fs::File::create(&tmp_ffmpeg)
+            .map_err(|e| format!("Failed to create temporary FFmpeg file: {}", e))?;
+        out_file
+            .write_all(&bytes)
+            .map_err(|e| format!("Failed to write temporary FFmpeg file: {}", e))?;
     }
 
     #[cfg(unix)]
@@ -306,16 +409,8 @@ pub fn update_self() -> Result<(), String> {
 
     println!("{}", "INFO: Downloading latest DWDR release...".cyan());
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent("dwdr-updater")
-        .timeout(std::time::Duration::from_secs(60))
-        .build()
-        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
-
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|e| format!("Failed to download update: {}", e))?;
+    let client = create_http_client("dwdr-updater")?;
+    let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
 
     if !response.status().is_success() {
         return Err(format!(
@@ -423,6 +518,9 @@ pub fn update_self() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpListener;
 
     #[test]
     fn test_is_valid_executable_rejects_missing_and_corrupt() {
@@ -437,5 +535,154 @@ mod tests {
         let small = temp_dir.path().join("small.exe");
         std::fs::write(&small, b"not enough bytes").unwrap();
         assert!(!is_valid_executable(&small, false));
+    }
+
+    #[test]
+    fn test_resolve_ytdlp_url_platforms() {
+        assert!(resolve_ytdlp_url("windows", "aarch64").ends_with("yt-dlp_arm64.exe"));
+        assert!(resolve_ytdlp_url("windows", "x86_64").ends_with("yt-dlp.exe"));
+        assert!(resolve_ytdlp_url("linux", "aarch64").ends_with("yt-dlp_linux_aarch64"));
+        assert!(resolve_ytdlp_url("linux", "x86_64").ends_with("yt-dlp"));
+        assert!(resolve_ytdlp_url("macos", "aarch64").ends_with("yt-dlp_macos"));
+        assert!(resolve_ytdlp_url("macos", "x86_64").ends_with("yt-dlp_macos"));
+        assert!(resolve_ytdlp_url("unknown", "unknown").ends_with("yt-dlp"));
+    }
+
+    #[test]
+    fn test_resolve_ffmpeg_url_platforms() {
+        assert!(resolve_ffmpeg_url("windows", "x86_64").ends_with("ffmpeg-4.4.1-win-64.zip"));
+        assert!(resolve_ffmpeg_url("linux", "aarch64").ends_with("ffmpeg-4.4.1-linux-arm-64.zip"));
+        assert!(resolve_ffmpeg_url("linux", "x86_64").ends_with("ffmpeg-4.4.1-linux-64.zip"));
+        assert!(resolve_ffmpeg_url("macos", "aarch64").ends_with("ffmpeg-darwin-arm64"));
+        assert!(resolve_ffmpeg_url("macos", "x86_64").ends_with("ffmpeg-4.4.1-osx-64.zip"));
+        assert!(resolve_ffmpeg_url("unknown", "unknown").ends_with("ffmpeg-4.4.1-linux-64.zip"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_resolve_proxy_url_precedence() {
+        let vars = [
+            "DWDR_PROXY",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+        ];
+        for v in &vars {
+            unsafe { std::env::remove_var(v) };
+        }
+        assert_eq!(resolve_proxy_url(), None);
+
+        unsafe { std::env::set_var("HTTP_PROXY", "http://127.0.0.1:8080") };
+        assert_eq!(
+            resolve_proxy_url(),
+            Some("http://127.0.0.1:8080".to_string())
+        );
+
+        unsafe { std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:8443") };
+        assert_eq!(
+            resolve_proxy_url(),
+            Some("http://127.0.0.1:8443".to_string())
+        );
+
+        unsafe { std::env::set_var("DWDR_PROXY", "http://127.0.0.1:9000") };
+        assert_eq!(
+            resolve_proxy_url(),
+            Some("http://127.0.0.1:9000".to_string())
+        );
+
+        for v in &vars {
+            unsafe { std::env::remove_var(v) };
+        }
+    }
+
+    #[test]
+    fn test_is_retryable_status() {
+        assert!(is_retryable_status(reqwest::StatusCode::REQUEST_TIMEOUT));
+        assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_retryable_status(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(is_retryable_status(reqwest::StatusCode::BAD_GATEWAY));
+        assert!(is_retryable_status(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(is_retryable_status(reqwest::StatusCode::GATEWAY_TIMEOUT));
+
+        assert!(!is_retryable_status(reqwest::StatusCode::NOT_FOUND));
+        assert!(!is_retryable_status(reqwest::StatusCode::UNAUTHORIZED));
+        assert!(!is_retryable_status(reqwest::StatusCode::FORBIDDEN));
+        assert!(!is_retryable_status(reqwest::StatusCode::OK));
+    }
+
+    #[test]
+    fn test_download_with_retry_recovers_from_503() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            // First attempt: return 503
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let resp = b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(resp);
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+            // Second attempt: return 200
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let resp =
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess";
+                let _ = stream.write_all(resp);
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let url = format!("http://{}/retry-test", addr);
+        let resp = download_with_retry(&client, &url, 3, Duration::from_millis(10)).unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn test_download_with_retry_fails_on_404_without_retrying() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let resp =
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(resp);
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let url = format!("http://{}/not-found", addr);
+        let err = download_with_retry(&client, &url, 3, Duration::from_millis(10)).unwrap_err();
+        assert!(err.contains("Download failed with status: 404 Not Found"));
+
+        let _ = handle.join();
     }
 }

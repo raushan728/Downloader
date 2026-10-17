@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod mock_ffmpeg;
 pub mod mock_server;
 pub mod mock_ytdlp;
