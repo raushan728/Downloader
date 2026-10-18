@@ -23,14 +23,14 @@ fn main() {
         // Windows locks running executables; self-updates rename the running binary to .old, purged here on next boot.
         if let Ok(current_exe) = std::env::current_exe() {
             let old_exe = current_exe.with_extension("old");
-            if old_exe.exists() {
-                if let Err(e) = std::fs::remove_file(&old_exe) {
-                    eprintln!(
-                        "WARNING: Failed to remove obsolete backup executable '{}': {}",
-                        old_exe.display(),
-                        e
-                    );
-                }
+            if old_exe.exists()
+                && let Err(e) = std::fs::remove_file(&old_exe)
+            {
+                eprintln!(
+                    "WARNING: Failed to remove obsolete backup executable '{}': {}",
+                    old_exe.display(),
+                    e
+                );
             }
         }
     }

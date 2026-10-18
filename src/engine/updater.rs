@@ -609,14 +609,14 @@ pub fn update_self() -> Result<(), String> {
         }
 
         let old_exe = current_exe.with_extension("old");
-        if old_exe.exists() {
-            if let Err(e) = std::fs::remove_file(&old_exe) {
-                return Err(format!(
-                    "Cannot perform update: previous backup '{}' is locked or in use ({}). Please close running DWDR instances and retry.",
-                    old_exe.display(),
-                    e
-                ));
-            }
+        if old_exe.exists()
+            && let Err(e) = std::fs::remove_file(&old_exe)
+        {
+            return Err(format!(
+                "Cannot perform update: previous backup '{}' is locked or in use ({}). Please close running DWDR instances and retry.",
+                old_exe.display(),
+                e
+            ));
         }
         std::fs::rename(&current_exe, &old_exe)
             .map_err(|e| format!("Failed to backup current executable: {}", e))?;

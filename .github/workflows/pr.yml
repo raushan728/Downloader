@@ -24,6 +24,9 @@ jobs:
           toolchain: 1.99.1
           components: rustfmt, clippy
 
+      - name: Verify Toolchain Version
+        run: rustc --version && cargo --version
+
       - name: Check Formatting
         if: matrix.os == 'ubuntu-latest'
         run: cargo fmt --all -- --check
