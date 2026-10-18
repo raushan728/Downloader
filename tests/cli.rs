@@ -662,7 +662,13 @@ fn test_mock_ytdlp_and_ffmpeg_execution() {
         .arg("-version")
         .output()
         .expect("Failed to execute mock ffmpeg");
-    assert!(ffmpeg_output.status.success());
+    assert!(
+        ffmpeg_output.status.success(),
+        "Mock ffmpeg failed: status={:?}, stdout={}, stderr={}",
+        ffmpeg_output.status,
+        String::from_utf8_lossy(&ffmpeg_output.stdout),
+        String::from_utf8_lossy(&ffmpeg_output.stderr)
+    );
     let stdout_ff = String::from_utf8_lossy(&ffmpeg_output.stdout);
     assert!(stdout_ff.contains("ffmpeg version"));
     assert!(stdout_ff.contains("dwdr-mock"));
