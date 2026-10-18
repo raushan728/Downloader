@@ -18,10 +18,11 @@ During early development, configuration persistence and validation presented sev
    - `quality` must match supported resolution profiles (`always ask`, `best`, `8k`, `4k`, `2k`, `1080p`, `720p`, `480p`, `360p`, `240p`, `144p`, `audio`).
    - `parallel` is bounded between `1` and `16`.
    - `update-days` is bounded between `0` and `365`.
-   - `dwdr config reset` prompts for `[y/N]` confirmation unless `--force` is provided.
+   - `dwdr config reset` prompts for `[y/N]` confirmation in interactive terminals; in non-TTY environments without `--force`, it fails fast directing users to use `--force`.
 
-2. **Directory Configuration Resolution**:
-   - If a configured or environment path points to a directory (`path.is_dir()`), automatically resolve to `path.join("config.toml")`.
+2. **Directory Configuration Resolution and Atomic Persistence**:
+   - If a configured or environment path points to a directory (`path.is_dir()`), ends with a trailing separator (`/`, `\`), or lacks a file extension, automatically resolve to `path.join("config.toml")`.
+   - `save_config` writes atomically via a sibling temporary file, flushes to disk with `sync_all()`, and renames over the target to prevent corrupt files on power loss or aborts.
    - Default download path falls back to absolute path resolution (`std::env::current_dir()`), avoiding relative path issues in minimal environments.
 
 3. **Headless Execution Guard**:
@@ -31,8 +32,9 @@ During early development, configuration persistence and validation presented sev
    - Active downloads record their process IDs in `active_downloads.lock`.
    - Configuration edits inspect active PIDs via `is_pid_alive`, rejecting modifications while downloads are in flight unless overridden by `--force`. Stale locks from killed processes are automatically purged.
 
-5. **Pre-Flight Path Validation**:
-   - Validate destination directories with a temporary write probe (`.dwdr_write_test_<pid>.tmp`) via `validate_download_path` before spawning engine processes.
+5. **Pre-Flight Path Validation and Stale Probe Cleanup**:
+   - Validate destination directories with an RAII-guarded temporary write probe (`.dwdr_write_test_<pid>_<n>.tmp`) via `validate_download_path` before spawning engine processes. Stale probe files from extinct PIDs are automatically purged.
+   - Enforce strict path canonicalization with structured errors rather than falling back to uncanonicalized paths.
    - Strip Windows UNC `\\?\` prefixes for command compatibility.
 
 ## Consequences

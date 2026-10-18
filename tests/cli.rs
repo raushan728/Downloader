@@ -158,7 +158,7 @@ fn test_cli_help_does_not_create_config_file() {
 
 #[test]
 #[serial]
-fn test_config_reset_command_with_confirmation() {
+fn test_config_reset_command_in_non_terminal_requires_force() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
 
@@ -171,43 +171,11 @@ fn test_config_reset_command_with_confirmation() {
     let mut cmd_reset = Command::cargo_bin("dwdr").unwrap();
     cmd_reset
         .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .write_stdin("")
         .args(["config", "reset"])
-        .write_stdin("y\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Configuration reset to defaults"));
-
-    let mut cmd_verify = Command::cargo_bin("dwdr").unwrap();
-    cmd_verify
-        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
-        .args(["config", "show"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("1080p"));
-}
-
-#[test]
-#[serial]
-fn test_config_reset_cancelled() {
-    let temp_dir = tempdir().unwrap();
-    let config_file = temp_dir.path().join("config.toml");
-
-    let mut cmd = Command::cargo_bin("dwdr").unwrap();
-    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
-        .args(["config", "set", "quality", "720p"])
-        .assert()
-        .success();
-
-    let mut cmd_reset = Command::cargo_bin("dwdr").unwrap();
-    cmd_reset
-        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
-        .args(["config", "reset"])
-        .write_stdin("n\n")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "WARNING: Configuration reset cancelled",
-        ));
+        .stdout(predicate::str::contains("Use 'dwdr config reset --force'"));
 
     let mut cmd_verify = Command::cargo_bin("dwdr").unwrap();
     cmd_verify

@@ -1,13 +1,15 @@
-use colored::Colorize;
-use directories::{BaseDirs, UserDirs};
-use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use colored::Colorize;
+use directories::{BaseDirs, UserDirs};
+use serde::{Deserialize, Serialize};
+use tempfile::NamedTempFile;
+
 use crate::cli::prompts::interactive_config;
-use crate::engine::queue::is_download_active;
+use crate::engine::queue::{is_download_active, is_pid_alive};
 
 /// Global runtime configuration serialized in `~/.dwdr/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,22 +93,56 @@ pub fn validate_download_path(path: &str, create_if_missing: bool) -> Result<Pat
         return Err("Download path must be a directory, not a file.".to_string());
     }
 
+    // Purge orphaned write-probe files left behind by killed processes.
+    if let Ok(entries) = fs::read_dir(p) {
+        for entry in entries.flatten() {
+            if let Ok(file_name) = entry.file_name().into_string()
+                && file_name.starts_with(".dwdr_write_test_")
+                && file_name.ends_with(".tmp")
+            {
+                let parts: Vec<&str> = file_name.split('_').collect();
+                if let Some(pid_str) = parts.get(3) {
+                    if let Ok(pid) = pid_str.parse::<u32>() {
+                        if pid == std::process::id() || !is_pid_alive(pid) {
+                            let _ = fs::remove_file(entry.path());
+                        }
+                    } else {
+                        let _ = fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+
     let probe_id = PROBE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let probe_file = p.join(format!(
         ".dwdr_write_test_{}_{}.tmp",
         std::process::id(),
         probe_id
     ));
-    match fs::write(&probe_file, b"") {
-        Ok(_) => {
-            let _ = fs::remove_file(&probe_file);
+    struct ProbeGuard<'a>(&'a std::path::Path);
+    impl<'a> Drop for ProbeGuard<'a> {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(self.0);
         }
-        Err(e) => {
+    }
+    {
+        let _guard = ProbeGuard(&probe_file);
+        if let Err(e) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe_file)
+        {
             return Err(format!("Download path is not writable: {}", e));
         }
     }
 
-    let canonical = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let canonical = p.canonicalize().map_err(|e| {
+        format!(
+            "Failed to resolve canonical download path for \"{}\": {}",
+            trimmed, e
+        )
+    })?;
     #[cfg(windows)]
     let canonical = canonical
         .to_str()
@@ -122,6 +158,20 @@ pub fn validate_download_path(path: &str, create_if_missing: bool) -> Result<Pat
         .unwrap_or(canonical);
 
     Ok(canonical)
+}
+
+/// Resolves a configuration path target, mapping directories, trailing separators, or paths without extensions to `config.toml`.
+fn resolve_config_file_path(path: &std::path::Path) -> PathBuf {
+    let path_str = path.to_string_lossy();
+    let has_trailing_slash = path_str.ends_with('/') || path_str.ends_with('\\');
+    let is_intended_dir =
+        path.is_dir() || has_trailing_slash || (!path.exists() && path.extension().is_none());
+
+    if is_intended_dir {
+        path.join("config.toml")
+    } else {
+        path.to_path_buf()
+    }
 }
 
 /// Thread-safe configuration manager enforcing filesystem isolation and recovery.
@@ -141,12 +191,7 @@ impl ConfigManager {
                 } else {
                     path
                 };
-                let final_path = if abs_path.is_dir() {
-                    abs_path.join("config.toml")
-                } else {
-                    abs_path
-                };
-                return Some(final_path);
+                return Some(resolve_config_file_path(&abs_path));
             }
         }
         BaseDirs::new().map(|dirs| dirs.home_dir().join(".dwdr").join("config.toml"))
@@ -167,11 +212,7 @@ impl ConfigManager {
 
     /// Loads configuration from disk, self-healing with defaults if missing or corrupted.
     pub fn load_from_path(path: &std::path::Path) -> DwdrConfig {
-        let file_path = if path.is_dir() {
-            path.join("config.toml")
-        } else {
-            path.to_path_buf()
-        };
+        let file_path = resolve_config_file_path(path);
 
         if file_path.is_file()
             && let Ok(content) = fs::read_to_string(&file_path)
@@ -181,7 +222,17 @@ impl ConfigManager {
         }
 
         let default_config = DwdrConfig::default();
-        let _ = Self::save_config(&file_path, &default_config);
+        if let Err(e) = Self::save_config(&file_path, &default_config) {
+            eprintln!(
+                "{}",
+                format!(
+                    "WARNING: Failed to save healed configuration to {}: {}",
+                    file_path.display(),
+                    e
+                )
+                .yellow()
+            );
+        }
         default_config
     }
 
@@ -193,27 +244,41 @@ impl ConfigManager {
     }
 
     pub fn save_config(path: &std::path::Path, config: &DwdrConfig) -> Result<(), String> {
-        if path.is_dir() {
+        let path_str = path.to_string_lossy();
+        if path.is_dir() || path_str.ends_with('/') || path_str.ends_with('\\') {
             return Err(format!(
                 "Config path points to a directory, expected a file: {}",
                 path.display()
             ));
         }
 
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-            && !parent.exists()
-            && let Err(e) = fs::create_dir_all(parent)
-        {
-            return Err(format!("Failed to create config directory: {}", e));
+        let parent = match path.parent() {
+            Some(p) if !p.as_os_str().is_empty() => p,
+            _ => std::path::Path::new("."),
+        };
+
+        if !parent.exists() {
+            fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create config directory: {}", e))?;
         }
 
-        match toml::to_string(config) {
-            Ok(toml_str) => {
-                fs::write(path, toml_str).map_err(|e| format!("Failed to write config file: {}", e))
-            }
-            Err(e) => Err(format!("Failed to serialize config: {}", e)),
-        }
+        let toml_str =
+            toml::to_string(config).map_err(|e| format!("Failed to serialize config: {}", e))?;
+
+        let mut tmp_file = NamedTempFile::new_in(parent)
+            .map_err(|e| format!("Failed to create temporary config file: {}", e))?;
+        tmp_file
+            .write_all(toml_str.as_bytes())
+            .map_err(|e| format!("Failed to write temporary config file: {}", e))?;
+        tmp_file
+            .as_file()
+            .sync_all()
+            .map_err(|e| format!("Failed to sync config file: {}", e))?;
+        tmp_file
+            .persist(path)
+            .map_err(|e| format!("Failed to replace config file: {}", e.error))?;
+
+        Ok(())
     }
 
     pub fn reset_to_default() -> Result<DwdrConfig, String> {
@@ -278,6 +343,15 @@ impl ConfigManager {
                     }
 
                     if !force {
+                        if !std::io::stdin().is_terminal() {
+                            println!(
+                                "{}",
+                                "\nERROR: Cannot prompt for confirmation in non-interactive terminal. Use 'dwdr config reset --force'.\n"
+                                    .red()
+                            );
+                            return;
+                        }
+
                         print!("Are you sure you want to reset configuration to defaults? [y/N]: ");
                         let _ = std::io::stdout().flush();
                         let mut input = String::new();
@@ -329,10 +403,11 @@ impl ConfigManager {
                         return;
                     }
 
+                    let mut new_config = config.clone();
                     match key.as_str() {
                         "path" => match validate_download_path(&value, false) {
                             Ok(canonical) => {
-                                config.download_path = canonical.to_string_lossy().to_string();
+                                new_config.download_path = canonical.to_string_lossy().to_string();
                             }
                             Err(e) => {
                                 println!("{}", format!("\nERROR: {}\n", e).red());
@@ -348,10 +423,10 @@ impl ConfigManager {
                                 );
                                 return;
                             }
-                            config.default_quality = value.trim().to_lowercase();
+                            new_config.default_quality = value.trim().to_lowercase();
                         }
                         "parallel" => match value.parse::<u8>() {
-                            Ok(v) if (1..=16).contains(&v) => config.max_parallel_downloads = v,
+                            Ok(v) if (1..=16).contains(&v) => new_config.max_parallel_downloads = v,
                             Ok(_) | Err(_) => {
                                 println!(
                                     "{}",
@@ -362,7 +437,7 @@ impl ConfigManager {
                             }
                         },
                         "update-days" => match value.parse::<u32>() {
-                            Ok(v) if v <= 365 => config.update_check_days = v,
+                            Ok(v) if v <= 365 => new_config.update_check_days = v,
                             Ok(_) | Err(_) => {
                                 println!(
                                     "{}",
@@ -378,13 +453,14 @@ impl ConfigManager {
                         }
                     }
 
-                    if let Err(e) = Self::save(config) {
+                    if let Err(e) = Self::save(&new_config) {
                         println!(
                             "{}",
                             format!("\nERROR: Failed to save configuration: {}\n", e).red()
                         );
                         return;
                     }
+                    *config = new_config;
                     println!(
                         "{}",
                         format!("SUCCESS: Successfully updated {} to {}", key, value).green()
@@ -431,7 +507,21 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_config_handle_cli_edge_cases() {
+        let temp_config_dir = tempfile::tempdir().unwrap();
+        let isolated_config = temp_config_dir.path().join("config.toml");
+        struct EnvGuard(&'static str);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var(self.0) };
+            }
+        }
+        unsafe {
+            std::env::set_var("DWDR_CONFIG_PATH", isolated_config.to_str().unwrap());
+        }
+        let _guard = EnvGuard("DWDR_CONFIG_PATH");
+
         let mut config = DwdrConfig::default();
 
         // Unknown action
@@ -663,5 +753,66 @@ mod tests {
         let empty_res = validate_download_path("   ", false);
         assert!(empty_res.is_err());
         assert!(empty_res.unwrap_err().contains("not configured"));
+    }
+
+    #[test]
+    fn test_atomic_save_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        let mut config = DwdrConfig::default();
+        config.default_quality = "720p".to_string();
+
+        // Initial save
+        ConfigManager::save_config(&config_path, &config).unwrap();
+        let loaded = ConfigManager::load_from_path(&config_path);
+        assert_eq!(loaded.default_quality, "720p");
+
+        // Overwrite save
+        config.default_quality = "4k".to_string();
+        ConfigManager::save_config(&config_path, &config).unwrap();
+        let reloaded = ConfigManager::load_from_path(&config_path);
+        assert_eq!(reloaded.default_quality, "4k");
+    }
+
+    #[test]
+    fn test_save_config_trailing_slash_fails() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir_with_slash = format!("{}/", temp_dir.path().to_str().unwrap());
+        let config = DwdrConfig::default();
+        let result = ConfigManager::save_config(std::path::Path::new(&dir_with_slash), &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected a file"));
+    }
+
+    #[test]
+    fn test_resolve_config_file_path_edge_cases() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let non_existent_slash = temp_dir.path().join("non_existent_dir/");
+        let resolved_slash = resolve_config_file_path(&non_existent_slash);
+        assert_eq!(resolved_slash, non_existent_slash.join("config.toml"));
+
+        let non_existent_no_ext = temp_dir.path().join("non_existent_dir");
+        let resolved_no_ext = resolve_config_file_path(&non_existent_no_ext);
+        assert_eq!(resolved_no_ext, non_existent_no_ext.join("config.toml"));
+
+        let non_existent_with_ext = temp_dir.path().join("custom.toml");
+        let resolved_with_ext = resolve_config_file_path(&non_existent_with_ext);
+        assert_eq!(resolved_with_ext, non_existent_with_ext);
+    }
+
+    #[test]
+    fn test_validate_download_path_stale_probe_cleanup() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir_path = temp_dir.path();
+
+        // Place a simulated orphan probe file from an extinct process
+        let stale_probe = dir_path.join(".dwdr_write_test_9999999_1.tmp");
+        std::fs::write(&stale_probe, b"").unwrap();
+        assert!(stale_probe.exists());
+
+        let res = validate_download_path(dir_path.to_str().unwrap(), false);
+        assert!(res.is_ok());
+        // Verify orphan probe file was purged
+        assert!(!stale_probe.exists());
     }
 }
