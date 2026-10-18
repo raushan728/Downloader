@@ -2,6 +2,13 @@ use directories::BaseDirs;
 use std::path::PathBuf;
 
 pub fn get_ytdlp_path() -> PathBuf {
+    if let Ok(override_path) = std::env::var("DWDR_YTDLP_PATH") {
+        let trimmed = override_path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
     let mut path = BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
@@ -18,6 +25,13 @@ pub fn get_ytdlp_path() -> PathBuf {
 }
 
 pub fn get_ffmpeg_path() -> PathBuf {
+    if let Ok(override_path) = std::env::var("DWDR_FFMPEG_PATH") {
+        let trimmed = override_path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+
     let mut path = BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."));
@@ -57,5 +71,22 @@ mod tests {
             "ffmpeg"
         };
         assert!(path.ends_with(expected_name));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_path_overrides_via_env() {
+        unsafe {
+            std::env::set_var("DWDR_YTDLP_PATH", "/custom/bin/yt-dlp");
+            std::env::set_var("DWDR_FFMPEG_PATH", "/custom/bin/ffmpeg");
+        }
+
+        assert_eq!(get_ytdlp_path(), PathBuf::from("/custom/bin/yt-dlp"));
+        assert_eq!(get_ffmpeg_path(), PathBuf::from("/custom/bin/ffmpeg"));
+
+        unsafe {
+            std::env::remove_var("DWDR_YTDLP_PATH");
+            std::env::remove_var("DWDR_FFMPEG_PATH");
+        }
     }
 }

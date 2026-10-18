@@ -28,7 +28,7 @@ impl<T: Display> Select<T> {
         }
     }
 
-    pub fn prompt(self) -> Result<T, ()> {
+    pub fn prompt_index(&self) -> Result<usize, ()> {
         if self.options.is_empty() {
             return Err(());
         }
@@ -54,12 +54,28 @@ impl<T: Display> Select<T> {
             ResetColor
         );
 
+        let term_height = terminal::size().map(|(_, h)| h as usize).unwrap_or(24);
+        let page_size = term_height.saturating_sub(4).clamp(3, 10);
+        let window_size = std::cmp::min(count, page_size);
+
         let render =
             |stdout: &mut std::io::Stdout, selected: usize, first: bool| -> Result<(), ()> {
                 if !first {
-                    let _ = execute!(stdout, cursor::MoveUp(count as u16));
+                    let _ = execute!(stdout, cursor::MoveUp(window_size as u16));
                 }
-                for (i, opt) in self.options.iter().enumerate() {
+
+                let half = window_size / 2;
+                let start = if selected <= half {
+                    0
+                } else if selected + (window_size - half) >= count {
+                    count.saturating_sub(window_size)
+                } else {
+                    selected.saturating_sub(half)
+                };
+                let end = std::cmp::min(start + window_size, count);
+
+                for (idx, opt) in self.options[start..end].iter().enumerate() {
+                    let i = start + idx;
                     let _ = execute!(stdout, Clear(ClearType::CurrentLine));
                     if i == selected {
                         let _ = execute!(
@@ -138,19 +154,21 @@ impl<T: Display> Select<T> {
             }
         };
 
-        let _ = execute!(stdout, cursor::MoveUp(count as u16));
-        for _ in 0..count {
+        let _ = execute!(stdout, cursor::MoveUp(window_size as u16));
+        for _ in 0..window_size {
             let _ = execute!(stdout, Clear(ClearType::CurrentLine), cursor::MoveDown(1));
         }
-        let _ = execute!(stdout, cursor::MoveUp(count as u16));
+        let _ = execute!(stdout, cursor::MoveUp(window_size as u16));
 
         let _ = execute!(stdout, cursor::Show);
         let _ = terminal::disable_raw_mode();
 
-        match selection_result {
-            Ok(idx) => Ok(self.options.into_iter().nth(idx).unwrap()),
-            Err(()) => Err(()),
-        }
+        selection_result
+    }
+
+    pub fn prompt(self) -> Result<T, ()> {
+        let idx = self.prompt_index()?;
+        Ok(self.options.into_iter().nth(idx).unwrap())
     }
 }
 
@@ -178,16 +196,8 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
         options.push(option_str);
     }
 
-    match Select::new(
-        "Select a format to download (Use arrow keys):",
-        options.clone(),
-    )
-    .prompt()
-    {
-        Ok(choice) => options
-            .iter()
-            .position(|r| r == &choice)
-            .map(|index| formats[index].format_id.clone()),
+    match Select::new("Select a format to download (Use arrow keys):", options).prompt_index() {
+        Ok(index) => Some(formats[index].format_id.clone()),
         Err(_) => None,
     }
 }

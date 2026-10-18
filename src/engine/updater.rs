@@ -129,6 +129,32 @@ pub fn get_ffmpeg_download_url() -> &'static str {
     resolve_ffmpeg_url(std::env::consts::OS, std::env::consts::ARCH)
 }
 
+/// Resolves the DWDR binary release URL based on target operating system and architecture.
+pub fn resolve_dwdr_url(target_os: &str, target_arch: &str) -> &'static str {
+    match (target_os, target_arch) {
+        ("windows", _) => {
+            "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-windows.exe"
+        }
+        ("macos", "aarch64") => {
+            "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-mac-arm64"
+        }
+        ("macos", _) => {
+            "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-mac"
+        }
+        ("linux", "aarch64") => {
+            "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-linux-arm64"
+        }
+        ("linux", _) => {
+            "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-linux"
+        }
+        _ => "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-linux",
+    }
+}
+
+pub fn get_dwdr_download_url() -> &'static str {
+    resolve_dwdr_url(std::env::consts::OS, std::env::consts::ARCH)
+}
+
 /// Inspects environment variables for proxy configuration in order of precedence.
 pub fn resolve_proxy_url() -> Option<String> {
     for var in &[
@@ -154,7 +180,7 @@ pub fn resolve_proxy_url() -> Option<String> {
 pub fn create_http_client(user_agent: &str) -> Result<reqwest::blocking::Client, String> {
     let mut builder = reqwest::blocking::Client::builder()
         .user_agent(user_agent)
-        .timeout(Duration::from_secs(60));
+        .connect_timeout(Duration::from_secs(30));
 
     if let Some(proxy_url) = resolve_proxy_url() {
         let proxy = reqwest::Proxy::all(&proxy_url)
@@ -172,13 +198,40 @@ pub fn is_retryable_status(status: reqwest::StatusCode) -> bool {
     matches!(status.as_u16(), 408 | 429 | 500 | 502 | 503 | 504)
 }
 
-/// Executes an HTTP GET request with retries and exponential backoff for transient failures.
+/// Represents an in-memory or streamed HTTP response with integrity verification.
+#[derive(Debug)]
+pub struct DownloadedResponse {
+    status: reqwest::StatusCode,
+    bytes: Vec<u8>,
+}
+
+impl DownloadedResponse {
+    pub fn new(status: reqwest::StatusCode, bytes: Vec<u8>) -> Self {
+        Self { status, bytes }
+    }
+
+    pub fn status(&self) -> reqwest::StatusCode {
+        self.status
+    }
+
+    pub fn bytes(self) -> Result<Vec<u8>, String> {
+        Ok(self.bytes)
+    }
+
+    pub fn copy_to<W: Write>(&self, w: &mut W) -> Result<u64, std::io::Error> {
+        w.write_all(&self.bytes)?;
+        Ok(self.bytes.len() as u64)
+    }
+}
+
+/// Executes an HTTP GET request with retries and exponential backoff for transient failures,
+/// covering both initial connection and complete body streaming.
 pub fn download_with_retry(
     client: &reqwest::blocking::Client,
     url: &str,
     max_retries: u32,
     initial_delay: Duration,
-) -> Result<reqwest::blocking::Response, String> {
+) -> Result<DownloadedResponse, String> {
     let mut last_error = String::new();
     let mut delay = initial_delay;
 
@@ -187,17 +240,25 @@ pub fn download_with_retry(
             Ok(response) => {
                 let status = response.status();
                 if status.is_success() {
-                    return Ok(response);
-                }
-
-                if is_retryable_status(status) && attempt < max_retries {
+                    match response.bytes() {
+                        Ok(body) => return Ok(DownloadedResponse::new(status, body.to_vec())),
+                        Err(e) => {
+                            last_error = format!("Body stream interrupted: {}", e);
+                            if attempt < max_retries {
+                                std::thread::sleep(delay);
+                                delay = delay.saturating_mul(2);
+                                continue;
+                            }
+                        }
+                    }
+                } else if is_retryable_status(status) && attempt < max_retries {
                     last_error = format!("HTTP {}", status);
                     std::thread::sleep(delay);
                     delay = delay.saturating_mul(2);
                     continue;
+                } else {
+                    return Err(format!("Download failed with status: {}", status));
                 }
-
-                return Err(format!("Download failed with status: {}", status));
             }
             Err(e) => {
                 last_error = format!("{}", e);
@@ -219,12 +280,25 @@ pub fn download_with_retry(
 pub fn ensure_dependencies() -> Result<(), String> {
     let yt_dlp_path = get_ytdlp_path();
 
-    if yt_dlp_path.exists() && !is_valid_executable(&yt_dlp_path, false) {
+    if std::env::var("DWDR_YTDLP_PATH").is_ok() && yt_dlp_path.exists() {
+        return ensure_ffmpeg();
+    }
+
+    if yt_dlp_path.exists() {
+        if is_valid_executable(&yt_dlp_path, false) {
+            return ensure_ffmpeg();
+        }
         println!(
             "{}",
             "WARNING: Detected corrupted or invalid yt-dlp binary. Re-downloading...".yellow()
         );
-        let _ = fs::remove_file(&yt_dlp_path);
+        fs::remove_file(&yt_dlp_path).map_err(|e| {
+            format!(
+                "Failed to remove corrupted yt-dlp binary at '{}': {}",
+                yt_dlp_path.display(),
+                e
+            )
+        })?;
     }
 
     if !yt_dlp_path.exists() {
@@ -289,6 +363,11 @@ pub fn ensure_dependencies() -> Result<(), String> {
 
 pub fn ensure_ffmpeg() -> Result<(), String> {
     let ffmpeg_path = get_ffmpeg_path();
+
+    if std::env::var("DWDR_FFMPEG_PATH").is_ok() && ffmpeg_path.exists() {
+        return Ok(());
+    }
+
     if ffmpeg_path.exists() {
         if is_valid_executable(&ffmpeg_path, true) {
             return Ok(());
@@ -297,7 +376,13 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
             "{}",
             "WARNING: Detected corrupted or invalid FFmpeg binary. Re-downloading...".yellow()
         );
-        let _ = fs::remove_file(&ffmpeg_path);
+        fs::remove_file(&ffmpeg_path).map_err(|e| {
+            format!(
+                "Failed to remove corrupted FFmpeg binary at '{}': {}",
+                ffmpeg_path.display(),
+                e
+            )
+        })?;
     }
 
     println!("{}", "INFO: Media Merger (FFmpeg) is missing. Downloading prebuilt binary... This will only happen once.".yellow());
@@ -329,7 +414,6 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
         let mut tmp_file =
             tempfile::tempfile().map_err(|e| format!("Failed to create temp file: {}", e))?;
 
-        let mut response = response;
         response
             .copy_to(&mut tmp_file)
             .map_err(|e| format!("Failed to write to temp file: {}", e))?;
@@ -377,7 +461,8 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
             .map_err(|e| format!("Failed to read metadata: {}", e))?
             .permissions();
         perms.set_mode(0o755);
-        let _ = fs::set_permissions(&tmp_ffmpeg, perms);
+        fs::set_permissions(&tmp_ffmpeg, perms)
+            .map_err(|e| format!("Failed to set permissions on FFmpeg: {}", e))?;
     }
 
     if !is_valid_executable(&tmp_ffmpeg, true) {
@@ -399,13 +484,33 @@ pub fn update_self() -> Result<(), String> {
     let current_exe = std::env::current_exe()
         .map_err(|e| format!("Failed to get current executable path: {}", e))?;
 
-    let url = if cfg!(target_os = "windows") {
-        "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-windows.exe"
-    } else if cfg!(target_os = "macos") {
-        "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-mac"
-    } else {
-        "https://github.com/raushan728/Downloader/releases/download/latest/dwdr-linux"
-    };
+    if let Some(parent) = current_exe.parent() {
+        let probe_file = parent.join(format!(".dwdr_update_perm_test_{}.tmp", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe_file)
+        {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&probe_file);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(format!(
+                    "Permission denied writing to install directory '{}'. Please re-run with elevated permissions (e.g. 'sudo dwdr self-update') or install to a user-writable directory.",
+                    parent.display()
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Install directory '{}' is not writable: {}",
+                    parent.display(),
+                    e
+                ));
+            }
+        }
+    }
+
+    let url = get_dwdr_download_url();
 
     println!("{}", "INFO: Downloading latest DWDR release...".cyan());
 
@@ -487,15 +592,31 @@ pub fn update_self() -> Result<(), String> {
                 .map_err(|e| format!("Failed to set permissions: {}", e))?;
         }
 
+        if !is_valid_executable(&tmp_exe, false) {
+            let _ = fs::remove_file(&tmp_exe);
+            return Err("Downloaded update binary failed executable validation check".to_string());
+        }
+
         std::fs::rename(&tmp_exe, &current_exe)
             .map_err(|e| format!("Failed to replace binary: {}", e))?;
     }
 
     #[cfg(target_os = "windows")]
     {
+        if !is_valid_executable(&tmp_exe, false) {
+            let _ = fs::remove_file(&tmp_exe);
+            return Err("Downloaded update binary failed executable validation check".to_string());
+        }
+
         let old_exe = current_exe.with_extension("old");
         if old_exe.exists() {
-            let _ = std::fs::remove_file(&old_exe);
+            if let Err(e) = std::fs::remove_file(&old_exe) {
+                return Err(format!(
+                    "Cannot perform update: previous backup '{}' is locked or in use ({}). Please close running DWDR instances and retry.",
+                    old_exe.display(),
+                    e
+                ));
+            }
         }
         std::fs::rename(&current_exe, &old_exe)
             .map_err(|e| format!("Failed to backup current executable: {}", e))?;
@@ -556,6 +677,17 @@ mod tests {
         assert!(resolve_ffmpeg_url("macos", "aarch64").ends_with("ffmpeg-darwin-arm64"));
         assert!(resolve_ffmpeg_url("macos", "x86_64").ends_with("ffmpeg-4.4.1-osx-64.zip"));
         assert!(resolve_ffmpeg_url("unknown", "unknown").ends_with("ffmpeg-4.4.1-linux-64.zip"));
+    }
+
+    #[test]
+    fn test_resolve_dwdr_url_platforms() {
+        assert!(resolve_dwdr_url("windows", "x86_64").ends_with("dwdr-windows.exe"));
+        assert!(resolve_dwdr_url("windows", "aarch64").ends_with("dwdr-windows.exe"));
+        assert!(resolve_dwdr_url("linux", "aarch64").ends_with("dwdr-linux-arm64"));
+        assert!(resolve_dwdr_url("linux", "x86_64").ends_with("dwdr-linux"));
+        assert!(resolve_dwdr_url("macos", "aarch64").ends_with("dwdr-mac-arm64"));
+        assert!(resolve_dwdr_url("macos", "x86_64").ends_with("dwdr-mac"));
+        assert!(resolve_dwdr_url("unknown", "unknown").ends_with("dwdr-linux"));
     }
 
     #[test]
@@ -682,6 +814,48 @@ mod tests {
         let url = format!("http://{}/not-found", addr);
         let err = download_with_retry(&client, &url, 3, Duration::from_millis(10)).unwrap_err();
         assert!(err.contains("Download failed with status: 404 Not Found"));
+
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn test_download_with_retry_recovers_from_mid_stream_disconnection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            // First attempt: HTTP 200 with truncated body (declares 50 bytes, sends 5, then abruptly closes)
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let resp =
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 50\r\nConnection: close\r\n\r\nshort";
+                let _ = stream.write_all(resp);
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+            // Second attempt: HTTP 200 with full body
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let resp =
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\nsuccess";
+                let _ = stream.write_all(resp);
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+        });
+
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap();
+        let url = format!("http://{}/truncated-test", addr);
+        let resp = download_with_retry(&client, &url, 3, Duration::from_millis(10)).unwrap();
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.bytes().unwrap(), b"success");
 
         let _ = handle.join();
     }

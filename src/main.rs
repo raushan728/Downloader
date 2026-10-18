@@ -24,7 +24,13 @@ fn main() {
         if let Ok(current_exe) = std::env::current_exe() {
             let old_exe = current_exe.with_extension("old");
             if old_exe.exists() {
-                let _ = std::fs::remove_file(old_exe);
+                if let Err(e) = std::fs::remove_file(&old_exe) {
+                    eprintln!(
+                        "WARNING: Failed to remove obsolete backup executable '{}': {}",
+                        old_exe.display(),
+                        e
+                    );
+                }
             }
         }
     }
@@ -69,8 +75,38 @@ fn main() {
                 println!("{}", "INFO: Forcing update for core engines...".cyan());
                 let yt = get_ytdlp_path();
                 let ff = get_ffmpeg_path();
-                let _ = std::fs::remove_file(yt);
-                let _ = std::fs::remove_file(ff);
+                let mut removal_failed = false;
+
+                if yt.exists()
+                    && let Err(e) = std::fs::remove_file(&yt)
+                {
+                    eprintln!(
+                        "WARNING: Failed to remove existing engine binary '{}': {}",
+                        yt.display(),
+                        e
+                    );
+                    removal_failed = true;
+                }
+                if ff.exists()
+                    && let Err(e) = std::fs::remove_file(&ff)
+                {
+                    eprintln!(
+                        "WARNING: Failed to remove existing media merger binary '{}': {}",
+                        ff.display(),
+                        e
+                    );
+                    removal_failed = true;
+                }
+
+                if removal_failed {
+                    println!(
+                        "{}",
+                        "ERROR: Could not remove old engine binaries because they are locked or in use. Please close active DWDR instances and retry."
+                            .red()
+                            .bold()
+                    );
+                    return;
+                }
 
                 if let Err(e) = ensure_dependencies() {
                     println!("{}", format!("\nERROR: {}\n", e).red().bold());

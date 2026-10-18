@@ -23,9 +23,16 @@ fn test_cli_invalid_url() {
 fn test_cli_valid_url() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
+    let mock_ytdlp = MockYtDlpBuilder::new()
+        .with_exit_code(1)
+        .with_stderr("ERROR: Video unavailable")
+        .build(temp_dir.path());
+    let mock_ffmpeg = MockFfmpegBuilder::new().build(temp_dir.path());
 
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
     cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .env("DWDR_YTDLP_PATH", mock_ytdlp.to_str().unwrap())
+        .env("DWDR_FFMPEG_PATH", mock_ffmpeg.to_str().unwrap())
         .arg("https://youtube.com/watch?v=123")
         .assert()
         .success()
@@ -470,9 +477,16 @@ fn test_interactive_shell_case_insensitivity() {
 fn test_interactive_shell_url_extraction_failure_recovery() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
+    let mock_ytdlp = MockYtDlpBuilder::new()
+        .with_exit_code(1)
+        .with_stderr("ERROR: Video unavailable")
+        .build(temp_dir.path());
+    let mock_ffmpeg = MockFfmpegBuilder::new().build(temp_dir.path());
 
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
     cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .env("DWDR_YTDLP_PATH", mock_ytdlp.to_str().unwrap())
+        .env("DWDR_FFMPEG_PATH", mock_ffmpeg.to_str().unwrap())
         .write_stdin("https://youtube.com/watch?v=123\nexit\n")
         .assert()
         .success()
@@ -488,9 +502,16 @@ fn test_interactive_shell_url_extraction_failure_recovery() {
 fn test_interactive_shell_uppercase_url() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
+    let mock_ytdlp = MockYtDlpBuilder::new()
+        .with_exit_code(1)
+        .with_stderr("ERROR: Video unavailable")
+        .build(temp_dir.path());
+    let mock_ffmpeg = MockFfmpegBuilder::new().build(temp_dir.path());
 
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
     cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .env("DWDR_YTDLP_PATH", mock_ytdlp.to_str().unwrap())
+        .env("DWDR_FFMPEG_PATH", mock_ffmpeg.to_str().unwrap())
         .write_stdin("HTTP://youtube.com/watch?v=123\nexit\n")
         .assert()
         .success()

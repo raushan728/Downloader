@@ -759,8 +759,10 @@ mod tests {
     fn test_atomic_save_config() {
         let temp_dir = tempfile::tempdir().unwrap();
         let config_path = temp_dir.path().join("config.toml");
-        let mut config = DwdrConfig::default();
-        config.default_quality = "720p".to_string();
+        let mut config = DwdrConfig {
+            default_quality: "720p".to_string(),
+            ..Default::default()
+        };
 
         // Initial save
         ConfigManager::save_config(&config_path, &config).unwrap();
