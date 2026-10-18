@@ -596,6 +596,12 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
 }
 
 pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, String)> {
+    parse_progress_line_ext(line).map(|(p, d, t, s, e, _)| (p, d, t, s, e))
+}
+
+pub fn parse_progress_line_ext(
+    line: &str,
+) -> Option<(f64, String, String, String, String, Option<String>)> {
     let rest = line.strip_prefix("PROGRESS|")?;
     let parts: Vec<&str> = rest.split('|').collect();
     if parts.len() < 5 {
@@ -607,6 +613,10 @@ pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, S
     let total_str = parts[2].trim();
     let speed_str = parts[3].trim();
     let eta_str = parts[4].trim();
+    let vcodec = parts
+        .get(5)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "NA");
 
     let percent = percent_str.parse::<f64>().unwrap_or(0.0);
     let downloaded_clean = if downloaded_str.is_empty() || downloaded_str == "NA" {
@@ -636,6 +646,7 @@ pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, S
         total_clean,
         speed_clean,
         eta_clean,
+        vcodec,
     ))
 }
 
@@ -866,7 +877,7 @@ pub fn build_ytdlp_download_cmd(
 
     cmd.arg("--newline")
         .arg("--progress-template")
-        .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str,progress._total_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s")
+        .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str,progress._total_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(info.vcodec)s")
         .arg("--progress-template")
         .arg("postprocess:POSTPROCESS|%(progress.status)s")
         .arg("--no-warnings")
@@ -926,19 +937,51 @@ pub fn download_media(
         String::from_utf8_lossy(&err_output).to_string()
     });
 
+    let is_audio_only = format_id.starts_with("audio:")
+        || format_id.eq_ignore_ascii_case("audio")
+        || format_id.eq_ignore_ascii_case("bestaudio");
+
     let mut postprocess_started = false;
+    let mut primary_download_finished = false;
+    let mut max_observed_percent: f64 = 0.0;
 
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
 
         for line in reader.lines().map_while(Result::ok) {
             let line = line.trim();
-            if let Some((percent, downloaded, total, speed, eta)) = parse_progress_line(line) {
-                print!(
-                    "{}",
-                    render_progress_bar(percent, &downloaded, &total, &speed, &eta)
-                );
-                let _ = stdout().flush();
+            if let Some((percent, downloaded, total, speed, eta, vcodec)) =
+                parse_progress_line_ext(line)
+            {
+                let is_secondary_audio = !is_audio_only
+                    && (vcodec
+                        .as_deref()
+                        .map(|v| v.eq_ignore_ascii_case("none"))
+                        .unwrap_or(false)
+                        || (max_observed_percent >= 90.0 && percent < 20.0));
+
+                if is_secondary_audio || primary_download_finished {
+                    if !postprocess_started {
+                        postprocess_started = true;
+                        println!(
+                            "\r[download] [{}] 100.0% Complete!                                                  ",
+                            "=".repeat(25)
+                        );
+                        println!("{}", "INFO: Extracting and finalizing media...".cyan());
+                        let _ = stdout().flush();
+                    }
+                    primary_download_finished = true;
+                } else {
+                    max_observed_percent = max_observed_percent.max(percent);
+                    if percent >= 100.0 {
+                        primary_download_finished = true;
+                    }
+                    print!(
+                        "{}",
+                        render_progress_bar(percent, &downloaded, &total, &speed, &eta)
+                    );
+                    let _ = stdout().flush();
+                }
             } else if (line.starts_with("POSTPROCESS|")
                 || line.starts_with("[Merger]")
                 || line.starts_with("[ExtractAudio]")
@@ -1026,15 +1069,42 @@ where
         String::from_utf8_lossy(&err_output).to_string()
     });
 
+    let is_audio_only = format_id.starts_with("audio:")
+        || format_id.eq_ignore_ascii_case("audio")
+        || format_id.eq_ignore_ascii_case("bestaudio");
+
     let mut postprocess_started = false;
+    let mut primary_download_finished = false;
+    let mut max_observed_percent: f64 = 0.0;
 
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
 
         for line in reader.lines().map_while(Result::ok) {
             let line = line.trim();
-            if let Some((percent, downloaded, total, speed, eta)) = parse_progress_line(line) {
-                on_progress(percent, &downloaded, &total, &speed, &eta, false);
+            if let Some((percent, downloaded, total, speed, eta, vcodec)) =
+                parse_progress_line_ext(line)
+            {
+                let is_secondary_audio = !is_audio_only
+                    && (vcodec
+                        .as_deref()
+                        .map(|v| v.eq_ignore_ascii_case("none"))
+                        .unwrap_or(false)
+                        || (max_observed_percent >= 90.0 && percent < 20.0));
+
+                if is_secondary_audio || primary_download_finished {
+                    if !postprocess_started {
+                        postprocess_started = true;
+                        on_progress(100.0, "", "", "", "", true);
+                    }
+                    primary_download_finished = true;
+                } else {
+                    max_observed_percent = max_observed_percent.max(percent);
+                    if percent >= 100.0 {
+                        primary_download_finished = true;
+                    }
+                    on_progress(percent, &downloaded, &total, &speed, &eta, false);
+                }
             } else if (line.starts_with("POSTPROCESS|")
                 || line.starts_with("[Merger]")
                 || line.starts_with("[ExtractAudio]")
@@ -1297,6 +1367,21 @@ mod tests {
 
         assert!(parse_progress_line("INVALID|FORMAT").is_none());
         assert!(parse_progress_line("PROGRESS|10%|10MB").is_none());
+    }
+
+    #[test]
+    fn test_parse_progress_line_ext_vcodec() {
+        let video_line = "PROGRESS| 45.2%|35.40MiB|78.20MiB|2.10MiB/s|00:20|avc1.640028";
+        let parsed_video = parse_progress_line_ext(video_line).unwrap();
+        assert_eq!(parsed_video.5, Some("avc1.640028".to_string()));
+
+        let audio_line = "PROGRESS| 10.0%|1.00MiB|10.00MiB|1.50MiB/s|00:06|none";
+        let parsed_audio = parse_progress_line_ext(audio_line).unwrap();
+        assert_eq!(parsed_audio.5, Some("none".to_string()));
+
+        let legacy_line = "PROGRESS| 50.0%|25.00MiB|50.00MiB|2.00MiB/s|00:12";
+        let parsed_legacy = parse_progress_line_ext(legacy_line).unwrap();
+        assert_eq!(parsed_legacy.5, None);
     }
 
     #[test]

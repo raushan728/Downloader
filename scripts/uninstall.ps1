@@ -7,6 +7,12 @@ $ErrorActionPreference = "Stop"
 
 $DwdrDir = "$env:USERPROFILE\.dwdr"
 if ($Scope -eq "Machine") {
+    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Write-Host "ERROR: System-wide uninstallation (-Scope Machine) requires administrative privileges." -ForegroundColor Red
+        Write-Host "Please re-run this command from an elevated PowerShell prompt (Run as Administrator)." -ForegroundColor Red
+        exit 1
+    }
     $BinDir = "$env:ProgramFiles\DWDR\bin"
 } else {
     $BinDir = "$DwdrDir\bin"
