@@ -2,7 +2,6 @@
 
 **Date**: YYYY-MM-DD
 **Status**: proposed | accepted | deprecated | superseded by ADR-NNNN
-**Deciders**: [who was involved]
 
 ## Context
 
