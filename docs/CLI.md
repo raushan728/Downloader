@@ -25,9 +25,11 @@ dwdr [COMMAND]
 
 DWDR respects the following environment variables:
 - `DWDR_CONFIG_PATH`: Custom path or directory for `config.toml`.
-- `DWDR_PROXY`: Top-priority proxy URL for all dependency and binary downloads (e.g., `http://127.0.0.1:8080`).
+- `DWDR_YTDLP_PATH`: Path override for the `yt-dlp` executable (bypasses internal dependency checks; used for custom engines or hermetic offline testing).
+- `DWDR_FFMPEG_PATH`: Path override for the `ffmpeg` executable (bypasses internal dependency checks; used for custom engines or hermetic testing).
+- `DWDR_PROXY`: Top-priority proxy URL for all dependency and binary downloads (e.g., `http://127.0.0.1:8080` or `socks5://127.0.0.1:1080`).
 - `HTTPS_PROXY` / `https_proxy`: Standard HTTPS proxy.
-- `ALL_PROXY` / `all_proxy`: General fallback proxy.
+- `ALL_PROXY` / `all_proxy`: General fallback proxy (supports HTTP, HTTPS, and SOCKS5).
 - `HTTP_PROXY` / `http_proxy`: Plain HTTP proxy.
 
 ---
@@ -146,9 +148,10 @@ dwdr update
 ```
 
 - Platform detection automatically resolves appropriate architecture binaries: Linux x86_64, Linux ARM64 (`aarch64`), macOS x86_64, macOS Apple Silicon ARM64, and Windows x86_64.
-- Network requests route through proxy environment variables when configured.
-- Implements exponential backoff retry logic (up to 3 attempts with 1s, 2s, 4s delay) on transient network failures.
-- Downloads are staged in temporary `.tmp` files and validated before replacing active binaries.
+- Network requests route through proxy environment variables (HTTP, HTTPS, SOCKS5) when configured.
+- Implements exponential backoff retry logic (up to 3 attempts with 1s, 2s, 4s delay) covering both connection and complete body streaming on transient network failures.
+- Checks existing binaries before updating; if an engine binary is in use or locked by another process, prints a warning and halts rather than reporting false success.
+- Downloads are staged in temporary `.tmp` files and validated with executable magic headers before replacing active binaries.
 
 ---
 
@@ -160,7 +163,9 @@ Updates the DWDR command-line tool itself to the latest release published on Git
 dwdr self-update
 ```
 
-- Verifies release assets, routes through proxies, and applies retry backoff.
+- Inspects CPU architecture and operating system, downloading the exact matching binary: `dwdr-linux`, `dwdr-linux-arm64`, `dwdr-mac`, `dwdr-mac-arm64`, or `dwdr-windows.exe`.
+- Performs a pre-flight write check on the installation directory; if running from a system location without write permissions (e.g., `/usr/local/bin`), provides clear guidance to re-run with elevated privileges (`sudo dwdr self-update`).
+- Verifies downloaded release assets with executable integrity checks (`is_valid_executable`) before replacing the running binary.
 - On Unix, replaces the running binary atomically with executable permissions (`0o755`).
 - On Windows, renames the active executable to `.old` to bypass file locking, replacing it with the new binary and cleaning up `.old` on startup.
 

@@ -5,15 +5,19 @@ DWDR is built for Windows, macOS, and Linux desktop operating systems across bot
 ## Automated Scripts (Recommended)
 
 ### macOS / Linux
-Open your terminal and run the following command:
+Open your terminal and run the following command (verifies SHA256 release checksums and configures Bash, Zsh, Fish, or Nushell automatically):
 ```bash
 curl -fsSL https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.sh | bash
 ```
 
 ### Windows
-Open PowerShell and run the following command:
+Open PowerShell and run the installer (supports `-Scope User` by default or `-Scope Machine` for all users, with SHA256 checksum verification):
 ```powershell
+# Current user install:
 irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.ps1 | iex
+
+# System-wide install (Run PowerShell as Administrator):
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.ps1))) -Scope Machine
 ```
 
 ## Build from Source (Advanced Users)
@@ -31,15 +35,17 @@ cargo install --path .
 
 ## Network Proxy Configuration
 
-If you are running DWDR in an enterprise environment or behind a firewall, configure your proxy before running downloads or updates:
+If you are running DWDR in an enterprise environment or behind a firewall, configure your HTTP, HTTPS, or SOCKS5 proxy before running downloads or updates:
 
 ```bash
-# Unix (Linux / macOS)
+# Unix (Linux / macOS) - HTTP/HTTPS or SOCKS5
 export DWDR_PROXY="http://proxy.example.com:8080"
+# or export DWDR_PROXY="socks5://127.0.0.1:1080"
 # or export HTTPS_PROXY="http://proxy.example.com:8080"
 
 # Windows (PowerShell)
 $env:DWDR_PROXY = "http://proxy.example.com:8080"
+# or $env:DWDR_PROXY = "socks5://127.0.0.1:1080"
 ```
 
 ## Uninstallation

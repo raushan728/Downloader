@@ -10,9 +10,10 @@ DWDR is a high-performance terminal media downloader designed to provide reliabl
 DWDR isolates its third-party engines into `~/.dwdr/deps/`:
 - `yt-dlp`: Automatically fetched on first run directly from official GitHub releases. Supports Linux x86_64, Linux ARM64 (`yt-dlp_linux_aarch64`), macOS (universal), and Windows x86_64 (`yt-dlp.exe`).
 - `ffmpeg`: Automatically fetched on first run from official prebuilt releases into `~/.dwdr/deps/` for media merging. Supports Linux x86_64, Linux ARM64 (`ffmpeg-4.4.1-linux-arm-64.zip`), macOS x86_64, macOS Apple Silicon ARM64 (`ffmpeg-darwin-arm64`), and Windows x86_64.
-- No global Python, yt-dlp, or FFmpeg installations required.
+- No global Python, yt-dlp, or FFmpeg installations required. Users and test suites can override binary locations via `DWDR_YTDLP_PATH` and `DWDR_FFMPEG_PATH`.
 - TLS networking is powered by `rustls` instead of native OpenSSL, guaranteeing seamless cross-compilation across desktop environments.
-- Network requests automatically route through proxy configurations (`DWDR_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `HTTP_PROXY`) and employ exponential backoff retry (up to 3 attempts with 1s, 2s, 4s delay).
+- Network requests automatically route through proxy configurations (`DWDR_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `HTTP_PROXY`), supporting HTTP, HTTPS, and SOCKS5 endpoints.
+- Exponential backoff retry (up to 3 attempts with 1s, 2s, 4s delay) covers both initial connection (30s connect timeout) and full body streaming on transient network errors.
 - Dependency binaries are validated for integrity on startup (`is_valid_executable` checks executable magic headers, file size, and runs `--version`). Corrupted or partial binaries are automatically healed.
 
 ### 2. Single-Video Protection (`--no-playlist`)
@@ -60,11 +61,12 @@ Interactive shell commands provide differentiated observability into background 
 
 ### 10. Self-Healing Configuration & Concurrency Protection
 Configuration management (`ConfigManager`) provides robust multi-process and error recovery guarantees:
+- **Atomic Persistence**: Configurations write to a sibling temporary file (`config.toml.tmp`), flush with `sync_all()`, and atomically replace the destination file to prevent partial or corrupted settings on sudden interruption.
 - **Directory Path Resolution**: If `DWDR_CONFIG_PATH` points to a directory, it automatically resolves to `<directory>/config.toml`.
 - **Validation Bounds**: CLI commands enforce bounds on values (`parallel 1..=16`, `update_check_days 0..=365`, valid quality resolution tiers).
 - **Concurrency Locks**: An isolated lock file (`~/.dwdr/active_downloads.lock`) tracks active download PIDs across processes, preventing race conditions or concurrent overwrite of user settings unless explicitly bypassed with `--force`.
 
 ### 11. Hermetic Testing Harness & Multi-OS CI Matrix
 DWDR maintains strict hermetic testing practices:
-- **Mock Binary Injection**: The test suite in `tests/common/` constructs mock `yt-dlp` and `ffmpeg` binary shims for reproducible, offline testing without network calls or external binary downloads.
+- **Mock Binary Injection**: The test suite in `tests/common/` constructs mock `yt-dlp` and `ffmpeg` binary shims injected via `DWDR_YTDLP_PATH` and `DWDR_FFMPEG_PATH` environment overrides for deterministic, offline testing without network calls or external binary downloads.
 - **Cross-Platform PR Validation**: The GitHub Actions PR workflow validates all commits across a three-OS matrix (`ubuntu-latest`, `macos-latest`, `windows-latest`), enforcing compilation, test execution, formatting (`cargo fmt`), and strict lints (`cargo clippy -- -D warnings`).

@@ -43,6 +43,12 @@ Set `DWDR_CONFIG_PATH` to specify a custom configuration destination:
 - Leading and trailing whitespace is trimmed. Empty or whitespace-only values are ignored and fall back to the default path.
 - Parent directories are automatically created if they do not exist.
 
+### Custom Engine Binary Paths (`DWDR_YTDLP_PATH`, `DWDR_FFMPEG_PATH`)
+Set these variables to override internal engine resolution and use custom external binaries:
+- `DWDR_YTDLP_PATH`: Full path to custom `yt-dlp` executable.
+- `DWDR_FFMPEG_PATH`: Full path to custom `ffmpeg` executable.
+When set, DWDR uses the specified executable paths directly without downloading or validating internal binaries in `~/.dwdr/deps/`, which also enables hermetic offline test suites.
+
 ### Network Proxy Routing
 DWDR inspects standard proxy environment variables in the following order of precedence:
 1. `DWDR_PROXY` (application-specific override)
@@ -50,7 +56,7 @@ DWDR inspects standard proxy environment variables in the following order of pre
 3. `ALL_PROXY` / `all_proxy` (general network traffic)
 4. `HTTP_PROXY` / `http_proxy` (plain HTTP requests)
 
-When set, all binary dependency downloads (`yt-dlp`, `ffmpeg`) and self-updates are routed through the configured HTTP/HTTPS/SOCKS proxy.
+When set, all binary dependency downloads (`yt-dlp`, `ffmpeg`) and self-updates are routed through the configured HTTP, HTTPS, or SOCKS5 proxy (e.g. `socks5://127.0.0.1:1080` or `socks5h://...`).
 
 ---
 
