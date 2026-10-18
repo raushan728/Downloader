@@ -68,12 +68,12 @@ impl MockFfmpegBuilder {
             script.push_str("setlocal\r\n");
             script.push_str(":arg_loop\r\n");
             script.push_str("if \"%~1\"==\"\" goto no_version\r\n");
-            script.push_str("if \"%~1\"==\"-version\" (\r\n");
-            script.push_str("  echo ffmpeg version 6.1.1-dwdr-mock Copyright (c) 2000-2023 the FFmpeg developers\r\n");
-            script.push_str("  exit /b 0\r\n");
-            script.push_str(")\r\n");
+            script.push_str("if \"%~1\"==\"-version\" goto do_version\r\n");
             script.push_str("shift\r\n");
             script.push_str("goto arg_loop\r\n");
+            script.push_str(":do_version\r\n");
+            script.push_str("echo ffmpeg version 6.1.1-dwdr-mock Copyright (c) 2000-2023 the FFmpeg developers\r\n");
+            script.push_str("exit /b 0\r\n");
             script.push_str(":no_version\r\n");
 
             if let Some(err) = &self.stderr_output {

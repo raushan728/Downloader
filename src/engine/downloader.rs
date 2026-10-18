@@ -1901,7 +1901,6 @@ mod tests {
 
     #[test]
     fn test_resolve_resolution_square_and_vr() {
-        // Square videos (1:1 aspect ratio)
         assert_eq!(
             resolve_resolution(Some(1080), Some(1080), None),
             Some(("1080p", 1080))
@@ -1919,7 +1918,6 @@ mod tests {
             Some(("8K", 4320))
         );
 
-        // 2:1 Equirectangular VR (e.g. 3840x1920)
         assert_eq!(
             resolve_resolution(Some(1920), Some(3840), None),
             Some(("4K", 2160))
