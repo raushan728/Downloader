@@ -15,7 +15,7 @@ case "${OS}" in
         ;;
     Darwin*)
         if [[ "${ARCH}" == "aarch64" ]] || [[ "${ARCH}" == "arm64" ]]; then
-            SUFFIX="mac-arm64"F
+            SUFFIX="mac-arm64"
         else
             SUFFIX="mac"
         fi

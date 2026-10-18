@@ -492,8 +492,8 @@ mod tests {
 
     #[test]
     fn test_config_self_healing_corrupted_file() {
-        let temp = tempfile::NamedTempFile::new().unwrap();
-        let path = temp.path().to_path_buf();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("config.toml");
         std::fs::write(&path, "this is corrupt toml! {{{]]] :::").unwrap();
 
         let config = ConfigManager::load_from_path(&path);

@@ -46,27 +46,77 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Rename binary (Linux/macOS)
-        if: matrix.os != 'windows-latest'
+      - name: Stage binary (Linux)
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-            mv target/release/dwdr dwdr-linux
-          elif [ "${{ matrix.os }}" = "macos-latest" ]; then
-            mv target/release/dwdr dwdr-mac
-          fi
-        shell: bash
+          mkdir -p dist
+          cp target/release/dwdr dist/dwdr-linux
 
-      - name: Rename binary (Windows)
+      - name: Stage binary (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p dist
+          cp target/release/dwdr dist/dwdr-mac
+          cp target/release/dwdr dist/dwdr-mac-arm64
+
+      - name: Stage binary (Windows)
         if: matrix.os == 'windows-latest'
-        run: Move-Item -Path target\release\dwdr.exe -Destination dwdr-windows.exe
-        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          Copy-Item target\release\dwdr.exe dist\dwdr-windows.exe
 
-      - name: Release
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate Checksums & Extract Version
+        run: |
+          cd artifacts
+          sha256sum dwdr-* > SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          echo "DWDR_VERSION=${VERSION}" >> $GITHUB_ENV
+
+      - name: Release Versioned Tag
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ env.DWDR_VERSION }}"
+          name: "DWDR v${{ env.DWDR_VERSION }}"
+          files: |
+            artifacts/dwdr-linux
+            artifacts/dwdr-mac
+            artifacts/dwdr-mac-arm64
+            artifacts/dwdr-windows.exe
+            artifacts/SHA256SUMS
+          fail_on_unmatched_files: false
+
+      - name: Release Latest Rolling Tag
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "latest"
+          name: "DWDR Latest"
           files: |
-            dwdr-linux
-            dwdr-mac
-            dwdr-windows.exe
+            artifacts/dwdr-linux
+            artifacts/dwdr-mac
+            artifacts/dwdr-mac-arm64
+            artifacts/dwdr-windows.exe
+            artifacts/SHA256SUMS
           fail_on_unmatched_files: false
