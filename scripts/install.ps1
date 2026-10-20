@@ -1,6 +1,6 @@
 param (
-    [ValidateSet("User", "Machine")]
-    [string]$Scope = "User"
+    [ValidateSet("User", "Machine", "Auto")]
+    [string]$Scope = "Auto"
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,12 +9,44 @@ $Repo = "raushan728/Downloader"
 $Url = "https://github.com/$Repo/releases/download/latest/dwdr-windows.exe"
 $ChecksumUrl = "https://github.com/$Repo/releases/download/latest/SHA256SUMS"
 
+$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if ($Scope -eq "Auto") {
+    if ($isAdmin) {
+        # When running as Administrator interactively, ask user whether they prefer system-wide or user-only scope.
+        $isInteractive = [Environment]::UserInteractive -and -not [Console]::IsInputRedirected
+        if ($isInteractive) {
+            try {
+                Write-Host "INFO: Administrator privileges detected." -ForegroundColor Cyan
+                Write-Host "Select installation scope:" -ForegroundColor Yellow
+                Write-Host "  [1] All Users / System-wide (C:\Program Files\DWDR\bin) - Recommended"
+                Write-Host "  [2] Current User only (~/.dwdr\bin)"
+                $choice = Read-Host "Enter choice (1/2) [Default: 1]"
+                if ($choice -and ($choice.Trim() -eq "2" -or $choice.Trim() -match '^[Uu]')) {
+                    $Scope = "User"
+                } else {
+                    $Scope = "Machine"
+                }
+            } catch {
+                $Scope = "Machine"
+            }
+        } else {
+            $Scope = "Machine"
+        }
+    } else {
+        $Scope = "User"
+    }
+}
+
 if ($Scope -eq "Machine") {
-    $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    if (-not $isAdmin) {
         Write-Host "ERROR: System-wide installation (-Scope Machine) requires administrative privileges." -ForegroundColor Red
-        Write-Host "Please re-run this command from an elevated PowerShell prompt (Run as Administrator)." -ForegroundColor Red
-        exit 1
+        Write-Host "Solution: Right-click PowerShell and select 'Run as Administrator', then run:" -ForegroundColor Yellow
+        Write-Host "  & ([scriptblock]::Create((irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.ps1))) -Scope Machine" -ForegroundColor Cyan
+        Write-Host "Tip: To install for your current user without Administrator privileges, run:" -ForegroundColor Yellow
+        Write-Host "  irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.ps1 | iex" -ForegroundColor Cyan
+        return
     }
     $BinDir = "$env:ProgramFiles\DWDR\bin"
 } else {
@@ -48,7 +80,7 @@ try {
         }
         Remove-Item -Path $SumsFile -Force -ErrorAction SilentlyContinue
     }
-} catch [System.Net.WebException] {
+} catch [System.Net.WebException], [System.Net.Http.HttpRequestException] {
     # Checksum manifest unavailable; proceed
 }
 
@@ -62,3 +94,11 @@ if ($CurrentPath -notlike "*$BinDir*") {
 }
 
 Write-Host "SUCCESS: DWDR installed successfully! Restart your terminal to use it." -ForegroundColor Green
+Write-Host ""
+Write-Host "Quick Start Commands:" -ForegroundColor Cyan
+Write-Host "  dwdr <URL>             - Download media directly with smart quality selection"
+Write-Host "  dwdr                   - Open interactive shell (queue, live status, format picker)"
+Write-Host "  dwdr config            - Configure download directory, default quality, and limits"
+Write-Host "  dwdr update            - Update core yt-dlp & ffmpeg engines"
+Write-Host "  dwdr self-update       - Update DWDR CLI tool itself"
+Write-Host "  dwdr --help            - Display complete command reference"

@@ -28,6 +28,10 @@ pub struct Cli {
     /// Bypasses the UI and immediately starts downloading the provided resource.
     pub url: Option<String>,
 
+    /// Force overwrite existing media files without interactive confirmation.
+    #[arg(short, long)]
+    pub force: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

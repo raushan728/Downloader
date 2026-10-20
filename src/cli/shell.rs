@@ -1,5 +1,5 @@
 use std::io::{self, BufRead, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use colored::Colorize;
@@ -8,17 +8,44 @@ use rfd::FileDialog;
 
 use crate::cli::prompts::{interactive_config, select_format};
 use crate::config::manager::{ConfigManager, DwdrConfig};
-use crate::engine::downloader::{download_media, fetch_video_info, find_format_by_quality};
+use crate::engine::downloader::{
+    download_media_ext, fetch_video_info, find_existing_media_file, find_format_by_quality,
+    resolve_unique_output_template,
+};
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
 use crate::engine::queue::{EnqueueResult, QueueManager, set_global_queue};
 use crate::engine::updater::ensure_dependencies;
 use crate::utils::validator::is_valid_url;
 
+/// Resets terminal raw mode and restores cursor and colors to prevent leaked terminal styling.
+pub fn reset_terminal_state() {
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = crossterm::execute!(
+        std::io::stdout(),
+        crossterm::style::ResetColor,
+        crossterm::cursor::Show
+    );
+    let _ = crossterm::execute!(std::io::stderr(), crossterm::style::ResetColor);
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+}
+
+/// Resolved parameters for launching or queueing a media download.
+pub struct ResolvedMedia {
+    pub title: String,
+    pub format_id: String,
+    pub yt_dlp_path: PathBuf,
+    pub ffmpeg_path: PathBuf,
+    pub custom_output_template: Option<String>,
+    pub force_overwrite: bool,
+}
+
 /// Validates the URL, fetches available formats, and resolves the target format and destination directory.
 pub fn resolve_media_to_download(
     url: &str,
     config: &mut DwdrConfig,
-) -> Option<(String, String, PathBuf, PathBuf)> {
+    force: bool,
+) -> Option<ResolvedMedia> {
     if !is_valid_url(url) {
         println!(
             "{}",
@@ -225,28 +252,124 @@ pub fn resolve_media_to_download(
         }
     }
 
-    Some((info.title, format_id, yt_dlp_path, ffmpeg_path))
+    let download_dir = Path::new(&config.download_path);
+    let mut custom_output_template: Option<String> = None;
+    let mut force_overwrite = force;
+
+    if !force
+        && let Some(existing_file) = find_existing_media_file(download_dir, &info.title, is_audio)
+    {
+        let file_name = existing_file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("media file");
+
+        println!(
+            "{}",
+            format!(
+                "\nINFO: Media file already exists in download directory: \"{}\"",
+                file_name
+            )
+            .yellow()
+        );
+
+        if io::stdin().is_terminal() {
+            println!(
+                "{}",
+                "Tip: Choose to skip, overwrite, or save as a numbered copy.".cyan()
+            );
+            let choices = vec![
+                "Skip download (already available)",
+                "Overwrite existing file",
+                "Save as a new copy (e.g. filename (1).ext)",
+            ];
+            match inquire::Select::new("How would you like to proceed?", choices).prompt() {
+                Ok("Skip download (already available)") => {
+                    println!(
+                        "{}",
+                        format!(
+                            "INFO: Skipping download. File is already available at: {}",
+                            existing_file.display()
+                        )
+                        .cyan()
+                    );
+                    println!(
+                        "{}",
+                        "Tip: To download another copy, choose 'Save as a new copy' or use '--force' to overwrite."
+                            .yellow()
+                    );
+                    reset_terminal_state();
+                    return None;
+                }
+                Ok("Overwrite existing file") => {
+                    println!(
+                        "{}",
+                        "INFO: Overwrite confirmed. Existing file will be replaced.".cyan()
+                    );
+                    force_overwrite = true;
+                }
+                Ok("Save as a new copy (e.g. filename (1).ext)") => {
+                    let (tmpl, idx) =
+                        resolve_unique_output_template(download_dir, &info.title, is_audio);
+                    println!(
+                        "{}",
+                        format!(
+                            "INFO: Saving as copy #{}: output will use template \"{}\"",
+                            idx, tmpl
+                        )
+                        .cyan()
+                    );
+                    custom_output_template = Some(tmpl);
+                }
+                _ => {
+                    println!("{}", "WARNING: Download cancelled by user.".yellow());
+                    reset_terminal_state();
+                    return None;
+                }
+            }
+        } else {
+            println!(
+                "{}",
+                format!(
+                    "WARNING: File already exists at {}. Skipping to prevent clobbering in non-interactive mode.\nTip: Use 'dwdr --force <URL>' to overwrite existing files.",
+                    existing_file.display()
+                )
+                .yellow()
+            );
+            reset_terminal_state();
+            return None;
+        }
+    }
+
+    Some(ResolvedMedia {
+        title: info.title,
+        format_id,
+        yt_dlp_path,
+        ffmpeg_path,
+        custom_output_template,
+        force_overwrite,
+    })
 }
 
 /// Single-URL direct execution entry point for non-interactive CLI usage.
-pub fn process_url(url: &str, config: &mut DwdrConfig) {
-    if let Some((title, format_id, yt_dlp_path, ffmpeg_path)) =
-        resolve_media_to_download(url, config)
-    {
-        match download_media(
+pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) {
+    if let Some(media) = resolve_media_to_download(url, config, force) {
+        match download_media_ext(
             url,
-            &format_id,
-            &yt_dlp_path,
-            &ffmpeg_path,
+            &media.format_id,
+            &media.yt_dlp_path,
+            &media.ffmpeg_path,
             &config.download_path,
-            Some(&title),
+            Some(&media.title),
+            media.custom_output_template.as_deref(),
+            media.force_overwrite,
         ) {
             Ok(()) => {
                 println!(
                     "{}",
                     format!(
                         "SUCCESS: Download completed successfully! File saved: \"{}\" in {}",
-                        title, config.download_path
+                        media.title, config.download_path
                     )
                     .green()
                     .bold()
@@ -257,6 +380,7 @@ pub fn process_url(url: &str, config: &mut DwdrConfig) {
                     "{}",
                     format!("\nERROR: Download failed: {}\n", e).red().bold()
                 );
+                reset_terminal_state();
             }
         }
     }
@@ -283,8 +407,14 @@ fn read_shell_input(prompt: &str) -> Option<String> {
             Err(
                 inquire::InquireError::OperationCanceled
                 | inquire::InquireError::OperationInterrupted,
-            ) => None,
-            Err(_) => read_line_fallback(prompt),
+            ) => {
+                reset_terminal_state();
+                None
+            }
+            Err(_) => {
+                reset_terminal_state();
+                read_line_fallback(prompt)
+            }
         }
     } else {
         read_line_fallback(prompt)
@@ -380,6 +510,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                         continue;
                     }
                     interactive_config(config);
+                    reset_terminal_state();
                     queue_manager.lock().unwrap().max_parallel =
                         config.max_parallel_downloads as usize;
                     continue;
@@ -391,6 +522,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                 }
                 if input.eq_ignore_ascii_case("exit") || input.eq_ignore_ascii_case("quit") {
                     QueueManager::cancel_and_join(&queue_manager);
+                    reset_terminal_state();
                     println!("{}", "INFO: Thanks for using DWDR!".green());
                     break;
                 }
@@ -409,13 +541,15 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     continue;
                 }
 
-                if let Some((title, format_id, _, _)) = resolve_media_to_download(input, config) {
-                    let result = QueueManager::enqueue(
+                if let Some(media) = resolve_media_to_download(input, config, false) {
+                    let result = QueueManager::enqueue_ext(
                         &queue_manager,
                         input.to_string(),
-                        title.clone(),
-                        format_id,
+                        media.title.clone(),
+                        media.format_id,
                         config.download_path.clone(),
+                        media.custom_output_template,
+                        media.force_overwrite,
                     );
                     let max_p = queue_manager.lock().unwrap().max_parallel;
                     match result {
@@ -428,7 +562,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                                 "{}",
                                 format!(
                                     "INFO: Download started for: \"{}\" [Active: {}/{}, Queued: {}] (Type 'status' for real-time progress)",
-                                    title, active_count, max_p, queued_count
+                                    media.title, active_count, max_p, queued_count
                                 )
                                 .green()
                             );
@@ -443,7 +577,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                                 "{}",
                                 format!(
                                     "INFO: Added to download queue: \"{}\" [Active: {}/{}, Queued: {} (Position: #{})]",
-                                    title, active_count, max_p, queued_count, position
+                                    media.title, active_count, max_p, queued_count, position
                                 )
                                 .yellow()
                             );
@@ -453,6 +587,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
             }
             None => {
                 QueueManager::cancel_and_join(&queue_manager);
+                reset_terminal_state();
                 println!("{}", "INFO: Thanks for using DWDR!".green());
                 break;
             }

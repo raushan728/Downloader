@@ -13,7 +13,8 @@ use colored::Colorize;
 
 use crate::config::manager::ConfigManager;
 use crate::engine::downloader::{
-    clean_partial_files, download_media_background, render_progress_bar,
+    clean_interrupted_media_files, clean_partial_files, download_media_background_ext,
+    render_progress_bar,
 };
 
 /// Lifecycle states of a queued or active media download task.
@@ -57,6 +58,8 @@ pub struct DownloadTask {
     pub download_dir: String,
     pub status: TaskStatus,
     pub progress: TaskProgress,
+    pub custom_output_template: Option<String>,
+    pub force_overwrite: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -318,6 +321,26 @@ impl QueueManager {
         format_id: String,
         download_dir: String,
     ) -> EnqueueResult {
+        Self::enqueue_ext(
+            manager_arc,
+            url,
+            title,
+            format_id,
+            download_dir,
+            None,
+            false,
+        )
+    }
+
+    pub fn enqueue_ext(
+        manager_arc: &Arc<Mutex<Self>>,
+        url: String,
+        title: String,
+        format_id: String,
+        download_dir: String,
+        custom_output_template: Option<String>,
+        force_overwrite: bool,
+    ) -> EnqueueResult {
         let mut mgr = manager_arc.lock().unwrap();
         if mgr.cancelled.load(Ordering::SeqCst) && mgr.active_count == 0 && mgr.queue.is_empty() {
             mgr.cancelled = Arc::new(AtomicBool::new(false));
@@ -333,6 +356,8 @@ impl QueueManager {
             download_dir,
             status: TaskStatus::Queued,
             progress: TaskProgress::default(),
+            custom_output_template,
+            force_overwrite,
         }));
         mgr.tasks.push(Arc::clone(&task));
 
@@ -366,7 +391,16 @@ impl QueueManager {
         let task_clone = Arc::clone(&task);
 
         let handle = thread::spawn(move || {
-            let (url, format_id, yt_dlp_path, ffmpeg_path, download_dir, cancelled) = {
+            let (
+                url,
+                format_id,
+                yt_dlp_path,
+                ffmpeg_path,
+                download_dir,
+                custom_output_template,
+                force_overwrite,
+                cancelled,
+            ) = {
                 let mgr = mgr_clone.lock().unwrap();
                 let t = task_clone.lock().unwrap();
                 (
@@ -375,6 +409,8 @@ impl QueueManager {
                     mgr.yt_dlp_path.clone(),
                     mgr.ffmpeg_path.clone(),
                     t.download_dir.clone(),
+                    t.custom_output_template.clone(),
+                    t.force_overwrite,
                     Arc::clone(&mgr.cancelled),
                 )
             };
@@ -383,12 +419,14 @@ impl QueueManager {
             let mgr_for_spawn = Arc::clone(&mgr_clone);
             let mut spawned_pid: Option<u32> = None;
 
-            let result = download_media_background(
+            let result = download_media_background_ext(
                 &url,
                 &format_id,
                 &yt_dlp_path,
                 &ffmpeg_path,
                 &download_dir,
+                custom_output_template.as_deref(),
+                force_overwrite,
                 |child| {
                     let pid = child.id();
                     spawned_pid = Some(pid);
@@ -444,7 +482,12 @@ impl QueueManager {
             };
 
             if is_cancelled || result.is_err() {
+                let target_stem = crate::engine::downloader::derive_output_stem(
+                    &title,
+                    custom_output_template.as_deref(),
+                );
                 clean_partial_files(&download_dir, Some(&title));
+                clean_interrupted_media_files(&download_dir, &title, Some(&target_stem));
             }
 
             if !is_cancelled {
@@ -552,7 +595,12 @@ impl QueueManager {
                 TaskStatus::Queued | TaskStatus::Downloading | TaskStatus::Finalizing
             ) {
                 t.status = TaskStatus::Cancelled;
+                let target_stem = crate::engine::downloader::derive_output_stem(
+                    &t.title,
+                    t.custom_output_template.as_deref(),
+                );
                 clean_partial_files(&t.download_dir, Some(&t.title));
+                clean_interrupted_media_files(&t.download_dir, &t.title, Some(&target_stem));
             }
         }
 
@@ -1388,6 +1436,8 @@ mod tests {
                 speed_str: "2.5 MiB/s".to_string(),
                 eta_str: "00:22".to_string(),
             },
+            custom_output_template: None,
+            force_overwrite: false,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1398,6 +1448,8 @@ mod tests {
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Finalizing,
             progress: TaskProgress::default(),
+            custom_output_template: None,
+            force_overwrite: false,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1408,6 +1460,8 @@ mod tests {
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Queued,
             progress: TaskProgress::default(),
+            custom_output_template: None,
+            force_overwrite: false,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1424,6 +1478,8 @@ mod tests {
                 speed_str: "0 B/s".to_string(),
                 eta_str: "00:00".to_string(),
             },
+            custom_output_template: None,
+            force_overwrite: false,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1434,6 +1490,8 @@ mod tests {
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Failed("Disk space exhausted".to_string()),
             progress: TaskProgress::default(),
+            custom_output_template: None,
+            force_overwrite: false,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1444,6 +1502,8 @@ mod tests {
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Cancelled,
             progress: TaskProgress::default(),
+            custom_output_template: None,
+            force_overwrite: false,
         })));
 
         mgr.print_list();
@@ -1467,6 +1527,8 @@ mod tests {
             download_dir: "/tmp".to_string(),
             status: TaskStatus::Queued,
             progress: TaskProgress::default(),
+            custom_output_template: None,
+            force_overwrite: false,
         })));
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
             id: 11,
@@ -1476,6 +1538,8 @@ mod tests {
             download_dir: "/tmp".to_string(),
             status: TaskStatus::Queued,
             progress: TaskProgress::default(),
+            custom_output_template: None,
+            force_overwrite: false,
         })));
 
         assert!(mgr.is_active());
@@ -1499,6 +1563,8 @@ mod tests {
                 download_dir: "/tmp".to_string(),
                 status: TaskStatus::Queued,
                 progress: TaskProgress::default(),
+                custom_output_template: None,
+                force_overwrite: false,
             })));
         }
 

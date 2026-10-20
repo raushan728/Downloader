@@ -111,3 +111,11 @@ if [[ ":$PATH:" != *":${BIN_DIR}:"* ]]; then
     fi
 fi
 echo "SUCCESS: DWDR installed successfully! Restart your terminal to use it."
+echo ""
+echo "Quick Start Commands:"
+echo "  dwdr <URL>             - Download media directly with smart quality selection"
+echo "  dwdr                   - Open interactive shell (queue, live status, format picker)"
+echo "  dwdr config            - Configure download directory, default quality, and limits"
+echo "  dwdr update            - Update core yt-dlp & ffmpeg engines"
+echo "  dwdr self-update       - Update DWDR CLI tool itself"
+echo "  dwdr --help            - Display complete command reference"

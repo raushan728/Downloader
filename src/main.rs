@@ -1,17 +1,14 @@
-mod cli;
-mod config;
-pub mod engine;
-pub mod utils;
+use std::io::Write;
 
 use clap::Parser;
-use cli::router::{Cli, Commands};
-use cli::shell::{process_url, start_repl};
 use colored::Colorize;
-use config::manager::ConfigManager;
-use engine::downloader::cancel_direct_download;
-use engine::paths::{get_ffmpeg_path, get_ytdlp_path};
-use engine::queue::cancel_global_downloads;
-use engine::updater::{ensure_dependencies, ensure_ffmpeg, update_self};
+use dwdr::cli::router::{Cli, Commands};
+use dwdr::cli::shell::{process_url, reset_terminal_state, start_repl};
+use dwdr::config::manager::ConfigManager;
+use dwdr::engine::downloader::cancel_direct_download;
+use dwdr::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
+use dwdr::engine::queue::cancel_global_downloads;
+use dwdr::engine::updater::{ensure_dependencies, ensure_ffmpeg, update_self};
 
 fn main() {
     #[cfg(target_os = "windows")]
@@ -43,13 +40,26 @@ fn main() {
             std::process::exit(130);
         }
         let _ = crossterm::terminal::disable_raw_mode();
-        let _ = crossterm::execute!(std::io::stdout(), crossterm::cursor::Show);
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::style::ResetColor,
+            crossterm::cursor::Show
+        );
+        let _ = crossterm::execute!(std::io::stderr(), crossterm::style::ResetColor);
         cancel_direct_download();
         cancel_global_downloads();
         eprintln!(
             "{}",
-            "\nINFO: Interrupted by user. Cleaned up partial files.".yellow()
+            "\nINFO: Interrupted by user. Cleaned up partial and downloaded files.".yellow()
         );
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::style::ResetColor,
+            crossterm::cursor::Show
+        );
+        let _ = crossterm::execute!(std::io::stderr(), crossterm::style::ResetColor);
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
         std::process::exit(130);
     });
 
@@ -57,7 +67,8 @@ fn main() {
     let mut config = ConfigManager::load();
 
     if let Some(url) = cli.url {
-        process_url(&url, &mut config);
+        process_url(&url, &mut config, cli.force);
+        reset_terminal_state();
         return;
     }
 
@@ -129,8 +140,10 @@ fn main() {
                 }
             }
         }
+        reset_terminal_state();
         return;
     }
 
     start_repl(&mut config);
+    reset_terminal_state();
 }

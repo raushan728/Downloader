@@ -11,14 +11,15 @@ curl -fsSL https://raw.githubusercontent.com/raushan728/Downloader/master/script
 ```
 
 ### Windows
-Open PowerShell and run the installer (supports `-Scope User` by default or `-Scope Machine` for all users, with SHA256 checksum verification):
+Open PowerShell and run the installer (auto-detects administrator privileges and verifies SHA256 release checksums):
 ```powershell
-# Current user install:
 irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.ps1 | iex
-
-# System-wide install (Run PowerShell as Administrator):
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.ps1))) -Scope Machine
 ```
+
+> **Tip:** By default, DWDR installs to your user profile (`~/.dwdr/bin`). To install system-wide for all users, open PowerShell as Administrator and run:
+> ```powershell
+> & ([scriptblock]::Create((irm https://raw.githubusercontent.com/raushan728/Downloader/master/scripts/install.ps1))) -Scope Machine
+> ```
 
 ## Build from Source (Advanced Users)
 

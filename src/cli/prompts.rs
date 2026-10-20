@@ -28,6 +28,7 @@ impl<T: Display> Select<T> {
         }
     }
 
+    #[allow(clippy::result_unit_err)]
     pub fn prompt_index(&self) -> Result<usize, ()> {
         if self.options.is_empty() {
             return Err(());
@@ -166,6 +167,7 @@ impl<T: Display> Select<T> {
         selection_result
     }
 
+    #[allow(clippy::result_unit_err)]
     pub fn prompt(self) -> Result<T, ()> {
         let idx = self.prompt_index()?;
         Ok(self.options.into_iter().nth(idx).unwrap())

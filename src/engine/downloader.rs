@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write, stdout};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::thread;
@@ -700,6 +700,173 @@ pub fn render_progress_bar(
     render_progress_bar_with_width(percent, downloaded, total, speed, eta, get_terminal_width())
 }
 
+pub const MEDIA_EXTENSIONS_AUDIO: &[&str] = &["mp3", "m4a", "aac", "opus", "wav", "flac", "ogg"];
+pub const MEDIA_EXTENSIONS_VIDEO: &[&str] = &["mp4", "mkv", "webm", "avi", "mov"];
+
+/// Sanitizes a media title to match filesystem-safe characters produced by yt-dlp.
+pub fn sanitize_media_title(title: &str) -> String {
+    title
+        .chars()
+        .filter(|c| !['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
+/// Derives the expected output file stem from title and optional custom template.
+pub fn derive_output_stem(title: &str, custom_output_template: Option<&str>) -> String {
+    let sanitized = sanitize_media_title(title);
+    if let Some(tmpl) = custom_output_template {
+        tmpl.replace("%(title)s", &sanitized)
+            .replace(".%(ext)s", "")
+    } else {
+        sanitized
+    }
+}
+
+/// Checks whether a completed media file matching the title and target extension already exists.
+pub fn find_existing_media_file(
+    download_dir: &Path,
+    title: &str,
+    is_audio: bool,
+) -> Option<PathBuf> {
+    if !download_dir.exists() || !download_dir.is_dir() {
+        return None;
+    }
+
+    let sanitized = sanitize_media_title(title);
+    if sanitized.is_empty() {
+        return None;
+    }
+
+    let read_dir = std::fs::read_dir(download_dir).ok()?;
+
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let name = match path.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let name_lower = name.to_lowercase();
+
+        // Skip partial and incomplete temporary files
+        if name_lower.ends_with(".part")
+            || name_lower.ends_with(".ytdl")
+            || name_lower.ends_with(".temp")
+            || name_lower.ends_with(".tmp")
+        {
+            continue;
+        }
+
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if stem.eq_ignore_ascii_case(&sanitized) {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let is_media_ext = if is_audio {
+                MEDIA_EXTENSIONS_AUDIO.contains(&ext.as_str())
+            } else {
+                MEDIA_EXTENSIONS_VIDEO.contains(&ext.as_str())
+            };
+            if is_media_ext && path.metadata().map(|m| m.len() > 0).unwrap_or(false) {
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
+/// Finds the next available numbered copy template (e.g. "%(title)s (1).%(ext)s").
+pub fn resolve_unique_output_template(
+    download_dir: &Path,
+    title: &str,
+    is_audio: bool,
+) -> (String, usize) {
+    let sanitized = sanitize_media_title(title);
+    let mut index = 1;
+    let target_exts = if is_audio {
+        MEDIA_EXTENSIONS_AUDIO
+    } else {
+        MEDIA_EXTENSIONS_VIDEO
+    };
+
+    loop {
+        let candidate_stem = format!("{} ({})", sanitized, index);
+        let mut exists = false;
+        for ext in target_exts {
+            let candidate_path = download_dir.join(format!("{}.{}", candidate_stem, ext));
+            if candidate_path.exists() {
+                exists = true;
+                break;
+            }
+        }
+        if !exists {
+            return (format!("%(title)s ({}).%(ext)s", index), index);
+        }
+        index += 1;
+    }
+}
+
+/// Purges completed media files matching the title if interrupted during download.
+pub fn clean_interrupted_media_files(
+    download_dir: &str,
+    title_hint: &str,
+    custom_stem: Option<&str>,
+) -> usize {
+    let dir = Path::new(download_dir);
+    if !dir.exists() || !dir.is_dir() {
+        return 0;
+    }
+
+    let sanitized = sanitize_media_title(title_hint);
+    if sanitized.is_empty() {
+        return 0;
+    }
+
+    let read_dir = match std::fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return 0,
+    };
+
+    let mut removed_count = 0;
+    for entry in read_dir.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let matches = if let Some(target) = custom_stem {
+            stem.eq_ignore_ascii_case(target)
+        } else {
+            stem.eq_ignore_ascii_case(&sanitized)
+        };
+
+        if matches {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if (MEDIA_EXTENSIONS_AUDIO.contains(&ext.as_str())
+                || MEDIA_EXTENSIONS_VIDEO.contains(&ext.as_str()))
+                && std::fs::remove_file(&path).is_ok()
+            {
+                removed_count += 1;
+            }
+        }
+    }
+
+    removed_count
+}
+
 /// Purges incomplete download files (.part, .ytdl, unmerged chunks) and temp dirs while preserving completed media.
 pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usize {
     let dir = Path::new(download_dir);
@@ -713,11 +880,7 @@ pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usiz
     };
 
     let mut removed_count = 0;
-    let sanitized_title = title_hint.map(|t| {
-        t.chars()
-            .filter(|c| !['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
-            .collect::<String>()
-    });
+    let sanitized_title = title_hint.map(sanitize_media_title);
 
     for entry in read_dir.flatten() {
         let path = entry.path();
@@ -778,6 +941,7 @@ struct DirectDownloadTracker {
     pid: Option<u32>,
     download_dir: String,
     title: String,
+    custom_stem: Option<String>,
 }
 
 static DIRECT_TRACKER: Mutex<Option<DirectDownloadTracker>> = Mutex::new(None);
@@ -791,6 +955,15 @@ pub fn is_direct_download_active() -> bool {
 }
 
 pub fn register_direct_download(pid: u32, download_dir: &str, title: &str) {
+    register_direct_download_ext(pid, download_dir, title, None);
+}
+
+pub fn register_direct_download_ext(
+    pid: u32,
+    download_dir: &str,
+    title: &str,
+    custom_stem: Option<&str>,
+) {
     crate::engine::queue::record_active_download();
     let mut guard = match DIRECT_TRACKER.lock() {
         Ok(g) => g,
@@ -800,6 +973,7 @@ pub fn register_direct_download(pid: u32, download_dir: &str, title: &str) {
         pid: Some(pid),
         download_dir: download_dir.to_string(),
         title: title.to_string(),
+        custom_stem: custom_stem.map(|s| s.to_string()),
     });
 }
 
@@ -828,6 +1002,13 @@ pub fn cancel_direct_download() {
             Some(tracker.title.as_str())
         };
         clean_partial_files(&tracker.download_dir, title_opt);
+        if let Some(title) = title_opt {
+            clean_interrupted_media_files(
+                &tracker.download_dir,
+                title,
+                tracker.custom_stem.as_deref(),
+            );
+        }
     }
     drop(guard);
     crate::engine::queue::clear_active_download();
@@ -839,6 +1020,26 @@ pub fn build_ytdlp_download_cmd(
     url: &str,
     format_id: &str,
     download_dir: &str,
+) -> Command {
+    build_ytdlp_download_cmd_ext(
+        yt_dlp_path,
+        ffmpeg_path,
+        url,
+        format_id,
+        download_dir,
+        None,
+        false,
+    )
+}
+
+pub fn build_ytdlp_download_cmd_ext(
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    url: &str,
+    format_id: &str,
+    download_dir: &str,
+    custom_output_template: Option<&str>,
+    force_overwrites: bool,
 ) -> Command {
     let clean_dir = download_dir.trim_end_matches(['/', '\\']);
     let mut cmd = Command::new(yt_dlp_path);
@@ -861,15 +1062,23 @@ pub fn build_ytdlp_download_cmd(
     } else {
         format!("{}+bestaudio/best", clean_format_id)
     };
+
+    let output_template = custom_output_template.unwrap_or("%(title)s.%(ext)s");
+
     cmd.arg("-f")
         .arg(format_arg)
         .arg("-P")
         .arg(clean_dir)
         .arg("-o")
-        .arg("%(title)s.%(ext)s")
+        .arg(output_template)
         .arg("--windows-filenames")
         .arg("--trim-filenames")
         .arg("160");
+
+    if force_overwrites {
+        cmd.arg("--force-overwrites");
+        cmd.arg("--postprocessor-args").arg("Merger:-y");
+    }
 
     if !is_audio {
         cmd.arg("--merge-output-format").arg("mp4");
@@ -890,7 +1099,9 @@ pub fn build_ytdlp_download_cmd(
     }
 
     cmd.arg(url);
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     cmd
 }
 
@@ -903,16 +1114,42 @@ pub fn download_media(
     download_dir: &str,
     title: Option<&str>,
 ) -> Result<(), String> {
+    download_media_ext(
+        url,
+        format_id,
+        yt_dlp_path,
+        ffmpeg_path,
+        download_dir,
+        title,
+        None,
+        false,
+    )
+}
+
+/// Downloads media with custom output filename templates and overwrite options.
+#[allow(clippy::too_many_arguments)]
+pub fn download_media_ext(
+    url: &str,
+    format_id: &str,
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    download_dir: &str,
+    title: Option<&str>,
+    custom_output_template: Option<&str>,
+    force_overwrites: bool,
+) -> Result<(), String> {
     let validated_dir = crate::config::manager::validate_download_path(download_dir, true)
         .map_err(|e| format!("Invalid download directory: {}", e))?;
     let clean_download_dir = validated_dir.to_string_lossy();
 
-    let mut cmd = build_ytdlp_download_cmd(
+    let mut cmd = build_ytdlp_download_cmd_ext(
         yt_dlp_path,
         ffmpeg_path,
         url,
         format_id,
         &clean_download_dir,
+        custom_output_template,
+        force_overwrites,
     );
 
     #[cfg(unix)]
@@ -924,8 +1161,14 @@ pub fn download_media(
         .spawn()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
+    let target_stem = derive_output_stem(title.unwrap_or(""), custom_output_template);
     let pid = child.id();
-    register_direct_download(pid, &clean_download_dir, title.unwrap_or(""));
+    register_direct_download_ext(
+        pid,
+        &clean_download_dir,
+        title.unwrap_or(""),
+        Some(&target_stem),
+    );
 
     let mut stderr_handle = child.stderr.take();
     // Drain stderr asynchronously so unread process error buffers do not deadlock stdout pipe reading.
@@ -944,6 +1187,7 @@ pub fn download_media(
     let mut postprocess_started = false;
     let mut primary_download_finished = false;
     let mut max_observed_percent: f64 = 0.0;
+    let bar_display = "=".repeat(25);
 
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
@@ -963,11 +1207,10 @@ pub fn download_media(
                 if is_secondary_audio || primary_download_finished {
                     if !postprocess_started {
                         postprocess_started = true;
-                        println!(
-                            "\r[download] [{}] 100.0% Complete!                                                  ",
-                            "=".repeat(25)
+                        print!(
+                            "\r[download] [{}] 100.0% [Finalizing: Merging video and audio tracks...]       ",
+                            bar_display
                         );
-                        println!("{}", "INFO: Extracting and finalizing media...".cyan());
                         let _ = stdout().flush();
                     }
                     primary_download_finished = true;
@@ -982,18 +1225,33 @@ pub fn download_media(
                     );
                     let _ = stdout().flush();
                 }
-            } else if (line.starts_with("POSTPROCESS|")
-                || line.starts_with("[Merger]")
-                || line.starts_with("[ExtractAudio]")
-                || line.contains("Merging formats"))
-                && !postprocess_started
-            {
+            } else if line.starts_with("[Merger]") || line.contains("Merging formats") {
                 postprocess_started = true;
-                println!(
-                    "\r[download] [{}] 100.0% Complete!                                                  ",
-                    "=".repeat(25)
+                print!(
+                    "\r[download] [{}] 100.0% [Finalizing: Merging video and audio tracks...]       ",
+                    bar_display
                 );
-                println!("{}", "INFO: Extracting and finalizing media...".cyan());
+                let _ = stdout().flush();
+            } else if line.starts_with("[ExtractAudio]") {
+                postprocess_started = true;
+                print!(
+                    "\r[download] [{}] 100.0% [Finalizing: Extracting audio stream...]            ",
+                    bar_display
+                );
+                let _ = stdout().flush();
+            } else if line.starts_with("[Fixup") {
+                postprocess_started = true;
+                print!(
+                    "\r[download] [{}] 100.0% [Finalizing: Correcting media container...]         ",
+                    bar_display
+                );
+                let _ = stdout().flush();
+            } else if line.starts_with("POSTPROCESS|") && !postprocess_started {
+                postprocess_started = true;
+                print!(
+                    "\r[download] [{}] 100.0% [Finalizing: Packaging final media...]              ",
+                    bar_display
+                );
                 let _ = stdout().flush();
             }
         }
@@ -1007,16 +1265,18 @@ pub fn download_media(
     unregister_direct_download();
 
     if status.success() {
-        if !postprocess_started {
-            println!(
-                "\r[download] [{}] 100.0% Complete!                                                  ",
-                "=".repeat(25)
-            );
-        }
-        println!("{}", "SUCCESS: Finalizing complete!".green());
+        println!(
+            "\r[download] [{}] 100.0% Complete! Finalized successfully!                       ",
+            bar_display
+        );
+        let _ = stdout().flush();
+        println!("{}", "SUCCESS: Media finalization complete!".green());
         Ok(())
     } else {
         clean_partial_files(&clean_download_dir, title);
+        if let Some(t) = title {
+            clean_interrupted_media_files(&clean_download_dir, t, Some(&target_stem));
+        }
         println!();
         Err(extract_engine_error(&stderr_output))
     }
@@ -1036,16 +1296,48 @@ where
     F: FnOnce(&mut Child),
     G: Fn(f64, &str, &str, &str, &str, bool),
 {
+    download_media_background_ext(
+        url,
+        format_id,
+        yt_dlp_path,
+        ffmpeg_path,
+        download_dir,
+        None,
+        false,
+        on_spawn,
+        on_progress,
+    )
+}
+
+/// Downloads media asynchronously with custom template and overwrite flags.
+#[allow(clippy::too_many_arguments)]
+pub fn download_media_background_ext<F, G>(
+    url: &str,
+    format_id: &str,
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    download_dir: &str,
+    custom_output_template: Option<&str>,
+    force_overwrites: bool,
+    on_spawn: F,
+    on_progress: G,
+) -> Result<(), String>
+where
+    F: FnOnce(&mut Child),
+    G: Fn(f64, &str, &str, &str, &str, bool),
+{
     let validated_dir = crate::config::manager::validate_download_path(download_dir, true)
         .map_err(|e| format!("Invalid download directory: {}", e))?;
     let clean_download_dir = validated_dir.to_string_lossy();
 
-    let mut cmd = build_ytdlp_download_cmd(
+    let mut cmd = build_ytdlp_download_cmd_ext(
         yt_dlp_path,
         ffmpeg_path,
         url,
         format_id,
         &clean_download_dir,
+        custom_output_template,
+        force_overwrites,
     );
 
     #[cfg(unix)]
@@ -2095,5 +2387,85 @@ mod tests {
         // Must select the AV1 HDR format over the AVC SDR format despite smaller filesize
         assert_eq!(parsed.formats[0].format_id, "4k_av1_hdr");
         assert_eq!(parsed.formats[0].resolution, "4K");
+    }
+
+    #[test]
+    fn test_sanitize_media_title() {
+        assert_eq!(
+            sanitize_media_title("Sample / Title: With * Forbidden? Characters!"),
+            "Sample  Title With  Forbidden Characters!"
+        );
+        assert_eq!(sanitize_media_title("Clean Title"), "Clean Title");
+    }
+
+    #[test]
+    fn test_find_existing_media_file_and_unique_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let title = "My Test Video";
+
+        // Initially no existing file
+        assert!(find_existing_media_file(temp.path(), title, false).is_none());
+
+        // Create completed file
+        let video_path = temp.path().join("My Test Video.mp4");
+        std::fs::write(&video_path, b"test video bytes").unwrap();
+
+        // Now should be detected
+        let found = find_existing_media_file(temp.path(), title, false);
+        assert!(found.is_some());
+        assert_eq!(found.unwrap(), video_path);
+
+        // Next copy template should be copy 1
+        let (tmpl1, idx1) = resolve_unique_output_template(temp.path(), title, false);
+        assert_eq!(idx1, 1);
+        assert_eq!(tmpl1, "%(title)s (1).%(ext)s");
+
+        // Create copy 1
+        let copy1_path = temp.path().join("My Test Video (1).mp4");
+        std::fs::write(&copy1_path, b"copy 1 bytes").unwrap();
+
+        // Next copy template should be copy 2
+        let (tmpl2, idx2) = resolve_unique_output_template(temp.path(), title, false);
+        assert_eq!(idx2, 2);
+        assert_eq!(tmpl2, "%(title)s (2).%(ext)s");
+    }
+
+    #[test]
+    fn test_clean_interrupted_media_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let title = "Interrupted Download";
+
+        let media_path = temp.path().join("Interrupted Download.mp4");
+        std::fs::write(&media_path, b"video content").unwrap();
+        assert!(media_path.exists());
+
+        let removed = clean_interrupted_media_files(temp.path().to_str().unwrap(), title, None);
+        assert_eq!(removed, 1);
+        assert!(!media_path.exists());
+    }
+
+    #[test]
+    fn test_build_ytdlp_download_cmd_ext_flags() {
+        let yt = Path::new("yt-dlp");
+        let ff = Path::new("ffmpeg");
+        let cmd = build_ytdlp_download_cmd_ext(
+            yt,
+            ff,
+            "https://youtu.be/123",
+            "1080",
+            "/downloads/path",
+            Some("%(title)s (1).%(ext)s"),
+            true,
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+
+        assert!(args.contains(&"-o".to_string()));
+        assert!(args.contains(&"%(title)s (1).%(ext)s".to_string()));
+        assert!(args.contains(&"--force-overwrites".to_string()));
+        assert!(args.contains(&"--postprocessor-args".to_string()));
+        assert!(args.contains(&"Merger:-y".to_string()));
     }
 }
