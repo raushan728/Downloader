@@ -18,6 +18,7 @@ dwdr [COMMAND]
 | Flag | Description |
 | --- | --- |
 | `[URL]` | Directly downloads the provided media URL using Smart Fallback quality matching. |
+| `-f`, `--force` | Force overwrite existing destination media files without prompting. |
 | `-h`, `--help` | Prints help information, commands, and examples. |
 | `-V`, `--version` | Prints compiled binary version information. |
 
@@ -47,6 +48,10 @@ dwdr "https://www.youtube.com/watch?v=VIDEO_ID"
 - DWDR extracts available streams without fetching unnecessary playlist items (`--no-playlist`).
 - If a format matching your configured `default_quality` (e.g. `1080p`) exists, it begins downloading immediately.
 - If the exact quality is unavailable, it automatically prompts you to choose from available streams.
+- If a file with the same title already exists in the download directory, DWDR halts to prevent accidental overwrites unless `--force` (or `-f`) is supplied:
+  ```bash
+  dwdr "https://www.youtube.com/watch?v=VIDEO_ID" --force
+  ```
 - If no download folder has been configured, a native OS folder dialog (`rfd`) prompts you to select one.
 
 ### 2. Interactive Terminal Shell (REPL)

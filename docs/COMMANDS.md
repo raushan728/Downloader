@@ -8,7 +8,7 @@ DWDR provides a total of **20 primary commands and subcommands** across three ex
 
 | Command | Execution Context | Arguments / Flags | Purpose | Example |
 | :--- | :--- | :--- | :--- | :--- |
-| `dwdr <URL>` | Direct CLI | `<URL>` (string) | Downloads media immediately using Smart Quality Fallback without opening interactive prompts. | `dwdr "https://youtu.be/VIDEO_ID"` |
+| `dwdr <URL>` | Direct CLI | `<URL>` (string) `[-f, --force]` | Downloads media immediately using Smart Quality Fallback; `--force` overwrites existing destination files. | `dwdr "https://youtu.be/VIDEO_ID" --force` |
 | `dwdr` | Direct CLI | None | Launches the interactive terminal REPL shell for continuous URL inspection and downloading. | `dwdr` |
 | `dwdr -h`, `--help` | Direct CLI | None | Prints command syntax, global flags, usage examples, and interactive shell commands. | `dwdr --help` |
 | `dwdr -V`, `--version` | Direct CLI | None | Prints the compiled DWDR binary version string. | `dwdr --version` |

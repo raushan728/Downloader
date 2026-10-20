@@ -44,8 +44,9 @@ In interactive shell mode, DWDR orchestrates multi-media downloads via `QueueMan
 ### 7. Signal Handling & Zero System Debris
 DWDR registers cross-platform interrupt signal handlers (`ctrlc`) across both direct CLI and interactive shell workflows:
 - **Interruption Trapping**: Traps `SIGINT` (Unix) and `CTRL_C_EVENT` (Windows) during active downloads with re-entrancy protection (`AtomicBool` latch) and poisoned mutex recovery.
-- **Process Tree Killing**: Child processes (`yt-dlp` and `ffmpeg`) are forcefully terminated immediately.
-- **Partial File Deletion**: Scans the target download directory to purge all `.part`, `.ytdl`, `.temp`, and unmerged intermediate stream chunks (`.f<id>.*`), preventing broken or orphaned partial files from lingering on user storage.
+- **Terminal State Restoration**: Guarantees restoration of terminal cursor visibility (`cursor::Show`), raw mode, and default ANSI colors (`ResetColor`) on user interruption (`Ctrl+C`), error paths, and clean shell exits.
+- **Process Tree Killing**: Child processes (`yt-dlp` and `ffmpeg`) are forcefully terminated immediately. Child stdin is explicitly detached (`Stdio::null()`) to prevent `ffmpeg` from deadlocking on stdin overwrite prompts.
+- **Debris & Interruption Cleanup**: Scans the target download directory to purge partial fragments (`.part`, `.ytdl`, `.temp`, `.f<id>.*`) and newly written media files for that interrupted task using exact stem matching, strictly preserving any pre-existing original files.
 
 ### 8. Windows Path Separation & Filename Sanitization
 To prevent filesystem failures and `[Errno 22] Invalid argument` errors on Windows:
