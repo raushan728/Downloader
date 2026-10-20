@@ -34,6 +34,7 @@ pub fn reset_terminal_state() {
 pub struct ResolvedMedia {
     pub title: String,
     pub format_id: String,
+    pub format_desc: String,
     pub yt_dlp_path: PathBuf,
     pub ffmpeg_path: PathBuf,
     pub custom_output_template: Option<String>,
@@ -107,56 +108,57 @@ pub fn resolve_media_to_download(
         return None;
     }
 
-    let (chosen_id, is_audio) = if info.formats.len() == 1 {
+    let (chosen_id, is_audio, format_desc) = if info.formats.len() == 1 {
         // Skip manual prompts when only a single format exists to avoid unnecessary confirmation.
         let single_fmt = &info.formats[0];
+        let desc = single_fmt.summary();
         println!(
             "{}",
             format!(
-                "INFO: Single available format ({}) detected. Auto-starting download...",
-                single_fmt.resolution
+                "INFO: Single available format detected: {}. Auto-starting download...",
+                desc
             )
             .green()
         );
-        (single_fmt.format_id.clone(), single_fmt.is_audio())
+        (single_fmt.format_id.clone(), single_fmt.is_audio(), desc)
     } else if config.default_quality == "always ask" {
         println!("{}", "INFO: Manual selection requested...".cyan());
         if let Some(format_id) = select_format(&info.formats) {
-            let is_aud = info
-                .formats
-                .iter()
-                .find(|f| f.format_id == format_id)
-                .map(|f| f.is_audio())
-                .unwrap_or(false);
+            let (is_aud, desc) =
+                if let Some(f) = info.formats.iter().find(|f| f.format_id == format_id) {
+                    (f.is_audio(), f.summary())
+                } else {
+                    (false, format_id.clone())
+                };
             println!(
                 "{}",
                 format!(
-                    "SUCCESS: Selected Format ID: {}. Download sequence will start here.",
-                    format_id
+                    "SUCCESS: Selected format: {} (Format ID: {}). Download sequence will start here.",
+                    desc, format_id
                 )
                 .green()
             );
-            (format_id, is_aud)
+            (format_id, is_aud, desc)
         } else {
             println!("{}", "WARNING: Download cancelled by user.".yellow());
             return None;
         }
     } else if let Some(format_id) = find_format_by_quality(&info.formats, &config.default_quality) {
-        let is_aud = info
-            .formats
-            .iter()
-            .find(|f| f.format_id == format_id)
-            .map(|f| f.is_audio())
-            .unwrap_or(false);
+        let (is_aud, desc) = if let Some(f) = info.formats.iter().find(|f| f.format_id == format_id)
+        {
+            (f.is_audio(), f.summary())
+        } else {
+            (false, config.default_quality.clone())
+        };
         println!(
             "{}",
             format!(
-                "INFO: Exact quality ({}) found! Auto-starting download...",
-                config.default_quality
+                "INFO: Exact quality ({}) found: {}. Auto-starting download...",
+                config.default_quality, desc
             )
             .green()
         );
-        (format_id, is_aud)
+        (format_id, is_aud, desc)
     } else {
         println!(
             "{}",
@@ -167,21 +169,21 @@ pub fn resolve_media_to_download(
             .yellow()
         );
         if let Some(format_id) = select_format(&info.formats) {
-            let is_aud = info
-                .formats
-                .iter()
-                .find(|f| f.format_id == format_id)
-                .map(|f| f.is_audio())
-                .unwrap_or(false);
+            let (is_aud, desc) =
+                if let Some(f) = info.formats.iter().find(|f| f.format_id == format_id) {
+                    (f.is_audio(), f.summary())
+                } else {
+                    (false, format_id.clone())
+                };
             println!(
                 "{}",
                 format!(
-                    "SUCCESS: Selected Format ID: {}. Download sequence will start here.",
-                    format_id
+                    "SUCCESS: Selected format: {} (Format ID: {}). Download sequence will start here.",
+                    desc, format_id
                 )
                 .green()
             );
-            (format_id, is_aud)
+            (format_id, is_aud, desc)
         } else {
             println!("{}", "WARNING: Download cancelled by user.".yellow());
             return None;
@@ -344,6 +346,7 @@ pub fn resolve_media_to_download(
     Some(ResolvedMedia {
         title: info.title,
         format_id,
+        format_desc,
         yt_dlp_path,
         ffmpeg_path,
         custom_output_template,
@@ -354,6 +357,14 @@ pub fn resolve_media_to_download(
 /// Single-URL direct execution entry point for non-interactive CLI usage.
 pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) {
     if let Some(media) = resolve_media_to_download(url, config, force) {
+        println!(
+            "{}",
+            format!(
+                "INFO: Starting download for: \"{}\" [{}]",
+                media.title, media.format_desc
+            )
+            .cyan()
+        );
         match download_media_ext(
             url,
             &media.format_id,
@@ -550,6 +561,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                         config.download_path.clone(),
                         media.custom_output_template,
                         media.force_overwrite,
+                        Some(media.format_desc.clone()),
                     );
                     let max_p = queue_manager.lock().unwrap().max_parallel;
                     match result {
@@ -561,8 +573,8 @@ pub fn start_repl(config: &mut DwdrConfig) {
                             println!(
                                 "{}",
                                 format!(
-                                    "INFO: Download started for: \"{}\" [Active: {}/{}, Queued: {}] (Type 'status' for real-time progress)",
-                                    media.title, active_count, max_p, queued_count
+                                    "INFO: Download started for: \"{}\" [{}] [Active: {}/{}, Queued: {}] (Type 'status' for real-time progress)",
+                                    media.title, media.format_desc, active_count, max_p, queued_count
                                 )
                                 .green()
                             );
@@ -576,8 +588,8 @@ pub fn start_repl(config: &mut DwdrConfig) {
                             println!(
                                 "{}",
                                 format!(
-                                    "INFO: Added to download queue: \"{}\" [Active: {}/{}, Queued: {} (Position: #{})]",
-                                    media.title, active_count, max_p, queued_count, position
+                                    "INFO: Added to download queue: \"{}\" [{}] [Active: {}/{}, Queued: {} (Position: #{})]",
+                                    media.title, media.format_desc, active_count, max_p, queued_count, position
                                 )
                                 .yellow()
                             );

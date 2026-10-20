@@ -75,6 +75,22 @@ impl MediaFormat {
         self.resolution.eq_ignore_ascii_case("audio")
             || (self.vcodec == "none" && self.acodec != "none")
     }
+
+    /// Formats resolution, container extension, and filesize into a clean user-facing description.
+    pub fn summary(&self) -> String {
+        let size_str = self.format_filesize();
+        if size_str == "Stream Size Pending" {
+            if self.ext.is_empty() {
+                self.resolution.clone()
+            } else {
+                format!("{} ({})", self.resolution, self.ext)
+            }
+        } else if self.ext.is_empty() {
+            format!("{} [{}]", self.resolution, size_str)
+        } else {
+            format!("{} ({}, {})", self.resolution, self.ext, size_str)
+        }
+    }
 }
 
 pub fn calculate_media_filesize(
@@ -2467,5 +2483,56 @@ mod tests {
         assert!(args.contains(&"--force-overwrites".to_string()));
         assert!(args.contains(&"--postprocessor-args".to_string()));
         assert!(args.contains(&"Merger:-y".to_string()));
+    }
+
+    #[test]
+    fn test_media_format_summary() {
+        let fmt_known = MediaFormat {
+            format_id: "137".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "1080p".to_string(),
+            filesize: Some(273.55 * 1024.0 * 1024.0),
+            is_estimated: false,
+            vcodec: "avc1".to_string(),
+            acodec: "none".to_string(),
+            height: Some(1080),
+        };
+        assert_eq!(fmt_known.summary(), "1080p (mp4, 273.6 MB)");
+
+        let fmt_est = MediaFormat {
+            format_id: "137".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "1080p".to_string(),
+            filesize: Some(273.55 * 1024.0 * 1024.0),
+            is_estimated: true,
+            vcodec: "avc1".to_string(),
+            acodec: "none".to_string(),
+            height: Some(1080),
+        };
+        assert_eq!(fmt_est.summary(), "1080p (mp4, ~273.6 MB (Est.))");
+
+        let fmt_no_size = MediaFormat {
+            format_id: "22".to_string(),
+            ext: "mp4".to_string(),
+            resolution: "720p".to_string(),
+            filesize: None,
+            is_estimated: false,
+            vcodec: "avc1".to_string(),
+            acodec: "mp4a".to_string(),
+            height: Some(720),
+        };
+        assert_eq!(fmt_no_size.summary(), "720p (mp4)");
+
+        let fmt_audio = MediaFormat {
+            format_id: "140".to_string(),
+            ext: "m4a".to_string(),
+            resolution: "Audio".to_string(),
+            filesize: Some(15.2 * 1024.0 * 1024.0),
+            is_estimated: false,
+            vcodec: "none".to_string(),
+            acodec: "mp4a".to_string(),
+            height: None,
+        };
+        assert_eq!(fmt_audio.summary(), "Audio (m4a, 15.2 MB)");
     }
 }

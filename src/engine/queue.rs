@@ -55,6 +55,7 @@ pub struct DownloadTask {
     pub url: String,
     pub title: String,
     pub format_id: String,
+    pub format_desc: String,
     pub download_dir: String,
     pub status: TaskStatus,
     pub progress: TaskProgress,
@@ -329,9 +330,11 @@ impl QueueManager {
             download_dir,
             None,
             false,
+            None,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn enqueue_ext(
         manager_arc: &Arc<Mutex<Self>>,
         url: String,
@@ -340,6 +343,7 @@ impl QueueManager {
         download_dir: String,
         custom_output_template: Option<String>,
         force_overwrite: bool,
+        format_desc: Option<String>,
     ) -> EnqueueResult {
         let mut mgr = manager_arc.lock().unwrap();
         if mgr.cancelled.load(Ordering::SeqCst) && mgr.active_count == 0 && mgr.queue.is_empty() {
@@ -348,11 +352,13 @@ impl QueueManager {
         let task_id = mgr.next_task_id;
         mgr.next_task_id += 1;
 
+        let desc = format_desc.unwrap_or_else(|| format_id.clone());
         let task = Arc::new(Mutex::new(DownloadTask {
             id: task_id,
             url,
             title,
             format_id,
+            format_desc: desc,
             download_dir,
             status: TaskStatus::Queued,
             progress: TaskProgress::default(),
@@ -646,7 +652,7 @@ impl QueueManager {
     }
 
     pub fn print_status(&self) {
-        let tasks_snapshot: Vec<(usize, String, TaskStatus, TaskProgress)> = self
+        let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = self
             .tasks
             .iter()
             .map(|t| {
@@ -654,6 +660,7 @@ impl QueueManager {
                 (
                     guard.id,
                     guard.title.clone(),
+                    guard.format_desc.clone(),
                     guard.status.clone(),
                     guard.progress.clone(),
                 )
@@ -662,12 +669,12 @@ impl QueueManager {
 
         let active_tasks: Vec<_> = tasks_snapshot
             .iter()
-            .filter(|(_, _, s, _)| matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing))
+            .filter(|(_, _, _, s, _)| matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing))
             .collect();
 
         let queued_tasks: Vec<_> = tasks_snapshot
             .iter()
-            .filter(|(_, _, s, _)| matches!(s, TaskStatus::Queued))
+            .filter(|(_, _, _, s, _)| matches!(s, TaskStatus::Queued))
             .collect();
 
         println!(
@@ -683,7 +690,7 @@ impl QueueManager {
         if active_tasks.is_empty() {
             println!("  (None)");
         } else {
-            for (id, title, status, prog) in &active_tasks {
+            for (id, title, format_desc, status, prog) in &active_tasks {
                 let bar = render_progress_bar(
                     prog.percent,
                     &prog.downloaded_str,
@@ -697,7 +704,7 @@ impl QueueManager {
                 } else {
                     "".normal()
                 };
-                println!("  [#{}] \"{}\"{}", id, title, status_str);
+                println!("  [#{}] \"{}\" [{}] {}", id, title, format_desc, status_str);
                 println!("       {}", bar_clean);
             }
         }
@@ -710,8 +717,14 @@ impl QueueManager {
         if queued_tasks.is_empty() {
             println!("  (None)");
         } else {
-            for (i, (id, title, _, _)) in queued_tasks.iter().enumerate() {
-                println!("  [#{}] (Position: {}) \"{}\"", id, i + 1, title);
+            for (i, (id, title, format_desc, _, _)) in queued_tasks.iter().enumerate() {
+                println!(
+                    "  [#{}] (Position: {}) \"{}\" [{}]",
+                    id,
+                    i + 1,
+                    title,
+                    format_desc
+                );
             }
         }
         println!();
@@ -759,7 +772,7 @@ impl QueueManager {
                     }
                 }
 
-                let tasks_snapshot: Vec<(usize, String, TaskStatus, TaskProgress)> = self
+                let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = self
                     .tasks
                     .iter()
                     .map(|t| {
@@ -767,6 +780,7 @@ impl QueueManager {
                         (
                             guard.id,
                             guard.title.clone(),
+                            guard.format_desc.clone(),
                             guard.status.clone(),
                             guard.progress.clone(),
                         )
@@ -775,14 +789,14 @@ impl QueueManager {
 
                 let active_tasks: Vec<_> = tasks_snapshot
                     .iter()
-                    .filter(|(_, _, s, _)| {
+                    .filter(|(_, _, _, s, _)| {
                         matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
                     })
                     .collect();
 
                 let queued_count = tasks_snapshot
                     .iter()
-                    .filter(|(_, _, s, _)| matches!(s, TaskStatus::Queued))
+                    .filter(|(_, _, _, s, _)| matches!(s, TaskStatus::Queued))
                     .count();
 
                 if lines_printed > 0 {
@@ -809,7 +823,7 @@ impl QueueManager {
 
                 let term_w = crate::engine::downloader::get_terminal_width();
 
-                for (id, title, status, prog) in &active_tasks {
+                for (id, title, format_desc, status, prog) in &active_tasks {
                     let bar = render_progress_bar(
                         prog.percent,
                         &prog.downloaded_str,
@@ -823,10 +837,11 @@ impl QueueManager {
                     } else {
                         "".normal()
                     };
+                    let desc_tag = format!(" [{}]", format_desc);
                     let status_extra_len = if *status == TaskStatus::Finalizing {
-                        24
+                        24 + desc_tag.len()
                     } else {
-                        0
+                        desc_tag.len()
                     };
                     let max_title_len = term_w.saturating_sub(15 + status_extra_len).max(10);
                     let title_display = if title.chars().count() > max_title_len {
@@ -838,7 +853,10 @@ impl QueueManager {
                     } else {
                         title.clone()
                     };
-                    println!("  [#{}] \"{}\"{}", id, title_display, status_str);
+                    println!(
+                        "  [#{}] \"{}\"{}{}",
+                        id, title_display, desc_tag, status_str
+                    );
                     println!("       {}", bar_clean);
                     count += 2;
                 }
@@ -868,7 +886,7 @@ impl QueueManager {
     }
 
     pub fn print_list(&self) {
-        let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = self
+        let tasks_snapshot: Vec<(usize, String, String, String, TaskStatus, TaskProgress)> = self
             .tasks
             .iter()
             .map(|t| {
@@ -876,6 +894,7 @@ impl QueueManager {
                 (
                     guard.id,
                     guard.title.clone(),
+                    guard.format_desc.clone(),
                     guard.download_dir.clone(),
                     guard.status.clone(),
                     guard.progress.clone(),
@@ -896,13 +915,14 @@ impl QueueManager {
         }
 
         println!("\n{}", "=== Download History & Session Report ===".bold());
-        for (id, title, dir, status, prog) in &tasks_snapshot {
+        for (id, title, format_desc, dir, status, prog) in &tasks_snapshot {
             match status {
                 TaskStatus::Downloading => {
                     println!(
-                        "  [#{}] \"{}\" - {} ({:.1}%)",
+                        "  [#{}] \"{}\" [{}] - {} ({:.1}%)",
                         id,
                         title,
+                        format_desc,
                         "DOWNLOADING".cyan().bold(),
                         prog.percent
                     );
@@ -913,29 +933,38 @@ impl QueueManager {
                 }
                 TaskStatus::Finalizing => {
                     println!(
-                        "  [#{}] \"{}\" - {}",
+                        "  [#{}] \"{}\" [{}] - {}",
                         id,
                         title,
+                        format_desc,
                         "FINALIZING MEDIA".yellow().bold()
                     );
                 }
                 TaskStatus::Queued => {
-                    println!("  [#{}] \"{}\" - {}", id, title, "QUEUED".blue());
+                    println!(
+                        "  [#{}] \"{}\" [{}] - {}",
+                        id,
+                        title,
+                        format_desc,
+                        "QUEUED".blue()
+                    );
                 }
                 TaskStatus::Completed => {
                     if let Some(path) = find_completed_file(dir, title) {
                         println!(
-                            "  [#{}] \"{}\" - {} -> {}",
+                            "  [#{}] \"{}\" [{}] - {} -> {}",
                             id,
                             title,
+                            format_desc,
                             "COMPLETED".green().bold(),
                             path.display()
                         );
                     } else {
                         println!(
-                            "  [#{}] \"{}\" - {} -> {} (file not found)",
+                            "  [#{}] \"{}\" [{}] - {} -> {} (file not found)",
                             id,
                             title,
+                            format_desc,
                             "COMPLETED".yellow().bold(),
                             dir
                         );
@@ -947,15 +976,22 @@ impl QueueManager {
                 }
                 TaskStatus::Failed(err) => {
                     println!(
-                        "  [#{}] \"{}\" - {} ({})",
+                        "  [#{}] \"{}\" [{}] - {} ({})",
                         id,
                         title,
+                        format_desc,
                         "FAILED".red().bold(),
                         err
                     );
                 }
                 TaskStatus::Cancelled => {
-                    println!("  [#{}] \"{}\" - {}", id, title, "CANCELLED".yellow());
+                    println!(
+                        "  [#{}] \"{}\" [{}] - {}",
+                        id,
+                        title,
+                        format_desc,
+                        "CANCELLED".yellow()
+                    );
                 }
             }
         }
@@ -967,23 +1003,28 @@ impl QueueManager {
     }
 
     pub fn print_queue(&self) {
-        let tasks_snapshot: Vec<(usize, String, TaskStatus)> = self
+        let tasks_snapshot: Vec<(usize, String, String, TaskStatus)> = self
             .tasks
             .iter()
             .map(|t| {
                 let guard = t.lock().unwrap();
-                (guard.id, guard.title.clone(), guard.status.clone())
+                (
+                    guard.id,
+                    guard.title.clone(),
+                    guard.format_desc.clone(),
+                    guard.status.clone(),
+                )
             })
             .collect();
 
         let queued_tasks: Vec<_> = tasks_snapshot
             .iter()
-            .filter(|(_, _, s)| matches!(s, TaskStatus::Queued))
+            .filter(|(_, _, _, s)| matches!(s, TaskStatus::Queued))
             .collect();
 
         let active_count = tasks_snapshot
             .iter()
-            .filter(|(_, _, s)| matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing))
+            .filter(|(_, _, _, s)| matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing))
             .count();
 
         println!(
@@ -1004,8 +1045,14 @@ impl QueueManager {
                 "Tip: Enter a media URL to start a download, or type 'help' for available commands.".cyan()
             );
         } else {
-            for (i, (id, title, _)) in queued_tasks.iter().enumerate() {
-                println!("  [#{}] Position #{}: \"{}\"", id, i + 1, title);
+            for (i, (id, title, format_desc, _)) in queued_tasks.iter().enumerate() {
+                println!(
+                    "  [#{}] Position #{}: \"{}\" [{}]",
+                    id,
+                    i + 1,
+                    title,
+                    format_desc
+                );
             }
             println!(
                 "  {}",
@@ -1084,23 +1131,28 @@ impl QueueManager {
                     }
                 }
 
-                let tasks_snapshot: Vec<(usize, String, TaskStatus)> = self
+                let tasks_snapshot: Vec<(usize, String, String, TaskStatus)> = self
                     .tasks
                     .iter()
                     .map(|t| {
                         let guard = t.lock().unwrap();
-                        (guard.id, guard.title.clone(), guard.status.clone())
+                        (
+                            guard.id,
+                            guard.title.clone(),
+                            guard.format_desc.clone(),
+                            guard.status.clone(),
+                        )
                     })
                     .collect();
 
                 let queued_tasks: Vec<_> = tasks_snapshot
                     .iter()
-                    .filter(|(_, _, s)| matches!(s, TaskStatus::Queued))
+                    .filter(|(_, _, _, s)| matches!(s, TaskStatus::Queued))
                     .collect();
 
                 let active_tasks: Vec<_> = tasks_snapshot
                     .iter()
-                    .filter(|(_, _, s)| {
+                    .filter(|(_, _, _, s)| {
                         matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
                     })
                     .collect();
@@ -1133,13 +1185,16 @@ impl QueueManager {
                 if !active_tasks.is_empty() {
                     println!("  {}", "Currently Downloading:".cyan());
                     count += 1;
-                    for (id, title, status) in &active_tasks {
+                    for (id, title, format_desc, status) in &active_tasks {
                         let status_tag = if *status == TaskStatus::Finalizing {
                             " [Finalizing media...]".yellow()
                         } else {
                             " [Downloading]".green()
                         };
-                        println!("    [#{}] \"{}\"{}", id, title, status_tag);
+                        println!(
+                            "    [#{}] \"{}\" [{}] {}",
+                            id, title, format_desc, status_tag
+                        );
                         count += 1;
                     }
                 }
@@ -1147,8 +1202,14 @@ impl QueueManager {
                 if !queued_tasks.is_empty() {
                     println!("  {}", "Pending Queue:".blue());
                     count += 1;
-                    for (i, (id, title, _)) in queued_tasks.iter().enumerate() {
-                        println!("    [#{}] Position #{}: \"{}\"", id, i + 1, title);
+                    for (i, (id, title, format_desc, _)) in queued_tasks.iter().enumerate() {
+                        println!(
+                            "    [#{}] Position #{}: \"{}\" [{}]",
+                            id,
+                            i + 1,
+                            title,
+                            format_desc
+                        );
                         count += 1;
                     }
                 }
@@ -1427,6 +1488,7 @@ mod tests {
             url: "https://example.com/1".to_string(),
             title: "Downloading Video".to_string(),
             format_id: "137".to_string(),
+            format_desc: "1080p (mp4, 45 MiB)".to_string(),
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Downloading,
             progress: TaskProgress {
@@ -1445,6 +1507,7 @@ mod tests {
             url: "https://example.com/2".to_string(),
             title: "Finalizing Video".to_string(),
             format_id: "137".to_string(),
+            format_desc: "1080p (mp4)".to_string(),
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Finalizing,
             progress: TaskProgress::default(),
@@ -1457,6 +1520,7 @@ mod tests {
             url: "https://example.com/3".to_string(),
             title: "Queued Video".to_string(),
             format_id: "137".to_string(),
+            format_desc: "1080p (mp4)".to_string(),
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Queued,
             progress: TaskProgress::default(),
@@ -1469,6 +1533,7 @@ mod tests {
             url: "https://example.com/4".to_string(),
             title: "Completed Video".to_string(),
             format_id: "137".to_string(),
+            format_desc: "1080p (mp4)".to_string(),
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Completed,
             progress: TaskProgress {
@@ -1487,6 +1552,7 @@ mod tests {
             url: "https://example.com/5".to_string(),
             title: "Failed Video".to_string(),
             format_id: "137".to_string(),
+            format_desc: "1080p (mp4)".to_string(),
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Failed("Disk space exhausted".to_string()),
             progress: TaskProgress::default(),
@@ -1499,6 +1565,7 @@ mod tests {
             url: "https://example.com/6".to_string(),
             title: "Cancelled Video".to_string(),
             format_id: "137".to_string(),
+            format_desc: "1080p (mp4)".to_string(),
             download_dir: "/downloads".to_string(),
             status: TaskStatus::Cancelled,
             progress: TaskProgress::default(),
@@ -1524,6 +1591,7 @@ mod tests {
             url: "url10".to_string(),
             title: "Queued Task 10".to_string(),
             format_id: "137".to_string(),
+            format_desc: "1080p (mp4)".to_string(),
             download_dir: "/tmp".to_string(),
             status: TaskStatus::Queued,
             progress: TaskProgress::default(),
@@ -1535,6 +1603,7 @@ mod tests {
             url: "url11".to_string(),
             title: "Queued Task 11".to_string(),
             format_id: "137".to_string(),
+            format_desc: "1080p (mp4)".to_string(),
             download_dir: "/tmp".to_string(),
             status: TaskStatus::Queued,
             progress: TaskProgress::default(),
@@ -1560,6 +1629,7 @@ mod tests {
                 url: "url100".to_string(),
                 title: "Queued Task 100".to_string(),
                 format_id: "137".to_string(),
+                format_desc: "1080p (mp4)".to_string(),
                 download_dir: "/tmp".to_string(),
                 status: TaskStatus::Queued,
                 progress: TaskProgress::default(),

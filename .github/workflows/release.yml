@@ -43,6 +43,9 @@ jobs:
       - name: Run Tests
         run: cargo test
 
+      - name: Run Real Integration Tests
+        run: cargo test --test real_integration -- --ignored
+
       - name: Build release binary
         run: cargo build --release
 
