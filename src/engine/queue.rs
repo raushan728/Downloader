@@ -651,12 +651,11 @@ impl QueueManager {
         self.active_count > 0 || !self.queue.is_empty()
     }
 
-    pub fn print_status(&self) {
-        let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = self
-            .tasks
+    fn render_status_snapshot(tasks: &[Arc<Mutex<DownloadTask>>], max_parallel: usize) {
+        let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = tasks
             .iter()
             .map(|t| {
-                let guard = t.lock().unwrap();
+                let guard = t.lock().unwrap_or_else(|p| p.into_inner());
                 (
                     guard.id,
                     guard.title.clone(),
@@ -682,7 +681,7 @@ impl QueueManager {
             format!(
                 "=== Active Downloads ({}/{}) ===",
                 active_tasks.len(),
-                self.max_parallel
+                max_parallel
             )
             .bold()
         );
@@ -730,22 +729,33 @@ impl QueueManager {
         println!();
     }
 
-    pub fn print_status_live(&self) {
+    pub fn print_status(&self) {
+        Self::render_status_snapshot(&self.tasks, self.max_parallel);
+    }
+
+    pub fn print_status_live(manager_arc: &Arc<Mutex<Self>>) {
+        let (tasks, max_parallel, is_active) = {
+            let mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
+            (mgr.tasks.clone(), mgr.max_parallel, mgr.is_active())
+        };
+
         #[cfg(test)]
         {
-            self.print_status();
+            let _ = is_active;
+            Self::render_status_snapshot(&tasks, max_parallel);
         }
+
         #[cfg(not(test))]
         {
             if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
-                self.print_status();
+                Self::render_status_snapshot(&tasks, max_parallel);
                 println!();
                 return;
             }
 
-            if !self.is_active() {
+            if !is_active {
                 println!("\n{}", "INFO: No active downloads in progress.".cyan());
-                self.print_status();
+                Self::render_status_snapshot(&tasks, max_parallel);
                 println!();
                 return;
             }
@@ -772,11 +782,10 @@ impl QueueManager {
                     }
                 }
 
-                let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = self
-                    .tasks
+                let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = tasks
                     .iter()
                     .map(|t| {
-                        let guard = t.lock().unwrap();
+                        let guard = t.lock().unwrap_or_else(|p| p.into_inner());
                         (
                             guard.id,
                             guard.title.clone(),
@@ -809,6 +818,7 @@ impl QueueManager {
 
                 if active_tasks.is_empty() && queued_count == 0 {
                     println!("{}", "SUCCESS: All active tasks completed!".green());
+                    lines_printed = 0;
                     break;
                 }
 
@@ -816,7 +826,7 @@ impl QueueManager {
                 println!(
                     "Active Downloads: {}/{} | Queued in line: {}",
                     active_tasks.len(),
-                    self.max_parallel,
+                    max_parallel,
                     queued_count
                 );
                 count += 1;
@@ -875,7 +885,7 @@ impl QueueManager {
                 );
             }
             println!("{}", "INFO: Exited real-time status monitor.".cyan());
-            self.print_status();
+            Self::render_status_snapshot(&tasks, max_parallel);
             println!(
                 "{}",
                 "Tip: Type 'status' to reopen live view, or 'queue' to inspect pending queue."
@@ -890,7 +900,7 @@ impl QueueManager {
             .tasks
             .iter()
             .map(|t| {
-                let guard = t.lock().unwrap();
+                let guard = t.lock().unwrap_or_else(|p| p.into_inner());
                 (
                     guard.id,
                     guard.title.clone(),
@@ -1002,12 +1012,11 @@ impl QueueManager {
         println!();
     }
 
-    pub fn print_queue(&self) {
-        let tasks_snapshot: Vec<(usize, String, String, TaskStatus)> = self
-            .tasks
+    fn render_queue_snapshot(tasks: &[Arc<Mutex<DownloadTask>>], max_parallel: usize) {
+        let tasks_snapshot: Vec<(usize, String, String, TaskStatus)> = tasks
             .iter()
             .map(|t| {
-                let guard = t.lock().unwrap();
+                let guard = t.lock().unwrap_or_else(|p| p.into_inner());
                 (
                     guard.id,
                     guard.title.clone(),
@@ -1032,7 +1041,7 @@ impl QueueManager {
             format!(
                 "=== Download Queue (Active Slots: {}/{}, Queued in Line: {}) ===",
                 active_count,
-                self.max_parallel,
+                max_parallel,
                 queued_tasks.len()
             )
             .bold()
@@ -1062,49 +1071,35 @@ impl QueueManager {
         println!();
     }
 
-    pub fn print_queue_live(&self) {
+    pub fn print_queue(&self) {
+        Self::render_queue_snapshot(&self.tasks, self.max_parallel);
+    }
+
+    pub fn print_queue_live(manager_arc: &Arc<Mutex<Self>>) {
+        let (tasks, max_parallel, is_active) = {
+            let mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
+            (mgr.tasks.clone(), mgr.max_parallel, mgr.is_active())
+        };
+
         #[cfg(test)]
         {
-            self.print_queue();
+            let _ = is_active;
+            Self::render_queue_snapshot(&tasks, max_parallel);
         }
+
         #[cfg(not(test))]
         {
             if !io::stdout().is_terminal() || !io::stdin().is_terminal() {
-                self.print_queue();
+                Self::render_queue_snapshot(&tasks, max_parallel);
                 return;
             }
 
-            let (active_count, queued_count) = {
-                let tasks_snapshot: Vec<(usize, String, TaskStatus)> = self
-                    .tasks
-                    .iter()
-                    .map(|t| {
-                        let guard = t.lock().unwrap();
-                        (guard.id, guard.title.clone(), guard.status.clone())
-                    })
-                    .collect();
-
-                let active = tasks_snapshot
-                    .iter()
-                    .filter(|(_, _, s)| {
-                        matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
-                    })
-                    .count();
-
-                let queued = tasks_snapshot
-                    .iter()
-                    .filter(|(_, _, s)| matches!(s, TaskStatus::Queued))
-                    .count();
-
-                (active, queued)
-            };
-
-            if active_count == 0 && queued_count == 0 {
+            if !is_active {
                 println!(
                     "\n{}",
                     "INFO: No queued or active downloads in progress.".cyan()
                 );
-                self.print_queue();
+                Self::render_queue_snapshot(&tasks, max_parallel);
                 return;
             }
 
@@ -1131,31 +1126,31 @@ impl QueueManager {
                     }
                 }
 
-                let tasks_snapshot: Vec<(usize, String, String, TaskStatus)> = self
-                    .tasks
-                    .iter()
-                    .map(|t| {
-                        let guard = t.lock().unwrap();
-                        (
-                            guard.id,
-                            guard.title.clone(),
-                            guard.format_desc.clone(),
-                            guard.status.clone(),
-                        )
-                    })
-                    .collect();
+                let mut active_tasks = Vec::new();
+                let mut queued_tasks = Vec::new();
 
-                let queued_tasks: Vec<_> = tasks_snapshot
-                    .iter()
-                    .filter(|(_, _, _, s)| matches!(s, TaskStatus::Queued))
-                    .collect();
-
-                let active_tasks: Vec<_> = tasks_snapshot
-                    .iter()
-                    .filter(|(_, _, _, s)| {
-                        matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
-                    })
-                    .collect();
+                for t in &tasks {
+                    let guard = t.lock().unwrap_or_else(|p| p.into_inner());
+                    match guard.status {
+                        TaskStatus::Downloading | TaskStatus::Finalizing => {
+                            active_tasks.push((
+                                guard.id,
+                                guard.title.clone(),
+                                guard.format_desc.clone(),
+                                guard.status.clone(),
+                            ));
+                        }
+                        TaskStatus::Queued => {
+                            queued_tasks.push((
+                                guard.id,
+                                guard.title.clone(),
+                                guard.format_desc.clone(),
+                                guard.status.clone(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
 
                 if lines_printed > 0 {
                     let _ = crossterm::execute!(
@@ -1170,6 +1165,7 @@ impl QueueManager {
                         "{}",
                         "SUCCESS: All active and queued downloads finished!".green()
                     );
+                    lines_printed = 0;
                     break;
                 }
 
@@ -1177,7 +1173,7 @@ impl QueueManager {
                 println!(
                     "Active Slots: {}/{} | Queued in line: {}",
                     active_tasks.len(),
-                    self.max_parallel,
+                    max_parallel,
                     queued_tasks.len()
                 );
                 count += 1;
@@ -1228,7 +1224,7 @@ impl QueueManager {
                 );
             }
             println!("{}", "INFO: Exited real-time queue monitor.".cyan());
-            self.print_queue();
+            Self::render_queue_snapshot(&tasks, max_parallel);
             println!();
         }
     }
@@ -1579,41 +1575,42 @@ mod tests {
     #[test]
     fn test_queue_print_queue_and_status_live_empty_and_populated() {
         let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
-        let mut mgr = mgr_arc.lock().unwrap();
+        mgr_arc.lock().unwrap().print_queue();
+        QueueManager::print_status_live(&mgr_arc);
 
-        mgr.print_queue();
-        mgr.print_status_live();
+        {
+            let mut mgr = mgr_arc.lock().unwrap();
+            mgr.queue.push_back(10);
+            mgr.queue.push_back(11);
+            mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+                id: 10,
+                url: "url10".to_string(),
+                title: "Queued Task 10".to_string(),
+                format_id: "137".to_string(),
+                format_desc: "1080p (mp4)".to_string(),
+                download_dir: "/tmp".to_string(),
+                status: TaskStatus::Queued,
+                progress: TaskProgress::default(),
+                custom_output_template: None,
+                force_overwrite: false,
+            })));
+            mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+                id: 11,
+                url: "url11".to_string(),
+                title: "Queued Task 11".to_string(),
+                format_id: "137".to_string(),
+                format_desc: "1080p (mp4)".to_string(),
+                download_dir: "/tmp".to_string(),
+                status: TaskStatus::Queued,
+                progress: TaskProgress::default(),
+                custom_output_template: None,
+                force_overwrite: false,
+            })));
 
-        mgr.queue.push_back(10);
-        mgr.queue.push_back(11);
-        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
-            id: 10,
-            url: "url10".to_string(),
-            title: "Queued Task 10".to_string(),
-            format_id: "137".to_string(),
-            format_desc: "1080p (mp4)".to_string(),
-            download_dir: "/tmp".to_string(),
-            status: TaskStatus::Queued,
-            progress: TaskProgress::default(),
-            custom_output_template: None,
-            force_overwrite: false,
-        })));
-        mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
-            id: 11,
-            url: "url11".to_string(),
-            title: "Queued Task 11".to_string(),
-            format_id: "137".to_string(),
-            format_desc: "1080p (mp4)".to_string(),
-            download_dir: "/tmp".to_string(),
-            status: TaskStatus::Queued,
-            progress: TaskProgress::default(),
-            custom_output_template: None,
-            force_overwrite: false,
-        })));
-
-        assert!(mgr.is_active());
-        mgr.print_queue();
-        mgr.print_status_live();
+            assert!(mgr.is_active());
+            mgr.print_queue();
+        }
+        QueueManager::print_status_live(&mgr_arc);
     }
 
     #[test]
@@ -1714,8 +1711,35 @@ mod tests {
     #[test]
     fn test_queue_print_queue_live_fallback() {
         let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
-        mgr_arc.lock().unwrap().print_queue_live();
+        QueueManager::print_queue_live(&mgr_arc);
         mgr_arc.lock().unwrap().print_queue();
+    }
+
+    #[test]
+    fn test_queue_status_and_queue_live_drop_mutex_guard() {
+        let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        {
+            let mut mgr = mgr_arc.lock().unwrap();
+            mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
+                id: 1,
+                url: "https://example.com/video".to_string(),
+                title: "Active Task".to_string(),
+                format_id: "137".to_string(),
+                format_desc: "1080p".to_string(),
+                download_dir: "/tmp".to_string(),
+                status: TaskStatus::Downloading,
+                progress: TaskProgress::default(),
+                custom_output_template: None,
+                force_overwrite: false,
+            })));
+            mgr.active_count = 1;
+        }
+
+        QueueManager::print_status_live(&mgr_arc);
+        assert!(mgr_arc.try_lock().is_ok());
+
+        QueueManager::print_queue_live(&mgr_arc);
+        assert!(mgr_arc.try_lock().is_ok());
     }
 
     #[test]

@@ -478,7 +478,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     continue;
                 }
                 if input.eq_ignore_ascii_case("status") {
-                    queue_manager.lock().unwrap().print_status_live();
+                    QueueManager::print_status_live(&queue_manager);
                     continue;
                 }
                 if input.eq_ignore_ascii_case("list") {
@@ -492,7 +492,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                 if input.eq_ignore_ascii_case("queue live")
                     || input.eq_ignore_ascii_case("queue -l")
                 {
-                    queue_manager.lock().unwrap().print_queue_live();
+                    QueueManager::print_queue_live(&queue_manager);
                     continue;
                 }
                 if input.eq_ignore_ascii_case("active") {
