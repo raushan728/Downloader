@@ -154,6 +154,7 @@ fn test_real_cmd_builder_invariants_and_safeguards() {
         "/tmp/downloads",
         None,
         false,
+        None,
     );
 
     let args: Vec<String> = cmd
@@ -179,6 +180,7 @@ fn test_real_cmd_builder_invariants_and_safeguards() {
         "/tmp/downloads",
         Some("%(title)s (1).%(ext)s"),
         true,
+        None,
     );
 
     let args_overwrite: Vec<String> = cmd_overwrite

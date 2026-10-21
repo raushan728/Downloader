@@ -12,10 +12,7 @@ use std::time::Duration;
 use colored::Colorize;
 
 use crate::config::manager::ConfigManager;
-use crate::engine::downloader::{
-    clean_interrupted_media_files, clean_partial_files, download_media_background_ext,
-    render_progress_bar,
-};
+use crate::engine::downloader::{download_media_background_ext, render_progress_bar};
 
 /// Lifecycle states of a queued or active media download task.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -398,6 +395,7 @@ impl QueueManager {
 
         let handle = thread::spawn(move || {
             let (
+                task_id,
                 url,
                 format_id,
                 yt_dlp_path,
@@ -410,6 +408,7 @@ impl QueueManager {
                 let mgr = mgr_clone.lock().unwrap();
                 let t = task_clone.lock().unwrap();
                 (
+                    t.id,
                     t.url.clone(),
                     t.format_id.clone(),
                     mgr.yt_dlp_path.clone(),
@@ -424,6 +423,7 @@ impl QueueManager {
             let task_for_progress = Arc::clone(&task_clone);
             let mgr_for_spawn = Arc::clone(&mgr_clone);
             let mut spawned_pid: Option<u32> = None;
+            let task_id_str = task_id.to_string();
 
             let result = download_media_background_ext(
                 &url,
@@ -433,6 +433,7 @@ impl QueueManager {
                 &download_dir,
                 custom_output_template.as_deref(),
                 force_overwrite,
+                Some(&task_id_str),
                 |child| {
                     let pid = child.id();
                     spawned_pid = Some(pid);
@@ -487,14 +488,8 @@ impl QueueManager {
                 (t.title.clone(), t.download_dir.clone())
             };
 
-            if is_cancelled || result.is_err() {
-                let target_stem = crate::engine::downloader::derive_output_stem(
-                    &title,
-                    custom_output_template.as_deref(),
-                );
-                clean_partial_files(&download_dir, Some(&title));
-                clean_interrupted_media_files(&download_dir, &title, Some(&target_stem));
-            }
+            let temp_dir = std::path::Path::new(&download_dir).join(format!(".dwdr_{}", task_id));
+            let _ = std::fs::remove_dir_all(&temp_dir);
 
             if !is_cancelled {
                 match result {
@@ -601,12 +596,9 @@ impl QueueManager {
                 TaskStatus::Queued | TaskStatus::Downloading | TaskStatus::Finalizing
             ) {
                 t.status = TaskStatus::Cancelled;
-                let target_stem = crate::engine::downloader::derive_output_stem(
-                    &t.title,
-                    t.custom_output_template.as_deref(),
-                );
-                clean_partial_files(&t.download_dir, Some(&t.title));
-                clean_interrupted_media_files(&t.download_dir, &t.title, Some(&target_stem));
+                let temp_dir =
+                    std::path::Path::new(&t.download_dir).join(format!(".dwdr_{}", t.id));
+                let _ = std::fs::remove_dir_all(&temp_dir);
             }
         }
 

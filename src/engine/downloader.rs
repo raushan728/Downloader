@@ -955,9 +955,7 @@ pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usiz
 // Tracks foreground download process metadata so signal handlers can perform targeted cleanup.
 struct DirectDownloadTracker {
     pid: Option<u32>,
-    download_dir: String,
-    title: String,
-    custom_stem: Option<String>,
+    temp_dir: PathBuf,
 }
 
 static DIRECT_TRACKER: Mutex<Option<DirectDownloadTracker>> = Mutex::new(None);
@@ -977,9 +975,14 @@ pub fn register_direct_download(pid: u32, download_dir: &str, title: &str) {
 pub fn register_direct_download_ext(
     pid: u32,
     download_dir: &str,
-    title: &str,
-    custom_stem: Option<&str>,
+    _title: &str,
+    _custom_stem: Option<&str>,
 ) {
+    let temp_dir = Path::new(download_dir).join(".dwdr_direct");
+    register_direct_download_full(pid, temp_dir);
+}
+
+pub fn register_direct_download_full(pid: u32, temp_dir: PathBuf) {
     crate::engine::queue::record_active_download();
     let mut guard = match DIRECT_TRACKER.lock() {
         Ok(g) => g,
@@ -987,9 +990,7 @@ pub fn register_direct_download_ext(
     };
     *guard = Some(DirectDownloadTracker {
         pid: Some(pid),
-        download_dir: download_dir.to_string(),
-        title: title.to_string(),
-        custom_stem: custom_stem.map(|s| s.to_string()),
+        temp_dir,
     });
 }
 
@@ -1012,19 +1013,7 @@ pub fn cancel_direct_download() {
         if let Some(pid) = tracker.pid {
             kill_process_by_pid(pid);
         }
-        let title_opt = if tracker.title.trim().is_empty() {
-            None
-        } else {
-            Some(tracker.title.as_str())
-        };
-        clean_partial_files(&tracker.download_dir, title_opt);
-        if let Some(title) = title_opt {
-            clean_interrupted_media_files(
-                &tracker.download_dir,
-                title,
-                tracker.custom_stem.as_deref(),
-            );
-        }
+        let _ = std::fs::remove_dir_all(&tracker.temp_dir);
     }
     drop(guard);
     crate::engine::queue::clear_active_download();
@@ -1045,9 +1034,11 @@ pub fn build_ytdlp_download_cmd(
         download_dir,
         None,
         false,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_ytdlp_download_cmd_ext(
     yt_dlp_path: &Path,
     ffmpeg_path: &Path,
@@ -1056,6 +1047,7 @@ pub fn build_ytdlp_download_cmd_ext(
     download_dir: &str,
     custom_output_template: Option<&str>,
     force_overwrites: bool,
+    task_id: Option<&str>,
 ) -> Command {
     let clean_dir = download_dir.trim_end_matches(['/', '\\']);
     let mut cmd = Command::new(yt_dlp_path);
@@ -1080,11 +1072,15 @@ pub fn build_ytdlp_download_cmd_ext(
     };
 
     let output_template = custom_output_template.unwrap_or("%(title)s.%(ext)s");
+    let id_str = task_id.unwrap_or("direct");
+    let temp_arg = format!("temp:{}/.dwdr_{}", clean_dir, id_str);
 
     cmd.arg("-f")
         .arg(format_arg)
         .arg("-P")
         .arg(clean_dir)
+        .arg("-P")
+        .arg(temp_arg)
         .arg("-o")
         .arg(output_template)
         .arg("--windows-filenames")
@@ -1165,13 +1161,14 @@ pub fn download_media_ext(
     yt_dlp_path: &Path,
     ffmpeg_path: &Path,
     download_dir: &str,
-    title: Option<&str>,
+    _title: Option<&str>,
     custom_output_template: Option<&str>,
     force_overwrites: bool,
 ) -> Result<(), String> {
     let validated_dir = crate::config::manager::validate_download_path(download_dir, true)
         .map_err(|e| format!("Invalid download directory: {}", e))?;
     let clean_download_dir = validated_dir.to_string_lossy();
+    let temp_dir = validated_dir.join(".dwdr_direct");
 
     let mut cmd = build_ytdlp_download_cmd_ext(
         yt_dlp_path,
@@ -1181,6 +1178,7 @@ pub fn download_media_ext(
         &clean_download_dir,
         custom_output_template,
         force_overwrites,
+        Some("direct"),
     );
 
     #[cfg(unix)]
@@ -1192,14 +1190,8 @@ pub fn download_media_ext(
         .spawn()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
-    let target_stem = derive_output_stem(title.unwrap_or(""), custom_output_template);
     let pid = child.id();
-    register_direct_download_ext(
-        pid,
-        &clean_download_dir,
-        title.unwrap_or(""),
-        Some(&target_stem),
-    );
+    register_direct_download_full(pid, temp_dir.clone());
 
     let mut stderr_handle = child.stderr.take();
     // Drain stderr asynchronously so unread process error buffers do not deadlock stdout pipe reading.
@@ -1294,6 +1286,8 @@ pub fn download_media_ext(
     let stderr_output = stderr_thread.join().unwrap_or_default();
     unregister_direct_download();
 
+    let _ = std::fs::remove_dir_all(&temp_dir);
+
     if status.success() {
         println!(
             "\r[download] [{}] 100.0% Complete! Finalized successfully!                       ",
@@ -1303,10 +1297,6 @@ pub fn download_media_ext(
         println!("{}", "SUCCESS: Media finalization complete!".green());
         Ok(())
     } else {
-        clean_partial_files(&clean_download_dir, title);
-        if let Some(t) = title {
-            clean_interrupted_media_files(&clean_download_dir, t, Some(&target_stem));
-        }
         println!();
         Err(extract_engine_error(&stderr_output))
     }
@@ -1334,6 +1324,7 @@ where
         download_dir,
         None,
         false,
+        None,
         on_spawn,
         on_progress,
     )
@@ -1349,6 +1340,7 @@ pub fn download_media_background_ext<F, G>(
     download_dir: &str,
     custom_output_template: Option<&str>,
     force_overwrites: bool,
+    task_id: Option<&str>,
     on_spawn: F,
     on_progress: G,
 ) -> Result<(), String>
@@ -1368,6 +1360,7 @@ where
         &clean_download_dir,
         custom_output_template,
         force_overwrites,
+        task_id,
     );
 
     #[cfg(unix)]
@@ -1988,6 +1981,7 @@ mod tests {
 
         assert!(args.contains(&"-P".to_string()));
         assert!(args.contains(&"/downloads/path".to_string()));
+        assert!(args.contains(&"temp:/downloads/path/.dwdr_direct".to_string()));
         assert!(args.contains(&"-o".to_string()));
         assert!(args.contains(&"%(title)s.%(ext)s".to_string()));
         assert!(args.contains(&"--windows-filenames".to_string()));
@@ -2488,6 +2482,7 @@ mod tests {
             "/downloads/path",
             Some("%(title)s (1).%(ext)s"),
             true,
+            Some("1"),
         );
         let args: Vec<String> = cmd
             .get_args()
@@ -2496,11 +2491,46 @@ mod tests {
 
         assert!(args.contains(&"-o".to_string()));
         assert!(args.contains(&"%(title)s (1).%(ext)s".to_string()));
+        assert!(args.contains(&"-P".to_string()));
+        assert!(args.contains(&"/downloads/path".to_string()));
+        assert!(args.contains(&"temp:/downloads/path/.dwdr_1".to_string()));
         assert!(args.contains(&"--force-overwrites".to_string()));
         assert!(args.contains(&"--encoding".to_string()));
         assert!(args.contains(&"utf-8".to_string()));
         assert!(args.contains(&"--postprocessor-args".to_string()));
         assert!(args.contains(&"Merger:-y".to_string()));
+    }
+
+    #[test]
+    fn test_task_temp_dir_cleanup_preserves_sibling_and_original_files() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path();
+
+        let original_file = dir.join("Video.mp4");
+        std::fs::write(&original_file, b"original content").unwrap();
+
+        let sibling_file = dir.join("Video 2.mp4");
+        std::fs::write(&sibling_file, b"sibling content").unwrap();
+
+        let flac_file = dir.join("Video.flac");
+        std::fs::write(&flac_file, b"flac audio").unwrap();
+
+        let task_temp_dir = dir.join(".dwdr_1");
+        std::fs::create_dir(&task_temp_dir).unwrap();
+        let part_file = task_temp_dir.join("Video.f137.mp4.part");
+        std::fs::write(&part_file, b"partial bytes").unwrap();
+
+        assert!(task_temp_dir.exists());
+        let _ = std::fs::remove_dir_all(&task_temp_dir);
+
+        assert!(!task_temp_dir.exists());
+        assert!(!part_file.exists());
+        assert!(original_file.exists());
+        assert_eq!(std::fs::read(&original_file).unwrap(), b"original content");
+        assert!(sibling_file.exists());
+        assert_eq!(std::fs::read(&sibling_file).unwrap(), b"sibling content");
+        assert!(flac_file.exists());
+        assert_eq!(std::fs::read(&flac_file).unwrap(), b"flac audio");
     }
 
     #[test]
@@ -2525,6 +2555,28 @@ mod tests {
         assert!(lines[1].contains('\u{FFFD}'));
         assert_eq!(lines[2], "[Merger] Merging formats into file");
         assert_eq!(lines[3], "postprocess:POSTPROCESS|finished");
+    }
+
+    #[test]
+    fn test_cleanup_current_heuristic_limitations() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path();
+
+        let sibling_part = dir.join("Video 2.part");
+        std::fs::write(&sibling_part, b"sibling part bytes").unwrap();
+
+        let flac_file = dir.join("Video.flac");
+        std::fs::write(&flac_file, b"flac audio bytes").unwrap();
+
+        let existing_video = dir.join("Video.mp4");
+        std::fs::write(&existing_video, b"original video bytes").unwrap();
+
+        clean_partial_files(dir.to_str().unwrap(), Some("Video"));
+        assert!(!sibling_part.exists());
+        assert!(!flac_file.exists());
+
+        clean_interrupted_media_files(dir.to_str().unwrap(), "Video", None);
+        assert!(!existing_video.exists());
     }
 
     #[test]
