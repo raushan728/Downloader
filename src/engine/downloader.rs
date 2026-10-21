@@ -1101,6 +1101,8 @@ pub fn build_ytdlp_download_cmd_ext(
     }
 
     cmd.arg("--newline")
+        .arg("--encoding")
+        .arg("utf-8")
         .arg("--progress-template")
         .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str,progress._total_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(info.vcodec)s")
         .arg("--progress-template")
@@ -1119,6 +1121,19 @@ pub fn build_ytdlp_download_cmd_ext(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     cmd
+}
+
+/// Reads lines from a buffered reader byte-by-byte, converting non-UTF-8 sequences lossily without aborting.
+pub fn read_lossy_lines<R: BufRead, F: FnMut(&str)>(mut reader: R, mut on_line: F) {
+    let mut line_bytes = Vec::new();
+    while let Ok(n) = reader.read_until(b'\n', &mut line_bytes) {
+        if n == 0 {
+            break;
+        }
+        let line_lossy = String::from_utf8_lossy(&line_bytes);
+        on_line(line_lossy.trim());
+        line_bytes.clear();
+    }
 }
 
 /// Downloads media in the foreground, streaming live progress and managing process lifecycle.
@@ -1208,8 +1223,7 @@ pub fn download_media_ext(
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
 
-        for line in reader.lines().map_while(Result::ok) {
-            let line = line.trim();
+        read_lossy_lines(reader, |line| {
             if let Some((percent, downloaded, total, speed, eta, vcodec)) =
                 parse_progress_line_ext(line)
             {
@@ -1270,7 +1284,7 @@ pub fn download_media_ext(
                 );
                 let _ = stdout().flush();
             }
-        }
+        });
     }
 
     let status = child
@@ -1388,8 +1402,7 @@ where
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
 
-        for line in reader.lines().map_while(Result::ok) {
-            let line = line.trim();
+        read_lossy_lines(reader, |line| {
             if let Some((percent, downloaded, total, speed, eta, vcodec)) =
                 parse_progress_line_ext(line)
             {
@@ -1422,7 +1435,7 @@ where
                 postprocess_started = true;
                 on_progress(100.0, "", "", "", "", true);
             }
-        }
+        });
     }
 
     let status = child
@@ -1469,6 +1482,7 @@ pub fn find_format_by_quality(formats: &[MediaFormat], target_quality: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
@@ -1985,6 +1999,8 @@ mod tests {
         assert!(args.contains(&"30".to_string()));
         assert!(args.contains(&"--merge-output-format".to_string()));
         assert!(args.contains(&"mp4".to_string()));
+        assert!(args.contains(&"--encoding".to_string()));
+        assert!(args.contains(&"utf-8".to_string()));
         assert!(args.contains(&"302+bestaudio/best".to_string()));
 
         let cmd_best =
@@ -2481,8 +2497,34 @@ mod tests {
         assert!(args.contains(&"-o".to_string()));
         assert!(args.contains(&"%(title)s (1).%(ext)s".to_string()));
         assert!(args.contains(&"--force-overwrites".to_string()));
+        assert!(args.contains(&"--encoding".to_string()));
+        assert!(args.contains(&"utf-8".to_string()));
         assert!(args.contains(&"--postprocessor-args".to_string()));
         assert!(args.contains(&"Merger:-y".to_string()));
+    }
+
+    #[test]
+    fn test_read_lossy_lines_with_non_utf8_and_eof() {
+        let mut data = Vec::new();
+        data.extend_from_slice(b"download:PROGRESS|10.0%|1M|10M|1M/s|00:09|avc1\n");
+        // Non-UTF-8 byte sequence (0xFF, 0xFE) inside a progress line
+        data.extend_from_slice(b"download:PROGRESS|20.0%|2M|10M|1M/s|00:08|\xFF\xFE\n");
+        data.extend_from_slice(b"[Merger] Merging formats into file\n");
+        // Line without trailing newline at EOF
+        data.extend_from_slice(b"postprocess:POSTPROCESS|finished");
+
+        let cursor = Cursor::new(data);
+        let mut lines = Vec::new();
+        read_lossy_lines(cursor, |line| {
+            lines.push(line.to_string());
+        });
+
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0], "download:PROGRESS|10.0%|1M|10M|1M/s|00:09|avc1");
+        assert!(lines[1].starts_with("download:PROGRESS|20.0%|2M|10M|1M/s|00:08|"));
+        assert!(lines[1].contains('\u{FFFD}'));
+        assert_eq!(lines[2], "[Merger] Merging formats into file");
+        assert_eq!(lines[3], "postprocess:POSTPROCESS|finished");
     }
 
     #[test]
