@@ -1,6 +1,6 @@
 # Command Reference Catalog
 
-DWDR provides a total of **20 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
+DWDR provides a total of **21 primary commands and subcommands** across three execution contexts: Direct CLI invocation, Subcommand dispatch, and the Interactive REPL Shell.
 
 ---
 
@@ -14,7 +14,7 @@ DWDR provides a total of **20 primary commands and subcommands** across three ex
 | `dwdr -V`, `--version` | Direct CLI | None | Prints the compiled DWDR binary version string. | `dwdr --version` |
 | `dwdr config` | Subcommand | None | Launches the guided terminal menu to configure download folders, resolutions, and parallel limits. | `dwdr config` |
 | `dwdr config show` | Subcommand | None | Displays current persistent configuration values from `~/.dwdr/config.toml`. | `dwdr config show` |
-| `dwdr config set` | Subcommand | `<key>` `<value>` `[--force]` | Programmatically updates a configuration key (`path`, `quality`, `parallel`). | `dwdr config set quality 720p` |
+| `dwdr config set` | Subcommand | `<key>` `<value>` `[--force]` | Programmatically updates a configuration key (`path`, `quality`, `parallel`, `compat`). | `dwdr config set quality 720p` |
 | `dwdr config reset` | Subcommand | `[--force]` | Restores `~/.dwdr/config.toml` to clean factory defaults (prompts confirmation unless `--force`). | `dwdr config reset` |
 | `dwdr update` | Subcommand | None | Forces an immediate redownload and verification of internal `yt-dlp` and `ffmpeg` engine binaries. | `dwdr update` |
 | `dwdr self-update` | Subcommand | None | Downloads and atomically replaces the running DWDR CLI executable with the latest GitHub release. | `dwdr self-update` |
@@ -24,10 +24,11 @@ DWDR provides a total of **20 primary commands and subcommands** across three ex
 | `queue` | Interactive Shell (REPL) | None | Inspects queued waiting tasks, ordered queue positions, and parallel concurrency limits. | `dwdr > queue` |
 | `queue live` / `queue -l` | Interactive Shell (REPL) | None | Launches an in-place real-time visual monitor of queue slots and active task progress. | `dwdr > queue live` |
 | `active` | Interactive Shell (REPL) | None | Displays an instantaneous snapshot of currently downloading tasks without entering live view. | `dwdr > active` |
+| `wait` | Interactive Shell (REPL) | None | Waits for all active and queued background downloads to finish. | `dwdr > wait` |
 | `cancel` | Interactive Shell (REPL) | None | Cancels all currently running background downloads and flushes the waiting queue. | `dwdr > cancel` |
 | `cls` / `clear` | Interactive Shell (REPL) | None | Clears the terminal screen buffer within an active shell session. | `dwdr > clear` |
 | `help` | Interactive Shell (REPL) | None | Displays interactive shell command summary and usage tips. | `dwdr > help` |
-| `exit` / `quit` | Interactive Shell (REPL) | None | Cancels active downloads and gracefully exits the interactive shell. | `dwdr > exit` |
+| `exit` / `quit` | Interactive Shell (REPL) | None | Exits the interactive shell (prompts confirmation if background downloads are active). | `dwdr > exit` |
 
 ---
 
@@ -35,8 +36,8 @@ DWDR provides a total of **20 primary commands and subcommands** across three ex
 
 ### 1. Direct Download (`dwdr <URL>`)
 - **Behavior**: Validates the URL protocol (`http://` or `https://`), resolves engine binaries in `~/.dwdr/deps/`, extracts metadata via `yt-dlp` with `--no-playlist`, and checks if a stream matches `default_quality`.
-- **Smart Fallback**: If an exact match exists, downloading begins automatically. If no exact match exists, prompts the user to select from available audio/video streams.
-- **Fallback Directory Prompt**: If `download_path` is not configured, triggers a native OS folder dialog (`rfd`) before writing files.
+- **Smart Fallback**: If an exact match exists, downloading begins automatically. If no exact match exists, Smart Fallback automatically selects the nearest lower resolution tier (unless `default_quality` is set to `"always ask"`).
+- **Download Directory**: Defaults to `~/Downloads/DWDR`. Can be updated via `dwdr config` or `dwdr config set path <DIR>`.
 
 ### 2. Interactive Terminal Shell (`dwdr`)
 - **Behavior**: Starts a persistent, non-blocking read-eval-print loop (`dwdr >`).
@@ -52,26 +53,28 @@ DWDR provides a total of **20 primary commands and subcommands** across three ex
   - Typing `queue` displays queue slot capacity (`Active Slots: X/Y`) and ordered waiting positions.
   - Typing `queue live` (or `queue -l`) launches an in-place real-time visual monitor of queue slots and active task progress.
   - Typing `active` prints a fast static progress snapshot of currently downloading tasks.
+  - Typing `wait` waits for all active and queued downloads to finish.
   - Typing unrecognized commands produces helpful guidance to type `help` rather than treating input as an invalid URL.
   - Typing `cancel` stops all running downloads and clears the queue immediately.
-  - Typing `config` or `settings` opens the interactive settings menu.
+  - Typing `config` or `settings` opens the interactive settings menu (disabled while downloads are active).
   - Typing `cls` or `clear` clears the terminal screen buffer.
-  - Typing `exit`, `quit`, or pressing `Ctrl+C` terminates active tasks and exits the shell.
+  - Typing `exit`, `quit`, or pressing `Ctrl+C` prompts for confirmation if downloads are running before exiting the shell.
   - Automated/piped input gracefully falls back from TTY raw-mode to standard line buffered reading.
 
 ### 3. Configuration Subcommands (`dwdr config`)
 - **Interactive Mode** (`dwdr config`):
-  - Option 1: Launches native OS file browser (`rfd`) to select a download directory.
+  - Option 1: Launches native OS file browser (`rfd`) or text prompt to select a download directory.
   - Option 2: Selects default resolution (`always ask`, `best`, `8k`, `4k`, `2k`, `1080p`, `720p`, `480p`, `360p`, `240p`, `144p`, `audio`).
   - Option 3: Selects max parallel download threads (`1` to `16`).
-  - Option 4: Saves to `~/.dwdr/config.toml` and exits.
-  - Option 5: Cancels without saving.
+  - Option 4: Toggles compatibility mode (prioritizes AVC/H.264 + AAC codecs).
+  - Option 5: Saves to `~/.dwdr/config.toml` and exits.
+  - Option 6: Cancels without saving.
   - In non-TTY environments, exits cleanly with an informative error rather than looping.
 - **Programmatic Set** (`dwdr config set <key> <value>`):
-  - Supported keys: `path`, `quality`, `parallel`.
+  - Supported keys: `path`, `quality`, `parallel`, `compat` (along with aliases `download_path`, `default_quality`, `max_parallel_downloads`, `compat_mode`).
   - Validation bounds: `parallel` (`1..=16`), valid quality tiers, write-permission directory check.
   - Concurrency safety: Rejects mutations when downloads are running in another process (`active_downloads.lock`).
-  - Flags: `--force` overrides safety bounds and active download locks.
+  - Flags: `--force` overrides active download concurrency locks.
 - **Reset Configuration** (`dwdr config reset`):
   - Restores clean factory defaults. Prompts for `[y/N]` confirmation; `--force` skips confirmation.
 

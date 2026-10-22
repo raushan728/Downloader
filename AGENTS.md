@@ -32,7 +32,7 @@ Engineering conventions, core invariants, architectural guidelines, and codebase
 
 3. **Output & Tone Discipline**:
    - Do NOT use emojis anywhere in CLI logs, error messages, or internal code comments.
-   - Use standard log format tags: `INFO: ...`, `WARNING: ...`, `ERROR: ...`, `SUCCESS: ...`.
+   - Use standard log format tags (`INFO: ...`, `WARNING: ...`, `ERROR: ...`, `SUCCESS: ...`) for status notifications and error messages. Interactive REPL prompts, menus, banners, and format selection rows use contextual clean formatting without mandatory tag prefixes.
 
 4. **Terminal State Restoration**:
    - Any routine modifying terminal cursor visibility (`cursor::Hide`), raw mode (`enable_raw_mode`), or ANSI colors must guarantee restoration via `reset_terminal_state()` on exit, fatal error, or `Ctrl+C`.
@@ -80,7 +80,7 @@ cargo test
 # 3. Enforce strict compiler warnings and lints
 cargo clippy --all-targets --all-features -- -D warnings
 
-# 4. Run real end-to-end integration tests (on-demand)
+# 4. Run extended offline integration tests (on-demand)
 cargo test --test real_integration -- --ignored
 ```
 

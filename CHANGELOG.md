@@ -17,5 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Network Resilience & Proxy Routing**: Proxy support (`DWDR_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `HTTP_PROXY`) and exponential backoff retry on transient network errors.
 - **Process Group Isolation & Clean Signal Handling**: Unix process group isolation (`process_group(0)`) and Windows process tree termination (`taskkill /F /T`) to cleanly terminate subprocesses and purge partial files on cancellation.
 - **Dynamic Filesize Estimation & Responsive Terminal UI**: Multi-tier filesize estimation for platforms lacking explicit metadata, and terminal progress bars that scale dynamically with window width.
+- **Duplicate Collision Protection & Overwrite Controls**: Media collision prevention via exact and normalized stem detection, interactive duplicate resolution dialogs (overwrite or save as unique copy), and `--force` (`-f`) flag for automated overwrites and configuration concurrency lock overrides.
 - **Self-Healing Configuration**: TOML configuration with validation bounds, custom path directory resolution, cross-process download locks, and non-TTY safety guards.
 - **Hermetic Testing Suite**: Offline test suite with centralized mock binary harnesses covering CLI subcommands, queue concurrency, and engine error recovery.

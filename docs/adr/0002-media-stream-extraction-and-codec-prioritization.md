@@ -37,6 +37,18 @@ During early development, stream extraction and format resolution presented seve
    - Prefer HDR streams over SDR at the same resolution.
    - Preserve direct progressive HTTPS streams over adaptive HLS manifests to prevent CDN 403 rate limits.
 
+## Alternatives Considered
+
+### Alternative 1: Strict Format Metadata Filtering
+- **Pros**: Discards any format record where codecs or dimensions are missing or null.
+- **Cons**: Drops valid video streams on Instagram, TikTok, Reddit, and generic sites that do not publish codec metadata.
+- **Why not**: Heuristic media recognition allows extracting streams across platforms while synthesizing safe fallbacks when metadata is absent.
+
+### Alternative 2: Transcoding Audio Streams via FFmpeg Post-Processing
+- **Pros**: Standardizes all audio downloads into a single container format (such as MP3).
+- **Cons**: Lossy re-encoding degrades audio quality, consumes heavy CPU, and increases download completion latency.
+- **Why not**: Downloading native stream containers (m4a/opus/aac) preserves pristine audio quality with immediate finalizing.
+
 ## Consequences
 
 - Reliable extraction and downloading across both YouTube and non-YouTube platforms.
