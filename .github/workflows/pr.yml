@@ -42,3 +42,33 @@ jobs:
 
       - name: Run Real Integration Tests
         run: cargo test --test real_integration -- --ignored
+
+  test-scripts:
+    name: Test Scripts on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test Install & Uninstall Scripts (Linux via Docker)
+        if: matrix.platform == 'linux'
+        run: bash tests/test_install_scripts.sh
+
+      - name: Test Install & Uninstall Scripts (macOS Native)
+        if: matrix.platform == 'macos'
+        run: bash tests/test_install_scripts.sh --native
+
+      - name: Test Install & Uninstall Scripts (Windows PowerShell)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: pwsh tests/test_install_scripts.ps1

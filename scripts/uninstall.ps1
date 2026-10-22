@@ -3,8 +3,12 @@ param (
 [string]$Scope = "Auto"
 )
 $ErrorActionPreference = "Stop"
-$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$isAdmin = if ([System.Environment]::OSVersion.Platform -match "Win") {
+  $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+  $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} else {
+  $false
+}
 if ($Scope -eq "Auto") {
   if ($isAdmin) {
     $hasMachine = Test-Path -Path "$env:ProgramFiles\DWDR"
@@ -52,7 +56,7 @@ $DwdrDir = "$env:USERPROFILE\.dwdr"
 $MachineDir = "$env:ProgramFiles\DWDR"
 Write-Host "INFO: Starting DWDR uninstallation (Scope: $Scope)..." -ForegroundColor Cyan
 # Check if any DWDR processes or child engines are currently executing
-$RunningProcesses = Get-Process -Name "dwdr", "yt-dlp", "ffmpeg" -ErrorAction SilentlyContinue
+$RunningProcesses = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -in @("dwdr", "yt-dlp", "ffmpeg") }
 if ($RunningProcesses) {
   $Names = ($RunningProcesses | Select-Object -ExpandProperty ProcessName -Unique) -join ', '
   Write-Warning "Active processes detected: $Names. Please close all running instances before uninstalling."
@@ -63,7 +67,7 @@ function Remove-PathEntry {
   [string]$TargetScope
   )
   $CurrentPath = [Environment]::GetEnvironmentVariable("PATH", $TargetScope)
-  if ($CurrentPath -like "*$Directory*") {
+  if ($CurrentPath -and $CurrentPath -like "*$Directory*") {
     Write-Host "INFO: Removing $Directory from your $TargetScope PATH..." -ForegroundColor Cyan
     $Parts = $CurrentPath -split ';' | Where-Object {
       $_ -ne $Directory -and $_ -ne ""
@@ -91,7 +95,7 @@ if ($Scope -in @("Machine", "Both")) {
       Remove-Item -Path $MachineDir -Recurse -Force
     }
     catch {
-      Write-Warning "Could not remove $MachineDir: $_"
+      Write-Warning "Could not remove ${MachineDir}: $_"
     }
   }
   Remove-PathEntry -Directory "$MachineDir\bin" -TargetScope "Machine"

@@ -26,8 +26,8 @@ Darwin*)
 	;;
 esac
 
-URL="https://github.com/${REPO}/releases/download/latest/dwdr-${SUFFIX}"
-CHECKSUM_URL="https://github.com/${REPO}/releases/download/latest/SHA256SUMS"
+URL="${DWDR_INSTALL_URL:-https://github.com/${REPO}/releases/download/latest/dwdr-${SUFFIX}}"
+CHECKSUM_URL="${DWDR_CHECKSUM_URL:-https://github.com/${REPO}/releases/download/latest/SHA256SUMS}"
 
 BIN_DIR="${HOME}/.dwdr/bin"
 BIN_PATH="${BIN_DIR}/dwdr"
