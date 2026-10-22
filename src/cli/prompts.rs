@@ -179,6 +179,19 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
         return None;
     }
 
+    if !std::io::stdin().is_terminal() || !stdout().is_terminal() {
+        let first = &formats[0];
+        println!(
+            "{}",
+            format!(
+                "INFO: Non-interactive terminal detected. Auto-selecting format: {} ({})",
+                first.resolution, first.format_id
+            )
+            .cyan()
+        );
+        return Some(first.format_id.clone());
+    }
+
     let mut options = Vec::new();
 
     for format in formats {
@@ -204,6 +217,35 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
     }
 }
 
+pub fn prompt_folder_path(default_path: &str) -> Option<std::path::PathBuf> {
+    #[cfg(unix)]
+    let has_gui = std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
+    #[cfg(not(unix))]
+    let has_gui = true;
+
+    if has_gui {
+        println!("{}", "INFO: Opening native file browser...".cyan());
+        if let Some(path) = FileDialog::new()
+            .set_title("Select Download Folder")
+            .pick_folder()
+        {
+            return Some(path);
+        }
+    }
+
+    println!(
+        "{}",
+        "INFO: Native file dialog unavailable or dismissed. Enter directory path manually:".cyan()
+    );
+    match inquire::Text::new("Download directory path:")
+        .with_default(default_path)
+        .prompt()
+    {
+        Ok(typed) if !typed.trim().is_empty() => Some(std::path::PathBuf::from(typed.trim())),
+        _ => None,
+    }
+}
+
 pub fn interactive_config(config: &mut DwdrConfig) {
     if !std::io::stdin().is_terminal() || !stdout().is_terminal() {
         println!(
@@ -224,8 +266,16 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                 "3. Max Parallel Downloads (Current: {})",
                 working.max_parallel_downloads
             ),
-            "4. Save & Exit".to_string(),
-            "5. Cancel".to_string(),
+            format!(
+                "4. Compatibility Mode (Current: {})",
+                if working.compat_mode {
+                    "Enabled (AVC+AAC)"
+                } else {
+                    "Disabled (Max Quality)"
+                }
+            ),
+            "5. Save & Exit".to_string(),
+            "6. Cancel".to_string(),
         ];
 
         let choice = Select::new("Configuration Menu (Use arrow keys):", options).prompt();
@@ -233,12 +283,20 @@ pub fn interactive_config(config: &mut DwdrConfig) {
         match choice {
             Ok(ans) => {
                 if ans.starts_with("1") {
-                    println!("{}", "INFO: Opening native file browser...".cyan());
-                    if let Some(path) = FileDialog::new()
-                        .set_title("Select Download Folder")
-                        .pick_folder()
-                    {
-                        working.download_path = path.to_string_lossy().to_string();
+                    if let Some(path) = prompt_folder_path(&working.download_path) {
+                        let path_str = path.to_string_lossy();
+                        match crate::config::manager::validate_download_path(&path_str, true) {
+                            Ok(valid_dir) => {
+                                working.download_path = valid_dir.to_string_lossy().to_string();
+                                println!("{}", "SUCCESS: Valid download path selected.".green());
+                            }
+                            Err(e) => {
+                                println!(
+                                    "{}",
+                                    format!("\nERROR: Invalid download path: {}\n", e).red()
+                                );
+                            }
+                        }
                     }
                 } else if ans.starts_with("2") {
                     let quality_opts = vec![
@@ -270,6 +328,16 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         working.max_parallel_downloads = parallel;
                     }
                 } else if ans.starts_with("4") {
+                    let mode_opts = vec![
+                        "Enabled (AVC/H.264 + AAC for older players/QuickTime)",
+                        "Disabled (Default: prioritize AV1/VP9 for highest fidelity)",
+                    ];
+                    if let Ok(choice) =
+                        Select::new("Select Compatibility Mode:", mode_opts).prompt()
+                    {
+                        working.compat_mode = choice.starts_with("Enabled");
+                    }
+                } else if ans.starts_with("5") {
                     *config = working;
                     if let Err(e) = ConfigManager::save(config) {
                         println!(
@@ -280,7 +348,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         println!("{}", "SUCCESS: Settings saved successfully!".green());
                     }
                     break;
-                } else if ans.starts_with("5") {
+                } else if ans.starts_with("6") {
                     println!("{}", "WARNING: Settings update cancelled.".red());
                     break;
                 }

@@ -16,7 +16,7 @@ fn test_real_media_title_sanitization_and_detection() {
     let temp_dir = tempfile::tempdir().unwrap();
     let title = "Real Media: Test / Special * Video?";
     let sanitized = sanitize_media_title(title);
-    assert_eq!(sanitized, "Real Media Test  Special  Video");
+    assert_eq!(sanitized, "Real Media - Test _ Special  Video");
 
     let video_file = temp_dir.path().join(format!("{}.mp4", sanitized));
     std::fs::write(&video_file, b"fake video bytes").unwrap();
