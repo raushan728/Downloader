@@ -1,7 +1,9 @@
 use colored::Colorize;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Seek, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
@@ -474,17 +476,32 @@ pub fn update_ffmpeg_engine() -> Result<(), String> {
     Ok(())
 }
 
+static DEPENDENCIES_VALIDATED: AtomicBool = AtomicBool::new(false);
+
+pub fn reset_dependencies_validated() {
+    DEPENDENCIES_VALIDATED.store(false, Ordering::SeqCst);
+}
+
 pub fn update_core_engines() -> Result<(), String> {
+    reset_dependencies_validated();
     update_ytdlp_engine()?;
     update_ffmpeg_engine()?;
     Ok(())
 }
 
 pub fn ensure_dependencies() -> Result<(), String> {
+    if DEPENDENCIES_VALIDATED.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
     let yt_dlp_path = get_ytdlp_path();
 
     if std::env::var("DWDR_YTDLP_PATH").is_ok() && yt_dlp_path.exists() {
-        return ensure_ffmpeg();
+        let res = ensure_ffmpeg();
+        if res.is_ok() {
+            DEPENDENCIES_VALIDATED.store(true, Ordering::SeqCst);
+        }
+        return res;
     }
 
     if !yt_dlp_path.exists() || !is_valid_executable(&yt_dlp_path, false) {
@@ -504,6 +521,7 @@ pub fn ensure_dependencies() -> Result<(), String> {
     }
 
     ensure_ffmpeg()?;
+    DEPENDENCIES_VALIDATED.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -531,6 +549,22 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub fn fetch_latest_dwdr_version(client: &reqwest::blocking::Client) -> Option<String> {
+    if std::env::var("DWDR_DISABLE_VERSION_CHECK").is_ok() {
+        return None;
+    }
+    let api_url = "https://api.github.com/repos/raushan728/Downloader/releases/latest";
+    let resp = client.get(api_url).send().ok()?;
+    if resp.status().is_success() {
+        let body = resp.text().ok()?;
+        let json: serde_json::Value = serde_json::from_str(&body).ok()?;
+        if let Some(tag) = json["tag_name"].as_str() {
+            return Some(tag.trim_start_matches('v').to_string());
+        }
+    }
+    None
 }
 
 pub fn update_self() -> Result<(), String> {
@@ -563,11 +597,28 @@ pub fn update_self() -> Result<(), String> {
         }
     }
 
+    let client = create_http_client("dwdr-updater")?;
+
+    // Version check against latest tag if available
+    let current_ver = env!("CARGO_PKG_VERSION");
+    if let Some(latest_ver) = fetch_latest_dwdr_version(&client)
+        && !is_newer_version(current_ver, &latest_ver)
+    {
+        println!(
+            "{}",
+            format!(
+                "INFO: DWDR is already up to date (version v{}).",
+                current_ver
+            )
+            .green()
+        );
+        return Ok(());
+    }
+
     let url = get_dwdr_download_url();
 
     println!("{}", "INFO: Downloading latest DWDR release...".cyan());
 
-    let client = create_http_client("dwdr-updater")?;
     let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
 
     if !response.status().is_success() {
@@ -583,6 +634,42 @@ pub fn update_self() -> Result<(), String> {
 
     if bytes.len() < 100_000 {
         return Err("Downloaded update binary is too small or invalid".to_string());
+    }
+
+    // Verify SHA256 checksum if release checksum manifest is available
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let actual_hash = format!("{:x}", hasher.finalize());
+
+    let checksum_url = std::env::var("DWDR_CHECKSUM_URL").unwrap_or_else(|_| {
+        "https://github.com/raushan728/Downloader/releases/download/latest/SHA256SUMS".to_string()
+    });
+    if let Ok(resp) = client.get(&checksum_url).send()
+        && resp.status().is_success()
+        && let Ok(manifest) = resp.text()
+    {
+        let target_filename = url.rsplit('/').next().unwrap_or("");
+        let mut expected_hash = None;
+        for line in manifest.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let fn_entry = parts[1].trim_start_matches('*');
+                if fn_entry == target_filename || parts[1].contains(target_filename) {
+                    expected_hash = Some(parts[0].to_lowercase());
+                    break;
+                }
+            }
+        }
+
+        if let Some(expected) = expected_hash {
+            if actual_hash != expected {
+                return Err(format!(
+                    "SHA256 checksum mismatch for DWDR binary. Expected: {}, Actual: {}",
+                    expected, actual_hash
+                ));
+            }
+            println!("{}", "INFO: SHA256 checksum verified.".green());
+        }
     }
 
     #[cfg(target_os = "windows")]

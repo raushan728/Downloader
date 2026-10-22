@@ -304,9 +304,25 @@ pub fn extract_engine_error(stderr: &str) -> String {
     }
 }
 
-fn score_vcodec(vcodec: &str) -> u8 {
+fn score_vcodec(vcodec: &str, compat_mode: bool) -> u8 {
     let lower = vcodec.to_lowercase();
-    if lower.starts_with("av01") || lower.starts_with("av1") {
+    if compat_mode {
+        if lower.starts_with("avc1") || lower.starts_with("avc") || lower.starts_with("h264") {
+            4
+        } else if lower.starts_with("hev1")
+            || lower.starts_with("hvc1")
+            || lower.starts_with("hevc")
+            || lower.starts_with("h265")
+        {
+            3
+        } else if lower.starts_with("vp09") || lower.starts_with("vp9") {
+            2
+        } else if lower.starts_with("av01") || lower.starts_with("av1") {
+            1
+        } else {
+            0
+        }
+    } else if lower.starts_with("av01") || lower.starts_with("av1") {
         4 // AV1: state-of-the-art compression & fidelity
     } else if lower.starts_with("vp09") || lower.starts_with("vp9") {
         3 // VP9
@@ -323,9 +339,19 @@ fn score_vcodec(vcodec: &str) -> u8 {
     }
 }
 
-fn score_acodec(acodec: &str) -> u8 {
+fn score_acodec(acodec: &str, compat_mode: bool) -> u8 {
     let lower = acodec.to_lowercase();
-    if lower.contains("opus") {
+    if compat_mode {
+        if lower.contains("mp4a") || lower.contains("aac") {
+            3
+        } else if lower.contains("mp3") {
+            2
+        } else if lower.contains("opus") {
+            1
+        } else {
+            0
+        }
+    } else if lower.contains("opus") {
         3 // Opus
     } else if lower.contains("mp4a") || lower.contains("aac") {
         2 // AAC
@@ -337,6 +363,10 @@ fn score_acodec(acodec: &str) -> u8 {
 }
 
 pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
+    parse_video_info_json_ext(stdout_str, false)
+}
+
+pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<VideoInfo, String> {
     let raw: serde_json::Value =
         serde_json::from_str(stdout_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
@@ -484,7 +514,7 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
                 .as_str()
                 .is_some_and(|d| d.eq_ignore_ascii_case("hdr"))
                 || note.unwrap_or("").to_lowercase().contains("hdr");
-            let codec_score = score_vcodec(&vcodec_str);
+            let codec_score = score_vcodec(&vcodec_str, compat_mode);
 
             video_candidates.push((
                 rank,
@@ -515,7 +545,7 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
             } else {
                 "unknown".to_string()
             };
-            let codec_score = score_acodec(&acodec_str);
+            let codec_score = score_acodec(&acodec_str, compat_mode);
 
             audio_candidates.push((
                 is_direct,
@@ -596,14 +626,27 @@ pub fn parse_video_info_json(stdout_str: &str) -> Result<VideoInfo, String> {
     })
 }
 
-pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, String> {
-    let output = Command::new(yt_dlp_path)
-        .arg("-J")
+pub fn build_ytdlp_info_cmd(yt_dlp_path: &Path, url: &str) -> Command {
+    let mut cmd = Command::new(yt_dlp_path);
+    cmd.arg("-J")
         .arg("--no-warnings")
         .arg("--no-playlist")
         .arg("--socket-timeout")
         .arg("30")
-        .arg(url)
+        .arg(url);
+    cmd
+}
+
+pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, String> {
+    fetch_video_info_ext(url, yt_dlp_path, false)
+}
+
+pub fn fetch_video_info_ext(
+    url: &str,
+    yt_dlp_path: &Path,
+    compat_mode: bool,
+) -> Result<VideoInfo, String> {
+    let output = build_ytdlp_info_cmd(yt_dlp_path, url)
         .output()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
@@ -613,7 +656,7 @@ pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, Stri
     }
 
     let stdout_str = String::from_utf8_lossy(&output.stdout);
-    parse_video_info_json(&stdout_str)
+    parse_video_info_json_ext(&stdout_str, compat_mode)
 }
 
 pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, String)> {
@@ -721,14 +764,19 @@ pub fn render_progress_bar(
     render_progress_bar_with_width(percent, downloaded, total, speed, eta, get_terminal_width())
 }
 
-pub const MEDIA_EXTENSIONS_AUDIO: &[&str] = &["mp3", "m4a", "aac", "opus", "wav", "flac", "ogg"];
+pub const MEDIA_EXTENSIONS_AUDIO: &[&str] =
+    &["mp3", "m4a", "aac", "opus", "wav", "flac", "ogg", "webm"];
 pub const MEDIA_EXTENSIONS_VIDEO: &[&str] = &["mp4", "mkv", "webm", "avi", "mov"];
 
 /// Sanitizes a media title to match filesystem-safe characters produced by yt-dlp.
 pub fn sanitize_media_title(title: &str) -> String {
-    title
+    let replaced = title
+        .replace(": ", " - ")
+        .replace(':', "-")
+        .replace(['/', '\\', '|'], "_");
+    replaced
         .chars()
-        .filter(|c| !['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
+        .filter(|c| !['*', '?', '"', '<', '>'].contains(c))
         .collect::<String>()
         .trim()
         .to_string()
@@ -760,6 +808,13 @@ pub fn find_existing_media_file(
         return None;
     }
 
+    let legacy_sanitized: String = title
+        .chars()
+        .filter(|c| !['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
+        .collect::<String>()
+        .trim()
+        .to_string();
+
     let read_dir = std::fs::read_dir(download_dir).ok()?;
 
     for entry in read_dir.flatten() {
@@ -784,7 +839,7 @@ pub fn find_existing_media_file(
         }
 
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        if stem.eq_ignore_ascii_case(&sanitized) {
+        if stem.eq_ignore_ascii_case(&sanitized) || stem.eq_ignore_ascii_case(&legacy_sanitized) {
             let ext = path
                 .extension()
                 .and_then(|e| e.to_str())
@@ -1103,11 +1158,24 @@ pub fn build_ytdlp_download_cmd_ext(
         cmd.arg("--postprocessor-args").arg("Merger:-y");
     }
 
-    if !is_audio {
+    if is_audio {
+        cmd.arg("-x").arg("--audio-format").arg("m4a");
+    } else {
         cmd.arg("--merge-output-format").arg("mp4");
     }
 
-    cmd.arg("--newline")
+    cmd.arg("-N")
+        .arg("4")
+        .arg("--retries")
+        .arg("10")
+        .arg("--fragment-retries")
+        .arg("10")
+        .arg("--no-mtime")
+        .arg("--http-chunk-size")
+        .arg("10M")
+        .arg("--print")
+        .arg("after_move:filepath")
+        .arg("--newline")
         .arg("--encoding")
         .arg("utf-8")
         .arg("--progress-template")
@@ -1151,7 +1219,7 @@ pub fn download_media(
     ffmpeg_path: &Path,
     download_dir: &str,
     title: Option<&str>,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
     download_media_ext(
         url,
         format_id,
@@ -1175,7 +1243,7 @@ pub fn download_media_ext(
     _title: Option<&str>,
     custom_output_template: Option<&str>,
     force_overwrites: bool,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
     let validated_dir = crate::config::manager::validate_download_path(download_dir, true)
         .map_err(|e| format!("Invalid download directory: {}", e))?;
     let clean_download_dir = validated_dir.to_string_lossy();
@@ -1221,12 +1289,14 @@ pub fn download_media_ext(
     let mut postprocess_started = false;
     let mut primary_download_finished = false;
     let mut max_observed_percent: f64 = 0.0;
+    let mut captured_filepath: Option<PathBuf> = None;
     let bar_display = "=".repeat(25);
 
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
 
         read_lossy_lines(reader, |line| {
+            let trimmed = line.trim();
             if let Some((percent, downloaded, total, speed, eta, vcodec)) =
                 parse_progress_line_ext(line)
             {
@@ -1235,7 +1305,20 @@ pub fn download_media_ext(
                         .as_deref()
                         .map(|v| v.eq_ignore_ascii_case("none"))
                         .unwrap_or(false)
-                        || (max_observed_percent >= 90.0 && percent < 20.0));
+                        || (max_observed_percent >= 80.0 && percent < 30.0));
+
+                let combined_percent = if is_audio_only {
+                    percent
+                } else if is_secondary_audio {
+                    85.0 + (percent * 0.15)
+                } else {
+                    percent * 0.85
+                };
+
+                max_observed_percent = max_observed_percent.max(combined_percent).clamp(0.0, 100.0);
+                if max_observed_percent >= 100.0 {
+                    primary_download_finished = true;
+                }
 
                 if is_secondary_audio || primary_download_finished {
                     if !postprocess_started {
@@ -1246,15 +1329,16 @@ pub fn download_media_ext(
                         );
                         let _ = stdout().flush();
                     }
-                    primary_download_finished = true;
                 } else {
-                    max_observed_percent = max_observed_percent.max(percent);
-                    if percent >= 100.0 {
-                        primary_download_finished = true;
-                    }
                     print!(
                         "{}",
-                        render_progress_bar(percent, &downloaded, &total, &speed, &eta)
+                        render_progress_bar(
+                            max_observed_percent,
+                            &downloaded,
+                            &total,
+                            &speed,
+                            &eta
+                        )
                     );
                     let _ = stdout().flush();
                 }
@@ -1286,6 +1370,17 @@ pub fn download_media_ext(
                     bar_display
                 );
                 let _ = stdout().flush();
+            } else if !trimmed.is_empty()
+                && !trimmed.starts_with("PROGRESS|")
+                && !trimmed.starts_with("POSTPROCESS|")
+                && !trimmed.starts_with('[')
+                && !trimmed.starts_with("download:")
+                && !trimmed.starts_with("postprocess:")
+            {
+                let p = PathBuf::from(trimmed);
+                if p.is_file() || p.is_absolute() {
+                    captured_filepath = Some(p);
+                }
             }
         });
     }
@@ -1306,7 +1401,7 @@ pub fn download_media_ext(
         );
         let _ = stdout().flush();
         println!("{}", "SUCCESS: Media finalization complete!".green());
-        Ok(())
+        Ok(captured_filepath)
     } else {
         println!();
         Err(extract_engine_error(&stderr_output))
@@ -1322,7 +1417,7 @@ pub fn download_media_background<F, G>(
     download_dir: &str,
     on_spawn: F,
     on_progress: G,
-) -> Result<(), String>
+) -> Result<Option<PathBuf>, String>
 where
     F: FnOnce(&mut Child),
     G: Fn(f64, &str, &str, &str, &str, bool),
@@ -1354,7 +1449,7 @@ pub fn download_media_background_ext<F, G>(
     task_id: Option<&str>,
     on_spawn: F,
     on_progress: G,
-) -> Result<(), String>
+) -> Result<Option<PathBuf>, String>
 where
     F: FnOnce(&mut Child),
     G: Fn(f64, &str, &str, &str, &str, bool),
@@ -1402,11 +1497,13 @@ where
     let mut postprocess_started = false;
     let mut primary_download_finished = false;
     let mut max_observed_percent: f64 = 0.0;
+    let mut captured_filepath: Option<PathBuf> = None;
 
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
 
         read_lossy_lines(reader, |line| {
+            let trimmed = line.trim();
             if let Some((percent, downloaded, total, speed, eta, vcodec)) =
                 parse_progress_line_ext(line)
             {
@@ -1415,20 +1512,35 @@ where
                         .as_deref()
                         .map(|v| v.eq_ignore_ascii_case("none"))
                         .unwrap_or(false)
-                        || (max_observed_percent >= 90.0 && percent < 20.0));
+                        || (max_observed_percent >= 80.0 && percent < 30.0));
+
+                let combined_percent = if is_audio_only {
+                    percent
+                } else if is_secondary_audio {
+                    85.0 + (percent * 0.15)
+                } else {
+                    percent * 0.85
+                };
+
+                max_observed_percent = max_observed_percent.max(combined_percent).clamp(0.0, 100.0);
+                if max_observed_percent >= 100.0 {
+                    primary_download_finished = true;
+                }
 
                 if is_secondary_audio || primary_download_finished {
                     if !postprocess_started {
                         postprocess_started = true;
                         on_progress(100.0, "", "", "", "", true);
                     }
-                    primary_download_finished = true;
                 } else {
-                    max_observed_percent = max_observed_percent.max(percent);
-                    if percent >= 100.0 {
-                        primary_download_finished = true;
-                    }
-                    on_progress(percent, &downloaded, &total, &speed, &eta, false);
+                    on_progress(
+                        max_observed_percent,
+                        &downloaded,
+                        &total,
+                        &speed,
+                        &eta,
+                        false,
+                    );
                 }
             } else if (line.starts_with("POSTPROCESS|")
                 || line.starts_with("[Merger]")
@@ -1438,6 +1550,17 @@ where
             {
                 postprocess_started = true;
                 on_progress(100.0, "", "", "", "", true);
+            } else if !trimmed.is_empty()
+                && !trimmed.starts_with("PROGRESS|")
+                && !trimmed.starts_with("POSTPROCESS|")
+                && !trimmed.starts_with('[')
+                && !trimmed.starts_with("download:")
+                && !trimmed.starts_with("postprocess:")
+            {
+                let p = PathBuf::from(trimmed);
+                if p.is_file() || p.is_absolute() {
+                    captured_filepath = Some(p);
+                }
             }
         });
     }
@@ -1449,7 +1572,7 @@ where
     let stderr_output = stderr_thread.join().unwrap_or_default();
 
     if status.success() {
-        Ok(())
+        Ok(captured_filepath)
     } else {
         Err(extract_engine_error(&stderr_output))
     }
@@ -1481,6 +1604,78 @@ pub fn find_format_by_quality(formats: &[MediaFormat], target_quality: &str) -> 
         }
     }
     None
+}
+
+pub fn resolution_to_rank(res: &str) -> u64 {
+    let lower = res.to_lowercase();
+    if lower.contains("4320") || lower.contains("8k") {
+        4320
+    } else if lower.contains("2160") || lower.contains("4k") {
+        2160
+    } else if lower.contains("1440") || lower.contains("2k") {
+        1440
+    } else if lower.contains("1080") {
+        1080
+    } else if lower.contains("720") {
+        720
+    } else if lower.contains("480") {
+        480
+    } else if lower.contains("360") {
+        360
+    } else if lower.contains("240") {
+        240
+    } else if lower.contains("144") {
+        144
+    } else {
+        0
+    }
+}
+
+/// Attempts to find exact match for target quality, falling back to nearest lower resolution tier.
+pub fn find_format_with_fallback(
+    formats: &[MediaFormat],
+    target_quality: &str,
+) -> Option<(String, bool)> {
+    if let Some(id) = find_format_by_quality(formats, target_quality) {
+        return Some((id, false));
+    }
+
+    let target = target_quality.trim().to_lowercase();
+    if target == "always ask" {
+        return None;
+    }
+
+    let target_rank = resolution_to_rank(&target);
+    if target_rank == 0 {
+        return formats.first().map(|f| (f.format_id.clone(), true));
+    }
+
+    // Find the candidate format whose rank is highest among those <= target_rank
+    let mut lower_candidates: Vec<(&MediaFormat, u64)> = formats
+        .iter()
+        .filter(|f| !f.is_audio())
+        .map(|f| (f, resolution_to_rank(&f.resolution)))
+        .filter(|(_, r)| *r <= target_rank && *r > 0)
+        .collect();
+
+    lower_candidates.sort_by_key(|a| std::cmp::Reverse(a.1));
+
+    if let Some((best_lower, _)) = lower_candidates.first() {
+        return Some((best_lower.format_id.clone(), true));
+    }
+
+    // If no lower video format, take highest video format
+    let mut all_video: Vec<(&MediaFormat, u64)> = formats
+        .iter()
+        .filter(|f| !f.is_audio())
+        .map(|f| (f, resolution_to_rank(&f.resolution)))
+        .collect();
+    all_video.sort_by_key(|a| std::cmp::Reverse(a.1));
+    if let Some((best_vid, _)) = all_video.first() {
+        return Some((best_vid.format_id.clone(), true));
+    }
+
+    formats.first().map(|f| (f.format_id.clone(), true))
 }
 
 #[cfg(test)]
@@ -2456,9 +2651,117 @@ mod tests {
     fn test_sanitize_media_title() {
         assert_eq!(
             sanitize_media_title("Sample / Title: With * Forbidden? Characters!"),
-            "Sample  Title With  Forbidden Characters!"
+            "Sample _ Title - With  Forbidden Characters!"
         );
         assert_eq!(sanitize_media_title("Clean Title"), "Clean Title");
+    }
+
+    #[test]
+    fn test_build_ytdlp_info_cmd_flags() {
+        let yt = Path::new("yt-dlp");
+        let cmd = build_ytdlp_info_cmd(yt, "https://youtube.com/watch?v=abc");
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"-J".to_string()));
+        assert!(args.contains(&"--no-warnings".to_string()));
+        assert!(args.contains(&"--no-playlist".to_string()));
+        assert!(args.contains(&"--socket-timeout".to_string()));
+        assert!(args.contains(&"30".to_string()));
+        assert!(args.contains(&"https://youtube.com/watch?v=abc".to_string()));
+    }
+
+    #[test]
+    fn test_find_format_with_fallback() {
+        let formats = vec![
+            MediaFormat {
+                format_id: "720".to_string(),
+                ext: "mp4".to_string(),
+                resolution: "720p".to_string(),
+                filesize: Some(25_000_000.0),
+                is_estimated: false,
+                vcodec: "avc1".to_string(),
+                acodec: "mp4a".to_string(),
+                height: Some(720),
+            },
+            MediaFormat {
+                format_id: "480".to_string(),
+                ext: "mp4".to_string(),
+                resolution: "480p".to_string(),
+                filesize: Some(15_000_000.0),
+                is_estimated: false,
+                vcodec: "avc1".to_string(),
+                acodec: "mp4a".to_string(),
+                height: Some(480),
+            },
+            MediaFormat {
+                format_id: "audio_1".to_string(),
+                ext: "m4a".to_string(),
+                resolution: "Audio".to_string(),
+                filesize: Some(5_000_000.0),
+                is_estimated: false,
+                vcodec: "none".to_string(),
+                acodec: "mp4a".to_string(),
+                height: None,
+            },
+        ];
+
+        // Exact match
+        assert_eq!(
+            find_format_with_fallback(&formats, "720p"),
+            Some(("720".to_string(), false))
+        );
+
+        // Fallback: 1080p requested -> nearest lower is 720p
+        assert_eq!(
+            find_format_with_fallback(&formats, "1080p"),
+            Some(("720".to_string(), true))
+        );
+
+        // Fallback: 4k requested -> nearest lower is 720p
+        assert_eq!(
+            find_format_with_fallback(&formats, "4k"),
+            Some(("720".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn test_compat_mode_codec_preference() {
+        let json_payload = r#"{
+            "title": "Compat Mode Preference Test",
+            "duration": 120.0,
+            "formats": [
+                {
+                    "format_id": "1080_av1",
+                    "ext": "webm",
+                    "width": 1920,
+                    "height": 1080,
+                    "vcodec": "av01.0.08M.08",
+                    "acodec": "none",
+                    "filesize": 80000000.0,
+                    "protocol": "https"
+                },
+                {
+                    "format_id": "1080_avc",
+                    "ext": "mp4",
+                    "width": 1920,
+                    "height": 1080,
+                    "vcodec": "avc1.640028",
+                    "acodec": "none",
+                    "filesize": 70000000.0,
+                    "protocol": "https"
+                }
+            ]
+        }"#;
+
+        // Default mode: prefers AV1
+        let default_parsed = parse_video_info_json_ext(json_payload, false).unwrap();
+        assert_eq!(default_parsed.formats[0].format_id, "1080_av1");
+
+        // Compat mode: prefers AVC
+        let compat_parsed = parse_video_info_json_ext(json_payload, true).unwrap();
+        assert_eq!(compat_parsed.formats[0].format_id, "1080_avc");
     }
 
     #[test]

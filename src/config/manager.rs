@@ -18,6 +18,7 @@ pub struct DwdrConfig {
     pub download_path: String,
     pub max_parallel_downloads: u8,
     pub default_quality: String,
+    pub compat_mode: bool,
 }
 
 impl Default for DwdrConfig {
@@ -43,6 +44,7 @@ impl Default for DwdrConfig {
             download_path,
             max_parallel_downloads: 3,
             default_quality: "1080p".to_string(),
+            compat_mode: false,
         }
     }
 }
@@ -330,6 +332,11 @@ impl ConfigManager {
                         "default_quality".cyan(),
                         config.default_quality.yellow()
                     );
+                    println!(
+                        "{}: {}",
+                        "compat_mode".cyan(),
+                        config.compat_mode.to_string().yellow()
+                    );
                 }
                 "reset" => {
                     if is_download_active() && !force {
@@ -405,7 +412,7 @@ impl ConfigManager {
 
                     let mut new_config = config.clone();
                     match key.as_str() {
-                        "path" => match validate_download_path(&value, false) {
+                        "path" | "download_path" => match validate_download_path(&value, false) {
                             Ok(canonical) => {
                                 new_config.download_path = canonical.to_string_lossy().to_string();
                             }
@@ -414,7 +421,7 @@ impl ConfigManager {
                                 return;
                             }
                         },
-                        "quality" => {
+                        "quality" | "default_quality" => {
                             if !is_valid_quality(&value) {
                                 println!(
                                     "{}",
@@ -425,12 +432,24 @@ impl ConfigManager {
                             }
                             new_config.default_quality = value.trim().to_lowercase();
                         }
-                        "parallel" => match value.parse::<u8>() {
+                        "parallel" | "max_parallel_downloads" => match value.parse::<u8>() {
                             Ok(v) if (1..=16).contains(&v) => new_config.max_parallel_downloads = v,
                             Ok(_) | Err(_) => {
                                 println!(
                                     "{}",
                                     "\nERROR: Invalid parallel downloads value. Must be between 1 and 16.\n"
+                                        .red()
+                                );
+                                return;
+                            }
+                        },
+                        "compat_mode" | "compat" => match value.trim().to_lowercase().as_str() {
+                            "true" | "on" | "1" | "yes" => new_config.compat_mode = true,
+                            "false" | "off" | "0" | "no" => new_config.compat_mode = false,
+                            _ => {
+                                println!(
+                                    "{}",
+                                    "\nERROR: Invalid compat_mode value. Must be 'true' or 'false'.\n"
                                         .red()
                                 );
                                 return;
@@ -801,6 +820,52 @@ download_path = "/custom/downloads"
         let non_existent_with_ext = temp_dir.path().join("custom.toml");
         let resolved_with_ext = resolve_config_file_path(&non_existent_with_ext);
         assert_eq!(resolved_with_ext, non_existent_with_ext);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_config_key_aliases_symmetry() {
+        let temp_config_dir = tempfile::tempdir().unwrap();
+        let isolated_config = temp_config_dir.path().join("config.toml");
+        struct EnvGuard(&'static str);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var(self.0) };
+            }
+        }
+        unsafe {
+            std::env::set_var("DWDR_CONFIG_PATH", isolated_config.to_str().unwrap());
+        }
+        let _guard = EnvGuard("DWDR_CONFIG_PATH");
+
+        let mut config = DwdrConfig::default();
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("default_quality".to_string()),
+            Some("720p".to_string()),
+            true,
+        );
+        assert_eq!(config.default_quality, "720p");
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("max_parallel_downloads".to_string()),
+            Some("6".to_string()),
+            true,
+        );
+        assert_eq!(config.max_parallel_downloads, 6);
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("compat_mode".to_string()),
+            Some("true".to_string()),
+            true,
+        );
+        assert!(config.compat_mode);
     }
 
     #[test]

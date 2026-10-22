@@ -10,10 +10,43 @@ use std::thread;
 use std::time::Duration;
 
 use colored::Colorize;
+use fs2::FileExt;
+#[cfg(not(test))]
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::manager::ConfigManager;
-use crate::engine::downloader::{download_media_background_ext, render_progress_bar};
+use crate::engine::downloader::{download_media_background_ext, render_progress_bar_with_width};
 use crate::engine::updater::check_core_engines_update;
+
+static IN_INTERACTIVE_PROMPT: AtomicBool = AtomicBool::new(false);
+static NOTIFICATION_QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+pub fn set_in_interactive_prompt(active: bool) {
+    IN_INTERACTIVE_PROMPT.store(active, Ordering::SeqCst);
+}
+
+pub fn push_notification(msg: String) {
+    if IN_INTERACTIVE_PROMPT.load(Ordering::SeqCst)
+        && let Ok(mut q) = NOTIFICATION_QUEUE.lock()
+    {
+        q.push(msg);
+        return;
+    }
+    println!("{}", msg);
+}
+
+pub fn flush_notifications() {
+    let messages = {
+        if let Ok(mut q) = NOTIFICATION_QUEUE.lock() {
+            std::mem::take(&mut *q)
+        } else {
+            Vec::new()
+        }
+    };
+    for msg in messages {
+        println!("{}", msg);
+    }
+}
 
 /// Lifecycle states of a queued or active media download task.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +92,7 @@ pub struct DownloadTask {
     pub progress: TaskProgress,
     pub custom_output_template: Option<String>,
     pub force_overwrite: bool,
+    pub final_filepath: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -108,60 +142,44 @@ pub fn active_downloads_lock_path() -> Option<PathBuf> {
     ConfigManager::config_path().and_then(|p| p.parent().map(|d| d.join("active_downloads.lock")))
 }
 
+static ACTIVE_DOWNLOAD_LOCK_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
+
 pub fn record_active_download() {
-    if let Some(lock_path) = active_downloads_lock_path() {
+    let mut guard = match ACTIVE_DOWNLOAD_LOCK_FILE.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if guard.is_none()
+        && let Some(lock_path) = active_downloads_lock_path()
+    {
         if let Some(parent) = lock_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let my_pid = std::process::id();
-        let mut pids = Vec::new();
-        if let Ok(content) = std::fs::read_to_string(&lock_path) {
-            for line in content.lines() {
-                if let Ok(pid) = line.trim().parse::<u32>()
-                    && pid != 0
-                    && !pids.contains(&pid)
-                {
-                    pids.push(pid);
-                }
-            }
+        if let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+        {
+            let _ = file.try_lock_exclusive();
+            let my_pid = std::process::id();
+            let _ = std::fs::write(&lock_path, my_pid.to_string());
+            *guard = Some(file);
         }
-        if !pids.contains(&my_pid) {
-            pids.push(my_pid);
-        }
-        let payload = pids
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let _ = std::fs::write(&lock_path, payload);
     }
 }
 
 pub fn clear_active_download() {
+    let mut guard = match ACTIVE_DOWNLOAD_LOCK_FILE.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    if let Some(file) = guard.take() {
+        let _ = file.unlock();
+    }
     if let Some(lock_path) = active_downloads_lock_path() {
-        let my_pid = std::process::id();
-        let mut pids = Vec::new();
-        if let Ok(content) = std::fs::read_to_string(&lock_path) {
-            for line in content.lines() {
-                if let Ok(pid) = line.trim().parse::<u32>()
-                    && pid != 0
-                    && pid != my_pid
-                    && !pids.contains(&pid)
-                {
-                    pids.push(pid);
-                }
-            }
-        }
-        if pids.is_empty() {
-            let _ = std::fs::remove_file(&lock_path);
-        } else {
-            let payload = pids
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let _ = std::fs::write(&lock_path, payload);
-        }
+        let _ = std::fs::remove_file(&lock_path);
     }
 }
 
@@ -209,39 +227,30 @@ pub fn is_download_active() -> bool {
 
     if let Some(lock_path) = active_downloads_lock_path()
         && lock_path.exists()
-        && let Ok(content) = std::fs::read_to_string(&lock_path)
+        && let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
     {
-        let my_pid = std::process::id();
-        let mut has_other_active = false;
-        let mut surviving_pids = Vec::new();
-
-        for line in content.lines() {
-            if let Ok(pid) = line.trim().parse::<u32>() {
-                if pid == 0 {
-                    continue;
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                let _ = file.unlock();
+                if let Ok(content) = std::fs::read_to_string(&lock_path) {
+                    let my_pid = std::process::id();
+                    for line in content.lines() {
+                        if let Ok(pid) = line.trim().parse::<u32>()
+                            && pid != 0
+                            && (pid == my_pid || is_pid_alive(pid))
+                        {
+                            return true;
+                        }
+                    }
                 }
-                if pid == my_pid {
-                    surviving_pids.push(pid);
-                } else if is_pid_alive(pid) {
-                    has_other_active = true;
-                    surviving_pids.push(pid);
-                }
+                return false;
             }
-        }
-
-        if surviving_pids.is_empty() {
-            let _ = std::fs::remove_file(&lock_path);
-        } else if surviving_pids.len() != content.lines().count() {
-            let payload = surviving_pids
-                .iter()
-                .map(|p| p.to_string())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let _ = std::fs::write(&lock_path, payload);
-        }
-
-        if has_other_active {
-            return true;
+            Err(_) => {
+                return true;
+            }
         }
     }
 
@@ -270,24 +279,54 @@ pub fn kill_process_by_pid(pid: u32) {
 
     #[cfg(target_os = "windows")]
     {
-        // /T flag recurses through spawned child processes, /F forces immediate termination.
         let _ = Command::new("taskkill")
-            .arg("/F")
             .arg("/T")
             .arg("/PID")
             .arg(pid.to_string())
             .output();
+
+        let start = std::time::Instant::now();
+        let mut still_alive = true;
+        while start.elapsed() < std::time::Duration::from_millis(500) {
+            if !is_pid_alive(pid) {
+                still_alive = false;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        if still_alive {
+            let _ = Command::new("taskkill")
+                .arg("/F")
+                .arg("/T")
+                .arg("/PID")
+                .arg(pid.to_string())
+                .output();
+        }
     }
     #[cfg(not(target_os = "windows"))]
     {
-        // Terminate the process group (-pid) to sweep both yt-dlp and child ffmpeg processes,
-        // then fall back to killing the single PID directly.
-        let _ = Command::new("kill")
-            .arg("-9")
-            .arg("--")
-            .arg(format!("-{}", pid))
-            .output();
-        let _ = Command::new("kill").arg("-9").arg(pid.to_string()).output();
+        unsafe {
+            libc::killpg(pid as libc::pid_t, libc::SIGTERM);
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+
+        let start = std::time::Instant::now();
+        let mut still_alive = true;
+        while start.elapsed() < std::time::Duration::from_millis(500) {
+            if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
+                still_alive = false;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+
+        if still_alive {
+            unsafe {
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
     }
 }
 
@@ -343,7 +382,7 @@ impl QueueManager {
         force_overwrite: bool,
         format_desc: Option<String>,
     ) -> EnqueueResult {
-        let mut mgr = manager_arc.lock().unwrap();
+        let mut mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
         if mgr.cancelled.load(Ordering::SeqCst) && mgr.active_count == 0 && mgr.queue.is_empty() {
             mgr.cancelled = Arc::new(AtomicBool::new(false));
         }
@@ -362,12 +401,13 @@ impl QueueManager {
             progress: TaskProgress::default(),
             custom_output_template,
             force_overwrite,
+            final_filepath: None,
         }));
         mgr.tasks.push(Arc::clone(&task));
 
         if mgr.active_count < mgr.max_parallel {
             mgr.active_count += 1;
-            task.lock().unwrap().status = TaskStatus::Downloading;
+            task.lock().unwrap_or_else(|p| p.into_inner()).status = TaskStatus::Downloading;
             record_active_download();
             let result = EnqueueResult::Started {
                 task_id,
@@ -390,6 +430,41 @@ impl QueueManager {
         }
     }
 
+    pub fn set_max_parallel(manager_arc: &Arc<Mutex<Self>>, new_limit: usize) {
+        let new_limit = if new_limit == 0 { 1 } else { new_limit };
+        let to_spawn: Vec<Arc<Mutex<DownloadTask>>> = {
+            let mut mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
+            mgr.max_parallel = new_limit;
+            let mut tasks = Vec::new();
+
+            if !mgr.cancelled.load(Ordering::SeqCst) {
+                while mgr.active_count < mgr.max_parallel && !mgr.queue.is_empty() {
+                    if let Some(next_id) = mgr.queue.pop_front() {
+                        let task_opt = mgr
+                            .tasks
+                            .iter()
+                            .find(|t| t.lock().unwrap_or_else(|p| p.into_inner()).id == next_id)
+                            .cloned();
+                        if let Some(task) = task_opt {
+                            mgr.active_count += 1;
+                            task.lock().unwrap_or_else(|p| p.into_inner()).status =
+                                TaskStatus::Downloading;
+                            tasks.push(task);
+                        }
+                    }
+                }
+            }
+            tasks
+        };
+
+        if !to_spawn.is_empty() {
+            record_active_download();
+            for task in to_spawn {
+                Self::spawn_worker(manager_arc, task);
+            }
+        }
+    }
+
     fn spawn_worker(manager_arc: &Arc<Mutex<Self>>, task: Arc<Mutex<DownloadTask>>) {
         let mgr_clone = Arc::clone(manager_arc);
         let task_clone = Arc::clone(&task);
@@ -406,8 +481,8 @@ impl QueueManager {
                 force_overwrite,
                 cancelled,
             ) = {
-                let mgr = mgr_clone.lock().unwrap();
-                let t = task_clone.lock().unwrap();
+                let mgr = mgr_clone.lock().unwrap_or_else(|p| p.into_inner());
+                let t = task_clone.lock().unwrap_or_else(|p| p.into_inner());
                 (
                     t.id,
                     t.url.clone(),
@@ -420,6 +495,14 @@ impl QueueManager {
                     Arc::clone(&mgr.cancelled),
                 )
             };
+
+            // Immediate cancellation check prior to starting engine process
+            if cancelled.load(Ordering::SeqCst) {
+                let mut t = task_clone.lock().unwrap_or_else(|p| p.into_inner());
+                t.status = TaskStatus::Cancelled;
+                Self::on_task_finished(&mgr_clone);
+                return;
+            }
 
             let task_for_progress = Arc::clone(&task_clone);
             let mgr_for_spawn = Arc::clone(&mgr_clone);
@@ -437,12 +520,20 @@ impl QueueManager {
                 Some(&task_id_str),
                 |child| {
                     let pid = child.id();
+                    if cancelled.load(Ordering::SeqCst) {
+                        kill_process_by_pid(pid);
+                        return;
+                    }
                     spawned_pid = Some(pid);
-                    let mut mgr = mgr_for_spawn.lock().unwrap();
-                    mgr.active_pids.push(pid);
+                    let mut mgr = mgr_for_spawn.lock().unwrap_or_else(|p| p.into_inner());
+                    if mgr.cancelled.load(Ordering::SeqCst) {
+                        kill_process_by_pid(pid);
+                    } else {
+                        mgr.active_pids.push(pid);
+                    }
                 },
                 move |percent, downloaded, total, speed, eta, is_finalizing| {
-                    let mut t = task_for_progress.lock().unwrap();
+                    let mut t = task_for_progress.lock().unwrap_or_else(|p| p.into_inner());
                     if is_finalizing {
                         t.status = TaskStatus::Finalizing;
                         t.progress.percent = 100.0;
@@ -465,21 +556,24 @@ impl QueueManager {
             );
 
             if let Some(pid) = spawned_pid {
-                let mut mgr = mgr_clone.lock().unwrap();
+                let mut mgr = mgr_clone.lock().unwrap_or_else(|p| p.into_inner());
                 mgr.active_pids.retain(|&p| p != pid);
             }
 
             let is_cancelled = cancelled.load(Ordering::SeqCst);
 
             let (title, download_dir) = {
-                let mut t = task_clone.lock().unwrap();
+                let mut t = task_clone.lock().unwrap_or_else(|p| p.into_inner());
                 if is_cancelled {
                     t.status = TaskStatus::Cancelled;
                 } else {
                     match &result {
-                        Ok(()) => {
+                        Ok(captured_path) => {
                             t.status = TaskStatus::Completed;
                             t.progress.percent = 100.0;
+                            t.final_filepath = captured_path
+                                .clone()
+                                .or_else(|| find_completed_file(&t.download_dir, &t.title));
                         }
                         Err(e) => {
                             t.status = TaskStatus::Failed(e.clone());
@@ -494,8 +588,8 @@ impl QueueManager {
 
             if !is_cancelled {
                 match result {
-                    Ok(()) => {
-                        println!(
+                    Ok(_) => {
+                        push_notification(format!(
                             "\n{}",
                             format!(
                                 "SUCCESS: Download completed: \"{}\" -> saved to {}",
@@ -503,17 +597,17 @@ impl QueueManager {
                             )
                             .green()
                             .bold()
-                        );
+                        ));
                     }
                     Err(e) => {
-                        println!(
+                        push_notification(format!(
                             "\n{}",
                             format!("ERROR: Download failed for \"{}\": {}", title, e)
                                 .red()
                                 .bold()
-                        );
+                        ));
                         if let Some(msg) = check_core_engines_update(&yt_dlp_path, &ffmpeg_path) {
-                            println!("{}\n", msg.yellow());
+                            push_notification(format!("{}\n", msg.yellow()));
                         }
                     }
                 }
@@ -531,7 +625,7 @@ impl QueueManager {
     // Automatically promotes and spawns the next pending task in FIFO order.
     fn on_task_finished(manager_arc: &Arc<Mutex<Self>>) {
         let next_task = {
-            let mut mgr = manager_arc.lock().unwrap();
+            let mut mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
             if mgr.active_count > 0 {
                 mgr.active_count -= 1;
             }
@@ -545,11 +639,12 @@ impl QueueManager {
                     let task_opt = mgr
                         .tasks
                         .iter()
-                        .find(|t| t.lock().unwrap().id == next_id)
+                        .find(|t| t.lock().unwrap_or_else(|p| p.into_inner()).id == next_id)
                         .cloned();
                     if let Some(task) = task_opt {
                         mgr.active_count += 1;
-                        task.lock().unwrap().status = TaskStatus::Downloading;
+                        task.lock().unwrap_or_else(|p| p.into_inner()).status =
+                            TaskStatus::Downloading;
                         Some((task, mgr.active_count, mgr.queue.len(), mgr.max_parallel))
                     } else {
                         None
@@ -563,20 +658,24 @@ impl QueueManager {
         };
 
         if let Some((next_task, active, queued, max_parallel)) = next_task {
-            let title = next_task.lock().unwrap().title.clone();
-            println!(
+            let title = next_task
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .title
+                .clone();
+            push_notification(format!(
                 "{}",
                 format!(
                     "INFO: Starting queued download: \"{}\" [Active: {}/{}, Queued: {}]",
                     title, active, max_parallel, queued
                 )
                 .cyan()
-            );
+            ));
             record_active_download();
             Self::spawn_worker(manager_arc, next_task);
         } else {
             let is_now_idle = {
-                let mgr = manager_arc.lock().unwrap();
+                let mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
                 mgr.active_count == 0
             };
             if is_now_idle {
@@ -688,12 +787,15 @@ impl QueueManager {
             println!("  (None)");
         } else {
             for (id, title, format_desc, status, prog) in &active_tasks {
-                let bar = render_progress_bar(
+                let available_bar_width =
+                    crate::engine::downloader::get_terminal_width().saturating_sub(7);
+                let bar = render_progress_bar_with_width(
                     prog.percent,
                     &prog.downloaded_str,
                     &prog.total_str,
                     &prog.speed_str,
                     &prog.eta_str,
+                    available_bar_width,
                 );
                 let bar_clean = bar.trim_start_matches('\r').trim_end();
                 let status_str = if *status == TaskStatus::Finalizing {
@@ -832,12 +934,14 @@ impl QueueManager {
                 let term_w = crate::engine::downloader::get_terminal_width();
 
                 for (id, title, format_desc, status, prog) in &active_tasks {
-                    let bar = render_progress_bar(
+                    let available_bar_width = term_w.saturating_sub(7);
+                    let bar = render_progress_bar_with_width(
                         prog.percent,
                         &prog.downloaded_str,
                         &prog.total_str,
                         &prog.speed_str,
                         &prog.eta_str,
+                        available_bar_width,
                     );
                     let bar_clean = bar.trim_start_matches('\r').trim_end();
                     let status_str = if *status == TaskStatus::Finalizing {
@@ -852,11 +956,18 @@ impl QueueManager {
                         desc_tag.len()
                     };
                     let max_title_len = term_w.saturating_sub(15 + status_extra_len).max(10);
-                    let title_display = if title.chars().count() > max_title_len {
-                        let truncated: String = title
-                            .chars()
-                            .take(max_title_len.saturating_sub(3))
-                            .collect();
+                    let title_display = if title.width() > max_title_len {
+                        let mut current_width = 0;
+                        let mut truncated = String::new();
+                        let target_width = max_title_len.saturating_sub(3);
+                        for ch in title.chars() {
+                            let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
+                            if current_width + ch_w > target_width {
+                                break;
+                            }
+                            current_width += ch_w;
+                            truncated.push(ch);
+                        }
                         format!("{}...", truncated)
                     } else {
                         title.clone()
@@ -894,7 +1005,7 @@ impl QueueManager {
     }
 
     pub fn print_list(&self) {
-        let tasks_snapshot: Vec<(usize, String, String, String, TaskStatus, TaskProgress)> = self
+        let tasks_snapshot: Vec<_> = self
             .tasks
             .iter()
             .map(|t| {
@@ -906,6 +1017,7 @@ impl QueueManager {
                     guard.download_dir.clone(),
                     guard.status.clone(),
                     guard.progress.clone(),
+                    guard.final_filepath.clone(),
                 )
             })
             .collect();
@@ -923,7 +1035,7 @@ impl QueueManager {
         }
 
         println!("\n{}", "=== Download History & Session Report ===".bold());
-        for (id, title, format_desc, dir, status, prog) in &tasks_snapshot {
+        for (id, title, format_desc, dir, status, prog, final_filepath) in &tasks_snapshot {
             match status {
                 TaskStatus::Downloading => {
                     println!(
@@ -958,7 +1070,10 @@ impl QueueManager {
                     );
                 }
                 TaskStatus::Completed => {
-                    if let Some(path) = find_completed_file(dir, title) {
+                    let resolved_path = final_filepath
+                        .clone()
+                        .or_else(|| find_completed_file(dir, title));
+                    if let Some(path) = resolved_path {
                         println!(
                             "  [#{}] \"{}\" [{}] - {} -> {}",
                             id,
@@ -1235,20 +1350,26 @@ pub fn find_completed_file(download_dir: &str, title: &str) -> Option<PathBuf> {
         return None;
     }
 
-    let sanitized_title = title
-        .chars()
-        .filter(|c| !['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
-        .collect::<String>();
-
-    if sanitized_title.trim().is_empty() {
+    let sanitized_title = crate::engine::downloader::sanitize_media_title(title);
+    if sanitized_title.is_empty() {
         return None;
     }
 
-    let words: Vec<String> = sanitized_title
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| !w.is_empty())
-        .map(|w| w.to_lowercase())
-        .collect();
+    let legacy_sanitized: String = title
+        .chars()
+        .filter(|c| !['/', '\\', ':', '*', '?', '"', '<', '>', '|'].contains(c))
+        .collect::<String>()
+        .trim()
+        .to_string();
+
+    let normalize_parens = |s: &str| -> String {
+        s.replace(['(', ')', '[', ']', '{', '}'], "")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let norm_title = normalize_parens(&sanitized_title).to_lowercase();
+    let norm_legacy = normalize_parens(&legacy_sanitized).to_lowercase();
 
     let read_dir = std::fs::read_dir(dir_path).ok()?;
     for entry in read_dir.flatten() {
@@ -1260,14 +1381,22 @@ pub fn find_completed_file(download_dir: &str, title: &str) -> Option<PathBuf> {
             if name_lower.ends_with(".part")
                 || name_lower.ends_with(".ytdl")
                 || name_lower.ends_with(".temp")
+                || name_lower.ends_with(".tmp")
             {
                 continue;
             }
-            let check_len = sanitized_title.chars().count().min(50);
-            let title_prefix: String = sanitized_title.chars().take(check_len).collect();
-            if file_name.contains(&sanitized_title)
-                || file_name.starts_with(&title_prefix)
-                || (!words.is_empty() && words.iter().all(|w| name_lower.contains(w)))
+
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let norm_stem = normalize_parens(stem).to_lowercase();
+
+            // Strict stem match, numbered copy stem match, or normalized parens match.
+            // Eliminates fuzzy word subset matching to prevent false positives like 'Lecture 1' matching 'Lecture 10.mp4'.
+            if stem.eq_ignore_ascii_case(&sanitized_title)
+                || stem.eq_ignore_ascii_case(&legacy_sanitized)
+                || stem.starts_with(&format!("{} (", sanitized_title))
+                || stem.starts_with(&format!("{} (", legacy_sanitized))
+                || norm_stem == norm_title
+                || norm_stem == norm_legacy
             {
                 return Some(path);
             }
@@ -1494,6 +1623,7 @@ mod tests {
             },
             custom_output_template: None,
             force_overwrite: false,
+            final_filepath: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1507,6 +1637,7 @@ mod tests {
             progress: TaskProgress::default(),
             custom_output_template: None,
             force_overwrite: false,
+            final_filepath: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1520,6 +1651,7 @@ mod tests {
             progress: TaskProgress::default(),
             custom_output_template: None,
             force_overwrite: false,
+            final_filepath: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1539,6 +1671,7 @@ mod tests {
             },
             custom_output_template: None,
             force_overwrite: false,
+            final_filepath: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1552,6 +1685,7 @@ mod tests {
             progress: TaskProgress::default(),
             custom_output_template: None,
             force_overwrite: false,
+            final_filepath: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1565,6 +1699,7 @@ mod tests {
             progress: TaskProgress::default(),
             custom_output_template: None,
             force_overwrite: false,
+            final_filepath: None,
         })));
 
         mgr.print_list();
@@ -1591,6 +1726,7 @@ mod tests {
                 progress: TaskProgress::default(),
                 custom_output_template: None,
                 force_overwrite: false,
+                final_filepath: None,
             })));
             mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
                 id: 11,
@@ -1603,6 +1739,7 @@ mod tests {
                 progress: TaskProgress::default(),
                 custom_output_template: None,
                 force_overwrite: false,
+                final_filepath: None,
             })));
 
             assert!(mgr.is_active());
@@ -1630,6 +1767,7 @@ mod tests {
                 progress: TaskProgress::default(),
                 custom_output_template: None,
                 force_overwrite: false,
+                final_filepath: None,
             })));
         }
 
@@ -1729,6 +1867,7 @@ mod tests {
                 progress: TaskProgress::default(),
                 custom_output_template: None,
                 force_overwrite: false,
+                final_filepath: None,
             })));
             mgr.active_count = 1;
         }
