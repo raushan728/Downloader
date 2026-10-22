@@ -18,7 +18,7 @@ Valid URL detected. Resolving engine paths...
 INFO: Fetching media details from the server...
 Successfully fetched data for: Rick Astley - Never Gonna Give You Up (Official Music Video)
 Extracted 9 formats.
-INFO: Exact quality (1080p) found! Auto-starting download...
+INFO: Exact quality (1080p) found: 1080p (mp4, 42.1 MB). Auto-starting download...
 [download] [=============>           ]  52.1% [  21.93MiB /   42.10MiB] at    4.25MiB/s ETA 00:04
 [download] [=========================] 100.0% Complete!
 INFO: Extracting and finalizing media...
@@ -39,25 +39,25 @@ dwdr
 ### Step-by-Step Shell Walkthrough
 
 ```text
-INFO: Welcome to DWDR Interactive Shell. Type a URL to download, or 'exit' to quit.
+INFO: Welcome to DWDR Interactive Shell. Type a URL to download, 'status' for live progress, 'help' for commands, or 'exit' to quit.
 dwdr > https://www.youtube.com/watch?v=dQw4w9WgXcQ
 Valid URL detected. Resolving engine paths...
 INFO: Fetching media details from the server...
 Successfully fetched data for: Rick Astley - Never Gonna Give You Up (Official Music Video)
 Extracted 9 formats.
-WARNING: Your selected default quality (720p) is not available in this video. Falling back to manual selection...
+INFO: Manual selection requested...
 ? Select a format to download (Use arrow keys):
  > [VIDEO] | 1080p  | mp4  | 42.1 MB
    [VIDEO] | 480p   | mp4  | 18.5 MB
    [VIDEO] | 360p   | mp4  | 11.2 MB
    [AUDIO] | Audio  | m4a  | 3.4 MB
-SUCCESS: Selected Format ID: 137. Download sequence will start here.
+SUCCESS: Selected format: 1080p (mp4, 42.1 MB) (Format ID: 137). Download sequence will start here.
 INFO: Download started for: "Rick Astley - Never Gonna Give You Up (Official Music Video)" [Active: 1/3, Queued: 0]
 
 dwdr > queue
 
 === Active Downloads (1/3) ===
-  [#1] "Rick Astley - Never Gonna Give You Up (Official Music Video)"
+  [#1] "Rick Astley - Never Gonna Give You Up (Official Music Video)" [1080p (mp4, 42.1 MB)]
        [=============>           ]  52.1% [  21.93MiB /   42.10MiB] at    4.25MiB/s ETA 00:04
 
 === Queued Downloads (0) ===
@@ -104,13 +104,14 @@ dwdr > config
 > 1. Download Path (Current: /home/user/Downloads/DWDR)
   2. Default Quality (Current: 1080p)
   3. Max Parallel Downloads (Current: 3)
-  4. Save & Exit
-  5. Cancel
+  4. Compatibility Mode (Current: Disabled (Max Quality))
+  5. Save & Exit
+  6. Cancel
 ```
 
 1. Select `1. Download Path` and press **Enter**.
-2. Your desktop's native folder dialog will appear. Browse to your preferred directory (e.g. `/home/user/Videos`) and click **Select Folder**.
-3. Select `4. Save & Exit` to persist the setting.
+2. Your desktop's native folder dialog will appear (or console prompt in headless mode). Browse to your preferred directory (e.g. `/home/user/Videos`) and confirm.
+3. Select `5. Save & Exit` to persist the setting.
 
 ---
 
@@ -122,7 +123,7 @@ To update settings directly from terminal scripts without interactive prompts:
 # Set preferred quality to 720p
 dwdr config set quality 720p
 
-# Set parallel download fragments to 5
+# Set max parallel downloads to 5
 dwdr config set parallel 5
 
 # Set custom download path
@@ -138,6 +139,7 @@ Current Configuration:
 download_path: /media/external/downloads
 max_parallel_downloads: 5
 default_quality: 720p
+compat_mode: false
 ```
 
 ---

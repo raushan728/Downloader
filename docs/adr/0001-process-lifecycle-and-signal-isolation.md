@@ -33,6 +33,18 @@ During early development, several child process and terminal handling bugs occur
    - Explicitly reject empty titles in `clean_partial_files` to prevent wildcard deletions.
    - Recursively delete task-specific temporary directories (`.temp`, `.tmp`, `.part`).
 
+## Alternatives Considered
+
+### Alternative 1: Direct Child PID Termination (`std::process::Child::kill`)
+- **Pros**: Standard library call without OS-specific process group code.
+- **Cons**: Only signals the immediate `yt-dlp` parent; child processes spawned by `yt-dlp` (such as `ffmpeg` mergers) remain orphaned in the background.
+- **Why not**: Orphaned `ffmpeg` processes consume CPU and hold file locks after user cancellation.
+
+### Alternative 2: Polling Process Tree via External Utilities (`pgrep` / `wmic`)
+- **Pros**: Dynamically discovers process hierarchies before signaling.
+- **Cons**: Introduces external shell dependencies, high latency, and platform variance.
+- **Why not**: Process group isolation (`process_group(0)` on Unix, `taskkill /F /T` on Windows) is instant, reliable, and requires zero external tooling.
+
 ## Consequences
 
 - Zero orphaned `ffmpeg` or `yt-dlp` processes on Unix and Windows.

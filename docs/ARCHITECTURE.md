@@ -14,7 +14,7 @@ DWDR isolates its third-party engines into `~/.dwdr/deps/`:
 - TLS networking is powered by `rustls` instead of native OpenSSL, guaranteeing seamless cross-compilation across desktop environments.
 - Network requests automatically route through proxy configurations (`DWDR_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `HTTP_PROXY`), supporting HTTP, HTTPS, and SOCKS5 endpoints.
 - Exponential backoff retry (up to 3 attempts with 1s, 2s, 4s delay) covers both initial connection (30s connect timeout) and full body streaming on transient network errors.
-- Dependency binaries are validated for integrity on startup (`is_valid_executable` checks executable magic headers, file size, and runs `--version`). Corrupted or partial binaries are automatically healed.
+- Dependency binaries are validated for integrity on first download or update invocation via lazy validation in `ensure_dependencies` (`is_valid_executable` checks executable magic headers, file size, and runs `--version`). Validated state is cached in-memory for subsequent downloads, and corrupted or partial binaries are automatically healed.
 
 ### 2. Single-Video Protection (`--no-playlist`)
 Standard YouTube URLs copied from recommendation mixes or radio feeds often contain query parameters like `&list=RD...`. When passed to `yt-dlp` without safeguards, extraction blocks while scraping all 50+ playlist tracks. 
@@ -38,8 +38,8 @@ Configuration and folder selection workflows integrate with `rfd::FileDialog`, e
 In interactive shell mode, DWDR orchestrates multi-media downloads via `QueueManager`:
 - **Worker Concurrency Limit**: Active downloads running simultaneously are bounded by `config.max_parallel_downloads` (enforced between `1` and `16`).
 - **FIFO Waiting Queue**: Tasks exceeding parallel capacity enter a waiting queue; as worker threads finish, queued tasks automatically transition to active downloading.
-- **Process Group Isolation & Clean Cancellation**: Subprocesses on Unix are spawned in an isolated process group (`process_group(0)`). On cancellation or shell exit, DWDR terminates the entire process group using negative PID signals (`kill -9 -<pid>`), guaranteeing that intermediate child processes (e.g., `ffmpeg` mergers spawned by `yt-dlp`) cannot be orphaned. On Windows, `taskkill /F /T /PID <pid>` terminates the full child process hierarchy.
-- **State Protection**: `is_download_active()` queries the global queue and cross-process lock (`active_downloads.lock`) to prevent destructive settings edits while downloads are in flight unless overridden by `--force`.
+- **Process Group Isolation & Clean Cancellation**: Subprocesses on Unix are spawned in an isolated process group (`process_group(0)`). On cancellation or shell exit, DWDR terminates the entire process group using negative PID signals (SIGTERM with a grace timeout followed by SIGKILL if still running), guaranteeing that intermediate child processes (e.g., `ffmpeg` mergers spawned by `yt-dlp`) cannot be orphaned. On Windows, `taskkill /F /T /PID <pid>` terminates the full child process hierarchy.
+- **State Protection**: `is_download_active()` queries the global queue and cross-process advisory lock (`active_downloads.lock`, colocated with `config.toml`) to prevent destructive settings edits while downloads are in flight unless overridden by `--force`.
 
 ### 7. Signal Handling & Zero System Debris
 DWDR registers cross-platform interrupt signal handlers (`ctrlc`) across both direct CLI and interactive shell workflows:
@@ -62,10 +62,10 @@ Interactive shell commands provide differentiated observability into background 
 
 ### 10. Self-Healing Configuration & Concurrency Protection
 Configuration management (`ConfigManager`) provides robust multi-process and error recovery guarantees:
-- **Atomic Persistence**: Configurations write to a sibling temporary file (`config.toml.tmp`), flush with `sync_all()`, and atomically replace the destination file to prevent partial or corrupted settings on sudden interruption.
+- **Atomic Persistence**: Configurations write to a temporary file via `NamedTempFile` in the configuration parent directory, flush with `sync_all()`, and atomically replace the destination file via `persist()` to prevent partial or corrupted settings on sudden interruption.
 - **Directory Path Resolution**: If `DWDR_CONFIG_PATH` points to a directory, it automatically resolves to `<directory>/config.toml`.
 - **Validation Bounds**: CLI commands enforce bounds on values (`parallel 1..=16`, valid quality resolution tiers).
-- **Concurrency Locks**: An isolated lock file (`~/.dwdr/active_downloads.lock`) tracks active download PIDs across processes, preventing race conditions or concurrent overwrite of user settings unless explicitly bypassed with `--force`.
+- **Concurrency Locks**: An isolated lock file (`active_downloads.lock`, colocated with `config.toml` in the configuration directory) tracks active download PIDs across processes using advisory file locks (`fs2`), preventing race conditions or concurrent overwrite of user settings unless explicitly bypassed with `--force`.
 
 ### 11. Hermetic Testing Harness & Multi-OS CI Matrix
 DWDR maintains strict hermetic testing practices:

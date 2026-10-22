@@ -99,8 +99,10 @@ pub fn resolve_ytdlp_url(target_os: &str, target_arch: &str) -> &'static str {
     }
 }
 
-pub fn get_ytdlp_download_url() -> &'static str {
-    resolve_ytdlp_url(std::env::consts::OS, std::env::consts::ARCH)
+pub fn get_ytdlp_download_url() -> String {
+    std::env::var("DWDR_YTDLP_DOWNLOAD_URL").unwrap_or_else(|_| {
+        resolve_ytdlp_url(std::env::consts::OS, std::env::consts::ARCH).to_string()
+    })
 }
 
 /// Resolves the FFmpeg release URL based on target operating system and architecture.
@@ -127,8 +129,10 @@ pub fn resolve_ffmpeg_url(target_os: &str, target_arch: &str) -> &'static str {
     }
 }
 
-pub fn get_ffmpeg_download_url() -> &'static str {
-    resolve_ffmpeg_url(std::env::consts::OS, std::env::consts::ARCH)
+pub fn get_ffmpeg_download_url() -> String {
+    std::env::var("DWDR_FFMPEG_DOWNLOAD_URL").unwrap_or_else(|_| {
+        resolve_ffmpeg_url(std::env::consts::OS, std::env::consts::ARCH).to_string()
+    })
 }
 
 /// Resolves the DWDR binary release URL based on target operating system and architecture.
@@ -153,8 +157,10 @@ pub fn resolve_dwdr_url(target_os: &str, target_arch: &str) -> &'static str {
     }
 }
 
-pub fn get_dwdr_download_url() -> &'static str {
-    resolve_dwdr_url(std::env::consts::OS, std::env::consts::ARCH)
+pub fn get_dwdr_download_url() -> String {
+    std::env::var("DWDR_SELF_DOWNLOAD_URL").unwrap_or_else(|_| {
+        resolve_dwdr_url(std::env::consts::OS, std::env::consts::ARCH).to_string()
+    })
 }
 
 /// Inspects environment variables for proxy configuration in order of precedence.
@@ -297,7 +303,7 @@ pub fn update_ytdlp_engine() -> Result<(), String> {
 
     let url = get_ytdlp_download_url();
     let client = create_http_client("dwdr-cli/1.0")?;
-    let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
+    let response = download_with_retry(&client, &url, 3, Duration::from_millis(1000))?;
 
     let bytes = response
         .bytes()
@@ -374,7 +380,7 @@ pub fn update_ffmpeg_engine() -> Result<(), String> {
 
     let url = get_ffmpeg_download_url();
     let client = create_http_client("dwdr-cli/1.0")?;
-    let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
+    let response = download_with_retry(&client, &url, 3, Duration::from_millis(1000))?;
 
     let expected_filename = if cfg!(target_os = "windows") {
         "ffmpeg.exe"
@@ -555,8 +561,10 @@ pub fn fetch_latest_dwdr_version(client: &reqwest::blocking::Client) -> Option<S
     if std::env::var("DWDR_DISABLE_VERSION_CHECK").is_ok() {
         return None;
     }
-    let api_url = "https://api.github.com/repos/raushan728/Downloader/releases/latest";
-    let resp = client.get(api_url).send().ok()?;
+    let api_url = std::env::var("DWDR_RELEASE_API_URL").unwrap_or_else(|_| {
+        "https://api.github.com/repos/raushan728/Downloader/releases/latest".to_string()
+    });
+    let resp = client.get(&api_url).send().ok()?;
     if resp.status().is_success() {
         let body = resp.text().ok()?;
         let json: serde_json::Value = serde_json::from_str(&body).ok()?;
@@ -619,7 +627,7 @@ pub fn update_self() -> Result<(), String> {
 
     println!("{}", "INFO: Downloading latest DWDR release...".cyan());
 
-    let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
+    let response = download_with_retry(&client, &url, 3, Duration::from_millis(1000))?;
 
     if !response.status().is_success() {
         return Err(format!(

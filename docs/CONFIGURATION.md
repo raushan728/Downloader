@@ -18,6 +18,7 @@ DWDR stores user configuration in an isolated TOML file with automatic self-heal
 download_path = "/home/user/Downloads/DWDR"
 max_parallel_downloads = 3
 default_quality = "1080p"
+compat_mode = false
 ```
 
 ---
@@ -26,9 +27,10 @@ default_quality = "1080p"
 
 | Key | Type | Default | Description | Valid Values |
 | --- | --- | --- | --- | --- |
-| `download_path` | string | `~/Downloads/DWDR` | Destination directory where downloaded media files are saved. Verified for write permissions. | Valid directory path |
+| `download_path` | string | `~/Downloads/DWDR` | Destination directory where downloaded media files are saved. Must be an existing directory with write permissions. | Valid existing directory path |
 | `default_quality` | string | `"1080p"` | Preferred video resolution matched during Smart Fallback downloads, or manual prompt. | `"always ask"`, `"best"`, `"8k"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"360p"`, `"240p"`, `"144p"`, `"audio"` |
 | `max_parallel_downloads` | integer | `3` | Maximum number of concurrent media downloads allowed simultaneously in interactive mode (additional tasks wait in queue). | `1` to `16` |
+| `compat_mode` | boolean | `false` | When enabled, prioritizes AVC (H.264) video and AAC audio codecs over AV1/VP9 for broad player compatibility. | `true`, `false` |
 
 ---
 
@@ -72,16 +74,18 @@ To prevent race conditions and configuration corruption, DWDR tracks active down
 ### 1. Via Command Line
 
 ```bash
-# View all current values and file path
+# View all current persistent configuration values
 dwdr config show
 
-# Set specific settings (enforces validation bounds)
+# Set specific settings (enforces validation bounds; supports aliases)
 dwdr config set quality 720p
 dwdr config set parallel 5
 dwdr config set path /media/downloads
+dwdr config set compat true
 
-# Force update bypassing validation and concurrency locks
+# Force update bypassing active download concurrency locks
 dwdr config set parallel 16 --force
+# (Note: --force overrides active download locks only; validation bounds remain enforced)
 
 # Reset configuration to defaults (prompts for confirmation [y/N] unless --force is passed)
 dwdr config reset

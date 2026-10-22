@@ -10,9 +10,14 @@ use serial_test::serial;
 use tempfile::tempdir;
 
 #[test]
+#[serial]
 fn test_cli_invalid_url() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
-    cmd.arg("invalid_url")
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .arg("invalid_url")
         .assert()
         .failure()
         .code(1)
@@ -41,6 +46,56 @@ fn test_cli_valid_url() {
         .stdout(predicate::str::contains("Valid URL detected"))
         .stderr(predicate::str::contains(
             "ERROR: Failed to extract video info",
+        ));
+}
+
+#[test]
+#[serial]
+fn test_cli_success_download() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+    let download_dir = temp_dir.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+
+    let json = sample_single_format_json("Test Single Video");
+    let downloaded_file = download_dir.join("Test Single Video.mp4");
+
+    let mock_ytdlp = MockYtDlpBuilder::new()
+        .with_json(&json)
+        .with_progress_lines(vec![
+            "download:PROGRESS|50.0%|5M|10M|2M/s|00:02|avc1".to_string(),
+            "download:PROGRESS|100.0%|10M|10M|2M/s|00:00|avc1".to_string(),
+            downloaded_file.to_str().unwrap().to_string(),
+        ])
+        .build(temp_dir.path());
+    let mock_ffmpeg = MockFfmpegBuilder::new().build(temp_dir.path());
+
+    std::fs::write(
+        &config_file,
+        format!(
+            "download_path = \"{}\"\nmax_parallel_downloads = 3\ndefault_quality = \"1080p\"\ncompat_mode = false\n",
+            download_dir.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .env("DWDR_YTDLP_PATH", mock_ytdlp.to_str().unwrap())
+        .env("DWDR_FFMPEG_PATH", mock_ffmpeg.to_str().unwrap())
+        .arg("https://youtube.com/watch?v=123")
+        .assert()
+        .success()
+        .code(0)
+        .stdout(predicate::str::contains("Valid URL detected"))
+        .stdout(predicate::str::contains(
+            "Successfully fetched data for: Test Single Video",
+        ))
+        .stdout(predicate::str::contains(
+            "SUCCESS: Media finalization complete!",
+        ))
+        .stdout(predicate::str::contains(
+            "SUCCESS: Download completed successfully!",
         ));
 }
 
@@ -554,6 +609,7 @@ fn test_interactive_shell_queue_live_command() {
 }
 
 #[test]
+#[serial]
 fn test_mock_server_offline_responses() {
     let server = MockServer::start();
     server.mock_path("/api/version", MockResponse::ok(b"1.0.0"));
@@ -564,6 +620,10 @@ fn test_mock_server_offline_responses() {
     server.mock_path(
         "/error/429",
         MockResponse::status(429, "Too Many Requests", b"Rate limited"),
+    );
+    server.mock_path(
+        "/repos/latest",
+        MockResponse::ok(br#"{"tag_name": "v0.9.9", "name": "Release 0.9.9"}"#),
     );
 
     let client = reqwest::blocking::Client::builder()
@@ -585,6 +645,16 @@ fn test_mock_server_offline_responses() {
 
     let resp404 = client.get(server.url("/unmocked")).send().unwrap();
     assert_eq!(resp404.status().as_u16(), 404);
+
+    // Test DWDR real updater code path against MockServer
+    unsafe {
+        std::env::set_var("DWDR_RELEASE_API_URL", server.url("/repos/latest"));
+    }
+    let dwdr_ver = dwdr::engine::updater::fetch_latest_dwdr_version(&client);
+    assert_eq!(dwdr_ver, Some("0.9.9".to_string()));
+    unsafe {
+        std::env::remove_var("DWDR_RELEASE_API_URL");
+    }
 }
 
 #[test]

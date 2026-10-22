@@ -36,6 +36,18 @@ During early development, configuration persistence and validation presented sev
    - Enforce strict path canonicalization with structured errors rather than falling back to uncanonicalized paths.
    - Strip Windows UNC `\\?\` prefixes for command compatibility.
 
+## Alternatives Considered
+
+### Alternative 1: In-Memory Synchronization Only (`Mutex` / `AtomicBool`)
+- **Pros**: Zero filesystem overhead for lock management.
+- **Cons**: Completely blind to separate DWDR processes running across different terminal sessions.
+- **Why not**: Multi-terminal users could modify or reset configuration mid-download, causing race conditions and destination directory mismatches.
+
+### Alternative 2: Direct File Overwrites (`std::fs::write`)
+- **Pros**: Minimal code complexity without temporary files.
+- **Cons**: Abrupt termination, power loss, or disk exhaustion mid-write leaves a truncated, corrupt `config.toml`.
+- **Why not**: Sibling temporary files (`NamedTempFile`), `sync_all()`, and atomic `persist()` ensure that settings files are never half-written or corrupted.
+
 ## Consequences
 
 - Prevents corrupted settings from being written to disk.

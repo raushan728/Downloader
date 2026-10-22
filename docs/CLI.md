@@ -47,12 +47,12 @@ dwdr "https://www.youtube.com/watch?v=VIDEO_ID"
 
 - DWDR extracts available streams without fetching unnecessary playlist items (`--no-playlist`).
 - If a format matching your configured `default_quality` (e.g. `1080p`) exists, it begins downloading immediately.
-- If the exact quality is unavailable, it automatically prompts you to choose from available streams.
+- If the exact requested quality is unavailable, Smart Fallback automatically selects the nearest lower resolution tier (unless `default_quality` is configured as `"always ask"`, which prompts interactive stream selection).
 - If a file with the same title already exists in the download directory, DWDR halts to prevent accidental overwrites unless `--force` (or `-f`) is supplied:
   ```bash
   dwdr "https://www.youtube.com/watch?v=VIDEO_ID" --force
   ```
-- If no download folder has been configured, a native OS folder dialog (`rfd`) prompts you to select one.
+- Download destination defaults to `~/Downloads/DWDR`. Custom directories can be set via `dwdr config` or `dwdr config set path <DIR>`.
 
 ### 2. Interactive Terminal Shell (REPL)
 
@@ -77,11 +77,12 @@ dwdr >
 - Type `queue` to inspect queue limits and waiting tasks in FIFO order.
 - Type `queue live` (or `queue -l`) to launch an in-place real-time visual monitor of queue slots and active task progress.
 - Type `active` to take a fast static snapshot of active downloads without entering live view.
+- Type `wait` to pause and wait until all active and queued downloads finish.
 - Type `cancel` to abort running downloads and flush the waiting queue.
-- Type `config` or `settings` to launch the interactive settings menu.
+- Type `config` or `settings` to launch the interactive settings menu (disabled while downloads are actively in flight).
 - Type `cls` or `clear` to clear the terminal screen buffer.
 - Type `help` to display interactive shell command syntax.
-- Type `exit` or `quit` (or press `Ctrl+C`) to terminate active tasks and exit the session.
+- Type `exit` or `quit` (or press `Ctrl+C`) to exit the session (prompts for confirmation if background downloads are active).
 
 ---
 
@@ -101,31 +102,34 @@ dwdr config
 Features native OS folder picker (`rfd`) and interactive selection menus. In non-TTY or automated environments, this command exits with an error directing users to `dwdr config set` or direct file editing.
 
 #### Show Current Configuration
-Display active settings and the physical configuration file path:
+Display active persistent configuration settings:
 
 ```bash
 dwdr config show
 ```
 
 #### Set Configuration Keys Programmatically
-Update specific keys from scripts or terminal commands:
+Update specific keys from scripts or terminal commands (supports canonical keys and short aliases):
 
 ```bash
 dwdr config set quality 720p
 dwdr config set path /path/to/downloads
 dwdr config set parallel 5
+dwdr config set compat true
 ```
 
 Validation bounds enforced:
-- `quality`: Must be one of `"always ask"`, `"best"`, `"8k"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"360p"`, `"240p"`, `"144p"`, `"audio"`.
-- `parallel`: Integer between `1` and `16`.
-- `path`: Must point to an existing or creatable directory with write permissions.
+- `quality` (or `default_quality`): Must be one of `"always ask"`, `"best"`, `"8k"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"360p"`, `"240p"`, `"144p"`, `"audio"`.
+- `parallel` (or `max_parallel_downloads`): Integer between `1` and `16`.
+- `path` (or `download_path`): Must point to an existing directory with write permissions.
+- `compat` (or `compat_mode`): Boolean flag (`true`/`false`, `on`/`off`, `1`/`0`) prioritizing AVC/H.264 + AAC codecs for legacy player compatibility.
 
-If a download is actively running in another DWDR process, configuration changes are blocked by `~/.dwdr/active_downloads.lock`. To bypass validation bounds or concurrency locks, append `--force`:
+If a download is actively running in another DWDR process, configuration changes are blocked by `active_downloads.lock`. To override this concurrency lock, append `--force`:
 
 ```bash
 dwdr config set parallel 16 --force
 ```
+*(Note: `--force` only bypasses active download concurrency locks; validation bounds and existing directory checks remain strictly enforced.)*
 
 #### Reset Configuration
 Restore settings to factory defaults:
@@ -171,4 +175,16 @@ dwdr self-update
 - Verifies downloaded release assets with executable integrity checks (`is_valid_executable`) before replacing the running binary.
 - On Unix, replaces the running binary atomically with executable permissions (`0o755`).
 - On Windows, renames the active executable to `.old` to bypass file locking, replacing it with the new binary and cleaning up `.old` on startup.
+
+---
+
+## Exit Codes
+
+DWDR returns standard POSIX exit status codes:
+
+| Exit Code | Meaning | Description |
+| :--- | :--- | :--- |
+| `0` | Success | The requested operation completed successfully (download finished, configuration updated, or shell exited cleanly). |
+| `1` | Error | An error occurred (invalid URL syntax, media extraction failure, network disconnection, engine failure, or invalid configuration parameters). |
+
 
