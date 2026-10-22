@@ -226,48 +226,53 @@ pub fn resolve_resolution(
         return Some((res, rank));
     }
 
-    // Letterboxed widescreen streams (e.g. 1920x800) have reduced height, so check width first.
-    if let Some(w) = width {
+    // Evaluate width and height candidates and take the higher resolution tier.
+    let width_candidate = width.and_then(|w| {
         if w >= 7680 {
-            return Some(("8K", 4320));
+            Some(("8K", 4320))
         } else if w >= 3840 {
-            return Some(("4K", 2160));
+            Some(("4K", 2160))
         } else if w >= 2560 {
-            return Some(("2K", 1440));
+            Some(("2K", 1440))
         } else if w >= 1920 {
-            return Some(("1080p", 1080));
+            Some(("1080p", 1080))
         } else if w >= 1280 {
-            return Some(("720p", 720));
+            Some(("720p", 720))
         } else if w >= 854 {
-            return Some(("480p", 480));
+            Some(("480p", 480))
         } else if w >= 640 {
-            return Some(("360p", 360));
+            Some(("360p", 360))
         } else if w >= 426 {
-            return Some(("240p", 240));
+            Some(("240p", 240))
         } else if w >= 256 {
-            return Some(("144p", 144));
+            Some(("144p", 144))
+        } else {
+            None
         }
-    }
+    });
 
-    if let Some(h) = height
-        && let Some(res) = map_height_to_resolution(h)
-    {
-        let rank = match res {
-            "8K" => 4320,
-            "4K" => 2160,
-            "2K" => 1440,
-            "1080p" => 1080,
-            "720p" => 720,
-            "480p" => 480,
-            "360p" => 360,
-            "240p" => 240,
-            "144p" => 144,
-            _ => h,
-        };
-        return Some((res, rank));
-    }
+    let height_candidate = height.and_then(|h| {
+        map_height_to_resolution(h).map(|res| {
+            let rank = match res {
+                "8K" => 4320,
+                "4K" => 2160,
+                "2K" => 1440,
+                "1080p" => 1080,
+                "720p" => 720,
+                "480p" => 480,
+                "360p" => 360,
+                "240p" => 240,
+                "144p" => 144,
+                _ => h,
+            };
+            (res, rank)
+        })
+    });
 
-    None
+    [width_candidate, height_candidate]
+        .into_iter()
+        .flatten()
+        .max_by_key(|(_, rank)| *rank)
 }
 
 pub fn extract_engine_error(stderr: &str) -> String {
@@ -1052,23 +1057,29 @@ pub fn build_ytdlp_download_cmd_ext(
     let clean_dir = download_dir.trim_end_matches(['/', '\\']);
     let mut cmd = Command::new(yt_dlp_path);
 
-    let (is_audio, clean_format_id) = if let Some(stripped) = format_id.strip_prefix("audio:") {
-        (true, stripped)
+    let (is_audio, has_audio, clean_format_id) = if let Some(stripped) =
+        format_id.strip_prefix("audio:")
+    {
+        (true, true, stripped)
+    } else if let Some(stripped) = format_id.strip_prefix("direct:") {
+        (false, true, stripped)
+    } else if let Some(stripped) = format_id.strip_prefix("prog:") {
+        (false, true, stripped)
     } else if format_id.eq_ignore_ascii_case("audio") || format_id.eq_ignore_ascii_case("bestaudio")
     {
-        (true, "bestaudio/best")
+        (true, true, "bestaudio/best")
     } else {
-        (false, format_id)
+        (false, false, format_id)
     };
 
     // yt-dlp requires separate -P directory and -o template; combined -o paths cause mixed slashes and [Errno 22] on Windows.
     // --windows-filenames and --trim-filenames sanitize special unicode (e.g. accents) and keep filenames within Windows MAX_PATH.
-    let format_arg = if is_audio {
+    let format_arg = if is_audio || has_audio {
         clean_format_id.to_string()
     } else if clean_format_id == "best" {
         "bestvideo+bestaudio/best".to_string()
     } else {
-        format!("{}+bestaudio/best", clean_format_id)
+        format!("{}+bestaudio/{}/best", clean_format_id, clean_format_id)
     };
 
     let output_template = custom_output_template.unwrap_or("%(title)s.%(ext)s");
@@ -1657,6 +1668,16 @@ mod tests {
             resolve_resolution(Some(1080), Some(1920), None),
             Some(("1080p", 1080))
         );
+        // 4:3 standard aspect ratio (e.g. 640x480) must map to 480p, not 360p
+        assert_eq!(
+            resolve_resolution(Some(480), Some(640), None),
+            Some(("480p", 480))
+        );
+        // Letterboxed widescreen (e.g. 1920x800) must map to 1080p without note
+        assert_eq!(
+            resolve_resolution(Some(800), Some(1920), None),
+            Some(("1080p", 1080))
+        );
         assert_eq!(resolve_resolution(None, None, None), None);
     }
 
@@ -1995,7 +2016,7 @@ mod tests {
         assert!(args.contains(&"mp4".to_string()));
         assert!(args.contains(&"--encoding".to_string()));
         assert!(args.contains(&"utf-8".to_string()));
-        assert!(args.contains(&"302+bestaudio/best".to_string()));
+        assert!(args.contains(&"302+bestaudio/302/best".to_string()));
 
         let cmd_best =
             build_ytdlp_download_cmd(yt, ff, "https://youtu.be/123", "best", "/downloads/path");
@@ -2004,6 +2025,20 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert!(args_best.contains(&"bestvideo+bestaudio/best".to_string()));
+
+        let cmd_direct = build_ytdlp_download_cmd(
+            yt,
+            ff,
+            "https://youtu.be/123",
+            "direct:18",
+            "/downloads/path",
+        );
+        let args_direct: Vec<String> = cmd_direct
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args_direct.contains(&"18".to_string()));
+        assert!(!args_direct.contains(&"18+bestaudio/18/best".to_string()));
 
         let cmd_audio = build_ytdlp_download_cmd(
             yt,
@@ -2017,7 +2052,7 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert!(args_audio.contains(&"140".to_string()));
-        assert!(!args_audio.contains(&"140+bestaudio/best".to_string()));
+        assert!(!args_audio.contains(&"140+bestaudio/140/best".to_string()));
         assert!(!args_audio.contains(&"--merge-output-format".to_string()));
     }
 

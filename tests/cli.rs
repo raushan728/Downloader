@@ -14,8 +14,9 @@ fn test_cli_invalid_url() {
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
     cmd.arg("invalid_url")
         .assert()
-        .success()
-        .stdout(predicate::str::contains("ERROR: Invalid URL provided"));
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("ERROR: Invalid URL provided"));
 }
 
 #[test]
@@ -35,8 +36,12 @@ fn test_cli_valid_url() {
         .env("DWDR_FFMPEG_PATH", mock_ffmpeg.to_str().unwrap())
         .arg("https://youtube.com/watch?v=123")
         .assert()
-        .success()
-        .stdout(predicate::str::contains("Valid URL detected"));
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("Valid URL detected"))
+        .stderr(predicate::str::contains(
+            "ERROR: Failed to extract video info",
+        ));
 }
 
 #[test]
@@ -456,7 +461,7 @@ fn test_interactive_shell_url_extraction_failure_recovery() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Valid URL detected"))
-        .stdout(predicate::str::contains(
+        .stderr(predicate::str::contains(
             "ERROR: Failed to extract video info",
         ))
         .stdout(predicate::str::contains("Thanks for using DWDR!"));
@@ -481,7 +486,7 @@ fn test_interactive_shell_uppercase_url() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Valid URL detected"))
-        .stdout(predicate::str::contains(
+        .stderr(predicate::str::contains(
             "ERROR: Failed to extract video info",
         ))
         .stdout(predicate::str::contains("Thanks for using DWDR!"));

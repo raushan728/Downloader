@@ -590,6 +590,12 @@ impl QueueManager {
         self.cancelled.store(true, Ordering::SeqCst);
         self.queue.clear();
 
+        // Terminate all active processes first to prevent dying processes from recreating partial files.
+        for &pid in &self.active_pids {
+            kill_process_by_pid(pid);
+        }
+        self.active_pids.clear();
+
         for task in &self.tasks {
             let mut t = match task.lock() {
                 Ok(guard) => guard,
@@ -606,10 +612,6 @@ impl QueueManager {
             }
         }
 
-        for &pid in &self.active_pids {
-            kill_process_by_pid(pid);
-        }
-        self.active_pids.clear();
         self.active_count = 0;
         clear_active_download();
     }

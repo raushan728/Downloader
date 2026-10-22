@@ -66,8 +66,11 @@ fn main() {
     let mut config = ConfigManager::load();
 
     if let Some(url) = cli.url {
-        process_url(&url, &mut config, cli.force);
+        let result = process_url(&url, &mut config, cli.force);
         reset_terminal_state();
+        if result.is_err() {
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -84,7 +87,9 @@ fn main() {
             Commands::Update => {
                 println!("{}", "INFO: Updating core engines...".cyan());
                 if let Err(e) = update_core_engines() {
-                    println!("{}", format!("\nERROR: {}\n", e).red().bold());
+                    eprintln!("{}", format!("\nERROR: {}\n", e).red().bold());
+                    reset_terminal_state();
+                    std::process::exit(1);
                 } else {
                     println!(
                         "{}",
@@ -98,7 +103,9 @@ fn main() {
                     "INFO: Updating DWDR CLI to the latest version...".cyan()
                 );
                 if let Err(e) = update_self() {
-                    println!("{}", format!("\nERROR: {}\n", e).red().bold());
+                    eprintln!("{}", format!("\nERROR: {}\n", e).red().bold());
+                    reset_terminal_state();
+                    std::process::exit(1);
                 }
             }
         }
