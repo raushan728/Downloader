@@ -91,9 +91,9 @@ pub fn resolve_ytdlp_url(target_os: &str, target_arch: &str) -> &'static str {
         ("linux", "aarch64") => {
             "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64"
         }
-        ("linux", _) => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+        ("linux", _) => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
         ("macos", _) => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos",
-        _ => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp",
+        _ => "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux",
     }
 }
 
@@ -627,11 +627,16 @@ pub fn update_self() -> Result<(), String> {
         current_exe.with_extension("tmp")
     };
 
-    let mut file = fs::File::create(&tmp_exe)
-        .map_err(|e| format!("Failed to create temporary executable: {}", e))?;
+    {
+        let mut file = fs::File::create(&tmp_exe)
+            .map_err(|e| format!("Failed to create temporary executable: {}", e))?;
 
-    file.write_all(&bytes)
-        .map_err(|e| format!("Failed to write temporary executable: {}", e))?;
+        file.write_all(&bytes)
+            .map_err(|e| format!("Failed to write temporary executable: {}", e))?;
+
+        file.flush()
+            .map_err(|e| format!("Failed to flush temporary executable: {}", e))?;
+    }
 
     #[cfg(not(target_os = "windows"))]
     {
@@ -872,10 +877,10 @@ mod tests {
         assert!(resolve_ytdlp_url("windows", "aarch64").ends_with("yt-dlp_arm64.exe"));
         assert!(resolve_ytdlp_url("windows", "x86_64").ends_with("yt-dlp.exe"));
         assert!(resolve_ytdlp_url("linux", "aarch64").ends_with("yt-dlp_linux_aarch64"));
-        assert!(resolve_ytdlp_url("linux", "x86_64").ends_with("yt-dlp"));
+        assert!(resolve_ytdlp_url("linux", "x86_64").ends_with("yt-dlp_linux"));
         assert!(resolve_ytdlp_url("macos", "aarch64").ends_with("yt-dlp_macos"));
         assert!(resolve_ytdlp_url("macos", "x86_64").ends_with("yt-dlp_macos"));
-        assert!(resolve_ytdlp_url("unknown", "unknown").ends_with("yt-dlp"));
+        assert!(resolve_ytdlp_url("unknown", "unknown").ends_with("yt-dlp_linux"));
     }
 
     #[test]

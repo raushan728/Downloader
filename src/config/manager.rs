@@ -13,6 +13,7 @@ use crate::engine::queue::{is_download_active, is_pid_alive};
 
 /// Global runtime configuration serialized in `~/.dwdr/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DwdrConfig {
     pub download_path: String,
     pub max_parallel_downloads: u8,
@@ -214,8 +215,14 @@ impl ConfigManager {
 
         if file_path.is_file()
             && let Ok(content) = fs::read_to_string(&file_path)
-            && let Ok(config) = toml::from_str(&content)
+            && let Ok(mut config) = toml::from_str::<DwdrConfig>(&content)
         {
+            if !(1..=16).contains(&config.max_parallel_downloads) {
+                config.max_parallel_downloads = config.max_parallel_downloads.clamp(1, 16);
+            }
+            if !is_valid_quality(&config.default_quality) {
+                config.default_quality = "1080p".to_string();
+            }
             return config;
         }
 
@@ -662,6 +669,45 @@ mod tests {
         let path = std::path::Path::new(&config.download_path);
         assert!(path.is_absolute());
         assert!(!config.download_path.starts_with('.'));
+    }
+
+    #[test]
+    fn test_config_partial_toml_serde_default() {
+        let partial_toml = r#"
+download_path = "/custom/downloads"
+"#;
+        let config: DwdrConfig = toml::from_str(partial_toml).unwrap();
+        assert_eq!(config.download_path, "/custom/downloads");
+        assert_eq!(config.max_parallel_downloads, 3);
+        assert_eq!(config.default_quality, "1080p");
+    }
+
+    #[test]
+    fn test_config_load_clamps_parallel_and_quality() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("config.toml");
+
+        // Test clamping parallel to 1 when set to 0, and invalid quality to 1080p
+        std::fs::write(
+            &path,
+            "download_path = \"/test\"\nmax_parallel_downloads = 0\ndefault_quality = \"invalid_tier\"\n",
+        )
+        .unwrap();
+
+        let config = ConfigManager::load_from_path(&path);
+        assert_eq!(config.max_parallel_downloads, 1);
+        assert_eq!(config.default_quality, "1080p");
+
+        // Test clamping parallel to 16 when set to 99
+        std::fs::write(
+            &path,
+            "download_path = \"/test\"\nmax_parallel_downloads = 99\ndefault_quality = \"720p\"\n",
+        )
+        .unwrap();
+
+        let config_high = ConfigManager::load_from_path(&path);
+        assert_eq!(config_high.max_parallel_downloads, 16);
+        assert_eq!(config_high.default_quality, "720p");
     }
 
     #[test]

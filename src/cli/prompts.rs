@@ -250,6 +250,9 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         "1080p",
                         "720p",
                         "480p",
+                        "360p",
+                        "240p",
+                        "144p",
                         "audio",
                     ];
                     if let Ok(quality) =
@@ -258,7 +261,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         working.default_quality = quality.to_string();
                     }
                 } else if ans.starts_with("3") {
-                    let parallel_opts = vec!["1", "3", "5", "8"];
+                    let parallel_opts: Vec<String> = (1..=16).map(|n| n.to_string()).collect();
                     if let Ok(Ok(parallel)) =
                         Select::new("Select Max Parallel Downloads:", parallel_opts)
                             .prompt()
