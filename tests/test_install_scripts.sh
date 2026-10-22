@@ -40,6 +40,29 @@ cp "${MOCK_BIN}" "${TMP_STAGE}/dwdr-windows.exe"
   fi
 )
 
+# Detect host OS and architecture for native platform target matching
+HOST_OS="$(uname -s)"
+HOST_ARCH="$(uname -m)"
+case "${HOST_OS}" in
+Linux*)
+  if [[ "${HOST_ARCH}" == "aarch64" ]] || [[ "${HOST_ARCH}" == "arm64" ]]; then
+    HOST_SUFFIX="linux-arm64"
+  else
+    HOST_SUFFIX="linux"
+  fi
+  ;;
+Darwin*)
+  if [[ "${HOST_ARCH}" == "aarch64" ]] || [[ "${HOST_ARCH}" == "arm64" ]]; then
+    HOST_SUFFIX="mac-arm64"
+  else
+    HOST_SUFFIX="mac"
+  fi
+  ;;
+*)
+  HOST_SUFFIX="linux"
+  ;;
+esac
+
 # Start local mock HTTP server on a random port
 PORT=$(( 18000 + RANDOM % 1000 ))
 python3 -m http.server "${PORT}" --directory "${TMP_STAGE}" >/dev/null 2>&1 &
@@ -66,7 +89,7 @@ run_lifecycle_test() {
   eval "${test_env_prefix}"
 
   # 1. Test clean installation
-  DWDR_INSTALL_URL="${MOCK_BASE_URL}/dwdr-linux" \
+  DWDR_INSTALL_URL="${MOCK_BASE_URL}/dwdr-${HOST_SUFFIX}" \
   DWDR_CHECKSUM_URL="${MOCK_BASE_URL}/SHA256SUMS" \
   bash "${REPO_ROOT}/scripts/install.sh"
 
@@ -110,8 +133,10 @@ if [[ "${MODE}" == "native" ]]; then
   # Test checksum mismatch abort
   echo "--> Testing Checksum Mismatch Guard"
   BAD_STAGE="$(mktemp -d)"
-  echo "corrupt content" > "${BAD_STAGE}/dwdr-linux"
-  echo "0000000000000000000000000000000000000000000000000000000000000000  dwdr-linux" > "${BAD_STAGE}/SHA256SUMS"
+  for target in dwdr-linux dwdr-linux-arm64 dwdr-mac dwdr-mac-arm64; do
+    echo "corrupt content" > "${BAD_STAGE}/${target}"
+    echo "0000000000000000000000000000000000000000000000000000000000000000  ${target}" >> "${BAD_STAGE}/SHA256SUMS"
+  done
   BAD_PORT=$(( 19000 + RANDOM % 1000 ))
   python3 -m http.server "${BAD_PORT}" --directory "${BAD_STAGE}" >/dev/null 2>&1 &
   BAD_PID=$!
@@ -119,7 +144,7 @@ if [[ "${MODE}" == "native" ]]; then
 
   SET_E_STATE="$-"
   set +e
-  DWDR_INSTALL_URL="http://127.0.0.1:${BAD_PORT}/dwdr-linux" \
+  DWDR_INSTALL_URL="http://127.0.0.1:${BAD_PORT}/dwdr-${HOST_SUFFIX}" \
   DWDR_CHECKSUM_URL="http://127.0.0.1:${BAD_PORT}/SHA256SUMS" \
   bash "${REPO_ROOT}/scripts/install.sh" >/dev/null 2>&1
   EXIT_CODE=$?
