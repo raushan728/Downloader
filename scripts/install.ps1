@@ -4,10 +4,14 @@ param (
 )
 $ErrorActionPreference = "Stop"
 $Repo = "raushan728/Downloader"
-$Url = "https://github.com/$Repo/releases/download/latest/dwdr-windows.exe"
-$ChecksumUrl = "https://github.com/$Repo/releases/download/latest/SHA256SUMS"
-$currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-$isAdmin = $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$Url = if ($env:DWDR_INSTALL_URL) { $env:DWDR_INSTALL_URL } else { "https://github.com/$Repo/releases/download/latest/dwdr-windows.exe" }
+$ChecksumUrl = if ($env:DWDR_CHECKSUM_URL) { $env:DWDR_CHECKSUM_URL } else { "https://github.com/$Repo/releases/download/latest/SHA256SUMS" }
+$isAdmin = if ([System.Environment]::OSVersion.Platform -match "Win") {
+  $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+  $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} else {
+  $false
+}
 if ($Scope -eq "Auto") {
   if ($isAdmin) {
     # When running as Administrator interactively, ask user whether they prefer system-wide or user-only scope.
@@ -58,10 +62,22 @@ Write-Host "INFO: Downloading DWDR for Windows (Scope: $Scope)..." -ForegroundCo
 if (-not (Test-Path -Path $BinDir)) {
   New-Item -ItemType Directory -Path $BinDir -Force | Out-Null
 }
-Invoke-WebRequest -Uri $Url -OutFile $TmpPath
+if ($Url -like "file://*" -or (Test-Path -Path $Url -PathType Leaf)) {
+  $LocalSrc = if ($Url -like "file://*") { [System.Uri]::new($Url).LocalPath } else { $Url }
+  Copy-Item -Path $LocalSrc -Destination $TmpPath -Force
+}
+else {
+  Invoke-WebRequest -Uri $Url -OutFile $TmpPath
+}
 try {
   $SumsFile = "$TmpPath.sums"
-  Invoke-WebRequest -Uri $ChecksumUrl -OutFile $SumsFile -ErrorAction SilentlyContinue
+  if ($ChecksumUrl -like "file://*" -or (Test-Path -Path $ChecksumUrl -PathType Leaf)) {
+    $LocalSums = if ($ChecksumUrl -like "file://*") { [System.Uri]::new($ChecksumUrl).LocalPath } else { $ChecksumUrl }
+    Copy-Item -Path $LocalSums -Destination $SumsFile -Force
+  }
+  else {
+    Invoke-WebRequest -Uri $ChecksumUrl -OutFile $SumsFile -ErrorAction SilentlyContinue
+  }
   if (Test-Path -Path $SumsFile) {
     $ExpectedLine = Get-Content -Path $SumsFile | Where-Object {
       $_ -match "dwdr-windows\.exe$"
