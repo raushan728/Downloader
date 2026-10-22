@@ -277,115 +277,98 @@ pub fn download_with_retry(
     ))
 }
 
-pub fn ensure_dependencies() -> Result<(), String> {
-    let yt_dlp_path = get_ytdlp_path();
-
-    if std::env::var("DWDR_YTDLP_PATH").is_ok() && yt_dlp_path.exists() {
-        return ensure_ffmpeg();
-    }
-
-    if yt_dlp_path.exists() {
-        if is_valid_executable(&yt_dlp_path, false) {
-            return ensure_ffmpeg();
-        }
+pub fn update_ytdlp_engine() -> Result<(), String> {
+    if let Ok(custom) = std::env::var("DWDR_YTDLP_PATH") {
         println!(
             "{}",
-            "WARNING: Detected corrupted or invalid yt-dlp binary. Re-downloading...".yellow()
-        );
-        fs::remove_file(&yt_dlp_path).map_err(|e| {
             format!(
-                "Failed to remove corrupted yt-dlp binary at '{}': {}",
-                yt_dlp_path.display(),
-                e
+                "INFO: DWDR_YTDLP_PATH is set ('{}'). Skipping managed yt-dlp update.",
+                custom
             )
-        })?;
-    }
-
-    if !yt_dlp_path.exists() {
-        println!(
-            "{}",
-            "INFO: Core engine missing. Downloading latest yt-dlp... This will only happen once."
-                .yellow()
+            .yellow()
         );
-
-        let url = get_ytdlp_download_url();
-        let client = create_http_client("dwdr-cli/1.0")?;
-        let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
-
-        let bytes = response
-            .bytes()
-            .map_err(|e| format!("Failed to read response bytes: {}", e))?;
-
-        if let Some(parent) = yt_dlp_path.parent()
-            && !parent.exists()
-        {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("Failed to create deps directory: {}", e))?;
-        }
-
-        let tmp_path = if cfg!(target_os = "windows") {
-            yt_dlp_path.with_extension("tmp.exe")
-        } else {
-            yt_dlp_path.with_extension("tmp")
-        };
-        {
-            let mut file = fs::File::create(&tmp_path)
-                .map_err(|e| format!("Failed to create temporary yt-dlp file: {}", e))?;
-            file.write_all(&bytes)
-                .map_err(|e| format!("Failed to write temporary yt-dlp file: {}", e))?;
-        }
-
-        #[cfg(unix)]
-        {
-            let mut perms = fs::metadata(&tmp_path)
-                .map_err(|e| format!("Failed to read metadata: {}", e))?
-                .permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&tmp_path, perms)
-                .map_err(|e| format!("Failed to set permissions: {}", e))?;
-        }
-
-        if !is_valid_executable(&tmp_path, false) {
-            let _ = fs::remove_file(&tmp_path);
-            return Err("Downloaded yt-dlp binary failed integrity validation".to_string());
-        }
-
-        fs::rename(&tmp_path, &yt_dlp_path)
-            .map_err(|e| format!("Failed to finalize yt-dlp binary: {}", e))?;
-
-        println!("{}", "SUCCESS: Engine downloaded successfully!".green());
-    }
-
-    ensure_ffmpeg()?;
-
-    Ok(())
-}
-
-pub fn ensure_ffmpeg() -> Result<(), String> {
-    let ffmpeg_path = get_ffmpeg_path();
-
-    if std::env::var("DWDR_FFMPEG_PATH").is_ok() && ffmpeg_path.exists() {
         return Ok(());
     }
 
-    if ffmpeg_path.exists() {
-        if is_valid_executable(&ffmpeg_path, true) {
-            return Ok(());
-        }
-        println!(
-            "{}",
-            "WARNING: Detected corrupted or invalid FFmpeg binary. Re-downloading...".yellow()
-        );
-        fs::remove_file(&ffmpeg_path).map_err(|e| {
-            format!(
-                "Failed to remove corrupted FFmpeg binary at '{}': {}",
-                ffmpeg_path.display(),
-                e
-            )
-        })?;
+    let yt_dlp_path = get_ytdlp_path();
+    println!("{}", "INFO: Downloading latest yt-dlp release...".cyan());
+
+    let url = get_ytdlp_download_url();
+    let client = create_http_client("dwdr-cli/1.0")?;
+    let response = download_with_retry(&client, url, 3, Duration::from_millis(1000))?;
+
+    let bytes = response
+        .bytes()
+        .map_err(|e| format!("Failed to read response bytes: {}", e))?;
+
+    if let Some(parent) = yt_dlp_path.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create deps directory: {}", e))?;
     }
 
-    println!("{}", "INFO: Media Merger (FFmpeg) is missing. Downloading prebuilt binary... This will only happen once.".yellow());
+    let tmp_path = if cfg!(target_os = "windows") {
+        yt_dlp_path.with_extension(format!("tmp.{}.exe", std::process::id()))
+    } else {
+        yt_dlp_path.with_extension(format!("tmp.{}", std::process::id()))
+    };
+
+    {
+        let mut file = fs::File::create(&tmp_path)
+            .map_err(|e| format!("Failed to create temporary yt-dlp file: {}", e))?;
+        file.write_all(&bytes)
+            .map_err(|e| format!("Failed to write temporary yt-dlp file: {}", e))?;
+    }
+
+    #[cfg(unix)]
+    {
+        let mut perms = fs::metadata(&tmp_path)
+            .map_err(|e| format!("Failed to read metadata: {}", e))?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&tmp_path, perms)
+            .map_err(|e| format!("Failed to set permissions: {}", e))?;
+    }
+
+    if !is_valid_executable(&tmp_path, false) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err("Downloaded yt-dlp binary failed integrity validation".to_string());
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let old_path = yt_dlp_path.with_extension("old");
+        if old_path.exists() {
+            let _ = fs::remove_file(&old_path);
+        }
+        if yt_dlp_path.exists() {
+            let _ = fs::rename(&yt_dlp_path, &old_path);
+        }
+    }
+
+    fs::rename(&tmp_path, &yt_dlp_path)
+        .map_err(|e| format!("Failed to finalize yt-dlp binary: {}", e))?;
+
+    println!("{}", "SUCCESS: Engine yt-dlp updated successfully!".green());
+    Ok(())
+}
+
+pub fn update_ffmpeg_engine() -> Result<(), String> {
+    if let Ok(custom) = std::env::var("DWDR_FFMPEG_PATH") {
+        println!(
+            "{}",
+            format!(
+                "INFO: DWDR_FFMPEG_PATH is set ('{}'). Skipping managed FFmpeg update.",
+                custom
+            )
+            .yellow()
+        );
+        return Ok(());
+    }
+
+    let ffmpeg_path = get_ffmpeg_path();
+    println!("{}", "INFO: Downloading latest FFmpeg release...".cyan());
 
     let url = get_ffmpeg_download_url();
     let client = create_http_client("dwdr-cli/1.0")?;
@@ -398,9 +381,9 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
     };
 
     let tmp_ffmpeg = if cfg!(target_os = "windows") {
-        ffmpeg_path.with_extension("tmp.exe")
+        ffmpeg_path.with_extension(format!("tmp.{}.exe", std::process::id()))
     } else {
-        ffmpeg_path.with_extension("tmp")
+        ffmpeg_path.with_extension(format!("tmp.{}", std::process::id()))
     };
 
     if let Some(parent) = ffmpeg_path.parent()
@@ -470,13 +453,83 @@ pub fn ensure_ffmpeg() -> Result<(), String> {
         return Err("Extracted FFmpeg binary failed integrity validation".to_string());
     }
 
+    #[cfg(target_os = "windows")]
+    {
+        let old_path = ffmpeg_path.with_extension("old");
+        if old_path.exists() {
+            let _ = fs::remove_file(&old_path);
+        }
+        if ffmpeg_path.exists() {
+            let _ = fs::rename(&ffmpeg_path, &old_path);
+        }
+    }
+
     fs::rename(&tmp_ffmpeg, &ffmpeg_path)
         .map_err(|e| format!("Failed to finalize FFmpeg binary: {}", e))?;
 
     println!(
         "{}",
-        "SUCCESS: Media Merger downloaded and extracted successfully!".green()
+        "SUCCESS: Media Merger (FFmpeg) updated successfully!".green()
     );
+    Ok(())
+}
+
+pub fn update_core_engines() -> Result<(), String> {
+    update_ytdlp_engine()?;
+    update_ffmpeg_engine()?;
+    Ok(())
+}
+
+pub fn ensure_dependencies() -> Result<(), String> {
+    let yt_dlp_path = get_ytdlp_path();
+
+    if std::env::var("DWDR_YTDLP_PATH").is_ok() && yt_dlp_path.exists() {
+        return ensure_ffmpeg();
+    }
+
+    if !yt_dlp_path.exists() || !is_valid_executable(&yt_dlp_path, false) {
+        if yt_dlp_path.exists() {
+            println!(
+                "{}",
+                "WARNING: Detected corrupted or invalid yt-dlp binary. Re-downloading...".yellow()
+            );
+        } else {
+            println!(
+                "{}",
+                "INFO: Core engine missing. Downloading latest yt-dlp... This will only happen once."
+                    .yellow()
+            );
+        }
+        update_ytdlp_engine()?;
+    }
+
+    ensure_ffmpeg()?;
+    Ok(())
+}
+
+pub fn ensure_ffmpeg() -> Result<(), String> {
+    let ffmpeg_path = get_ffmpeg_path();
+
+    if std::env::var("DWDR_FFMPEG_PATH").is_ok() && ffmpeg_path.exists() {
+        return Ok(());
+    }
+
+    if !ffmpeg_path.exists() || !is_valid_executable(&ffmpeg_path, true) {
+        if ffmpeg_path.exists() {
+            println!(
+                "{}",
+                "WARNING: Detected corrupted or invalid FFmpeg binary. Re-downloading...".yellow()
+            );
+        } else {
+            println!(
+                "{}",
+                "INFO: Media Merger (FFmpeg) is missing. Downloading prebuilt binary... This will only happen once."
+                    .yellow()
+            );
+        }
+        update_ffmpeg_engine()?;
+    }
+
     Ok(())
 }
 
@@ -1102,5 +1155,39 @@ mod tests {
         let msg = advice.unwrap();
         assert!(msg.contains("FFmpeg media merger binary is missing or corrupted"));
         assert!(msg.contains("dwdr update"));
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_engines_respects_custom_path_overrides() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let custom_yt = temp_dir.path().join("my_custom_yt");
+        let custom_ff = temp_dir.path().join("my_custom_ff");
+        std::fs::write(&custom_yt, b"custom-yt-content").unwrap();
+        std::fs::write(&custom_ff, b"custom-ff-content").unwrap();
+
+        unsafe {
+            std::env::set_var("DWDR_YTDLP_PATH", custom_yt.to_str().unwrap());
+            std::env::set_var("DWDR_FFMPEG_PATH", custom_ff.to_str().unwrap());
+        }
+
+        // Must succeed without deleting or touching custom paths
+        let res_yt = update_ytdlp_engine();
+        let res_ff = update_ffmpeg_engine();
+        let res_all = update_core_engines();
+
+        assert!(res_yt.is_ok());
+        assert!(res_ff.is_ok());
+        assert!(res_all.is_ok());
+
+        assert!(custom_yt.exists());
+        assert!(custom_ff.exists());
+        assert_eq!(std::fs::read(&custom_yt).unwrap(), b"custom-yt-content");
+        assert_eq!(std::fs::read(&custom_ff).unwrap(), b"custom-ff-content");
+
+        unsafe {
+            std::env::remove_var("DWDR_YTDLP_PATH");
+            std::env::remove_var("DWDR_FFMPEG_PATH");
+        }
     }
 }

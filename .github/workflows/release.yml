@@ -20,7 +20,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -46,21 +46,48 @@ jobs:
       - name: Run Real Integration Tests
         run: cargo test --test real_integration -- --ignored
 
+      - name: Run Script Integration Tests (Linux x86_64 Containers)
+        if: matrix.os == 'ubuntu-latest'
+        run: bash tests/test_install_scripts.sh
+
+      - name: Run Script Integration Tests (Linux ARM64 Native)
+        if: matrix.os == 'ubuntu-24.04-arm'
+        run: bash tests/test_install_scripts.sh --native
+
+      - name: Run Script Integration Tests (macOS Native)
+        if: matrix.os == 'macos-latest'
+        run: bash tests/test_install_scripts.sh --native
+
+      - name: Run Script Integration Tests (Windows PowerShell)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: .\tests\test_install_scripts.ps1
+
       - name: Build release binary
+        if: matrix.os != 'macos-latest'
         run: cargo build --release
 
-      - name: Stage binary (Linux)
+      - name: Stage binary (Linux x86_64)
         if: matrix.os == 'ubuntu-latest'
         run: |
           mkdir -p dist
           cp target/release/dwdr dist/dwdr-linux
 
-      - name: Stage binary (macOS)
-        if: matrix.os == 'macos-latest'
+      - name: Stage binary (Linux ARM64)
+        if: matrix.os == 'ubuntu-24.04-arm'
         run: |
           mkdir -p dist
-          cp target/release/dwdr dist/dwdr-mac
-          cp target/release/dwdr dist/dwdr-mac-arm64
+          cp target/release/dwdr dist/dwdr-linux-arm64
+
+      - name: Build and stage binaries (macOS Universal and ARM64)
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/dwdr dist/dwdr-mac-arm64
+          lipo -create -output dist/dwdr-mac target/x86_64-apple-darwin/release/dwdr target/aarch64-apple-darwin/release/dwdr
 
       - name: Stage binary (Windows)
         if: matrix.os == 'windows-latest'
@@ -111,6 +138,7 @@ jobs:
           name: "DWDR v${{ env.DWDR_VERSION }}"
           files: |
             artifacts/dwdr-linux
+            artifacts/dwdr-linux-arm64
             artifacts/dwdr-mac
             artifacts/dwdr-mac-arm64
             artifacts/dwdr-windows.exe
@@ -124,6 +152,7 @@ jobs:
           name: "DWDR Latest"
           files: |
             artifacts/dwdr-linux
+            artifacts/dwdr-linux-arm64
             artifacts/dwdr-mac
             artifacts/dwdr-mac-arm64
             artifacts/dwdr-windows.exe
