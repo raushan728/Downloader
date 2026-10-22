@@ -1868,6 +1868,11 @@ mod tests {
             resolve_resolution(Some(480), Some(640), None),
             Some(("480p", 480))
         );
+        // 4:3 standard aspect ratio (e.g. 1440x1080) must map to 1080p, not 720p
+        assert_eq!(
+            resolve_resolution(Some(1080), Some(1440), None),
+            Some(("1080p", 1080))
+        );
         // Letterboxed widescreen (e.g. 1920x800) must map to 1080p without note
         assert_eq!(
             resolve_resolution(Some(800), Some(1920), None),
@@ -2874,6 +2879,43 @@ mod tests {
     }
 
     #[test]
+    fn test_clean_interrupted_media_files_preserves_siblings_and_original() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path();
+
+        let original_file = dir.join("Lecture 1.mp4");
+        std::fs::write(&original_file, b"original lecture 1").unwrap();
+
+        let sibling_10 = dir.join("Lecture 10.mp4");
+        std::fs::write(&sibling_10, b"sibling lecture 10").unwrap();
+
+        let sibling_copy = dir.join("Lecture 1 (1).mp4");
+        std::fs::write(&sibling_copy, b"copy of lecture 1").unwrap();
+
+        let failed_download = dir.join("Lecture 1 (2).mp4");
+        std::fs::write(&failed_download, b"corrupted partial").unwrap();
+
+        let failed_part = dir.join("Lecture 1 (2).mp4.part");
+        std::fs::write(&failed_part, b"part bytes").unwrap();
+
+        clean_interrupted_media_files(dir.to_str().unwrap(), "Lecture 1", Some("Lecture 1 (2)"));
+        clean_partial_files(dir.to_str().unwrap(), Some("Lecture 1 (2)"));
+
+        assert!(!failed_download.exists());
+        assert!(!failed_part.exists());
+
+        assert!(original_file.exists());
+        assert_eq!(
+            std::fs::read(&original_file).unwrap(),
+            b"original lecture 1"
+        );
+        assert!(sibling_10.exists());
+        assert_eq!(std::fs::read(&sibling_10).unwrap(), b"sibling lecture 10");
+        assert!(sibling_copy.exists());
+        assert_eq!(std::fs::read(&sibling_copy).unwrap(), b"copy of lecture 1");
+    }
+
+    #[test]
     fn test_read_lossy_lines_with_non_utf8_and_eof() {
         let mut data = Vec::new();
         data.extend_from_slice(b"download:PROGRESS|10.0%|1M|10M|1M/s|00:09|avc1\n");
@@ -2895,6 +2937,32 @@ mod tests {
         assert!(lines[1].contains('\u{FFFD}'));
         assert_eq!(lines[2], "[Merger] Merging formats into file");
         assert_eq!(lines[3], "postprocess:POSTPROCESS|finished");
+    }
+
+    #[test]
+    fn test_read_lossy_lines_non_utf8_1000_lines_no_hang() {
+        let mut data = Vec::new();
+        for i in 0..1000 {
+            if i % 3 == 0 {
+                data.extend_from_slice(format!("download:PROGRESS|{}%|invalid:", i).as_bytes());
+                data.extend_from_slice(&[0xFF, 0xFE]);
+                data.extend_from_slice(b"|end\n");
+            } else if i % 3 == 1 {
+                data.extend_from_slice(b"\x80\x81\x82\x83\x84\n");
+            } else {
+                data.extend_from_slice(
+                    format!("download:PROGRESS|{}%|1M|10M|1M/s|00:01\n", i).as_bytes(),
+                );
+            }
+        }
+
+        let cursor = Cursor::new(data);
+        let mut count = 0;
+        read_lossy_lines(cursor, |_| {
+            count += 1;
+        });
+
+        assert_eq!(count, 1000);
     }
 
     #[test]

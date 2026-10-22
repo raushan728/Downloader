@@ -699,6 +699,21 @@ download_path = "/custom/downloads"
         assert_eq!(config.download_path, "/custom/downloads");
         assert_eq!(config.max_parallel_downloads, 3);
         assert_eq!(config.default_quality, "1080p");
+        assert!(!config.compat_mode);
+    }
+
+    #[test]
+    fn test_config_load_partial_toml_from_disk() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("config.toml");
+
+        std::fs::write(&path, "download_path = \"/only/path\"\n").unwrap();
+
+        let loaded = ConfigManager::load_from_path(&path);
+        assert_eq!(loaded.download_path, "/only/path");
+        assert_eq!(loaded.max_parallel_downloads, 3);
+        assert_eq!(loaded.default_quality, "1080p");
+        assert!(!loaded.compat_mode);
     }
 
     #[test]

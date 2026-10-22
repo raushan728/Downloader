@@ -46,24 +46,54 @@ impl MockYtDlpBuilder {
     }
 
     pub fn build(self, dir: &Path) -> PathBuf {
+        let has_both = self.json_output.is_some() && !self.progress_lines.is_empty();
+
         #[cfg(unix)]
         {
             let script_path = dir.join("yt-dlp");
             let mut script = String::from("#!/bin/sh\n");
 
-            if let Some(err) = &self.stderr_output {
-                script.push_str(&format!("echo '{}' >&2\n", err.replace('\'', "'\\''")));
-            }
+            if has_both {
+                script.push_str("case \"$*\" in\n");
+                script.push_str("  *-J*|*--dump-json*)\n");
+                if let Some(json) = &self.json_output {
+                    script.push_str(&format!("    echo '{}'\n", json.replace('\'', "'\\''")));
+                }
+                script.push_str("    exit 0\n    ;;\n");
+                script.push_str("  *--newline*|*--progress-template*|*--print*)\n");
+                if let Some(err) = &self.stderr_output {
+                    script.push_str(&format!("    echo '{}' >&2\n", err.replace('\'', "'\\''")));
+                }
+                for line in &self.progress_lines {
+                    script.push_str(&format!("    echo '{}'\n", line.replace('\'', "'\\''")));
+                }
+                script.push_str(&format!("    exit {}\n    ;;\n", self.exit_code));
+                script.push_str("  *)\n");
+                if let Some(err) = &self.stderr_output {
+                    script.push_str(&format!("    echo '{}' >&2\n", err.replace('\'', "'\\''")));
+                }
+                for line in &self.progress_lines {
+                    script.push_str(&format!("    echo '{}'\n", line.replace('\'', "'\\''")));
+                }
+                if let Some(json) = &self.json_output {
+                    script.push_str(&format!("    echo '{}'\n", json.replace('\'', "'\\''")));
+                }
+                script.push_str(&format!("    exit {}\n    ;;\nesac\n", self.exit_code));
+            } else {
+                if let Some(err) = &self.stderr_output {
+                    script.push_str(&format!("echo '{}' >&2\n", err.replace('\'', "'\\''")));
+                }
 
-            for line in &self.progress_lines {
-                script.push_str(&format!("echo '{}'\n", line.replace('\'', "'\\''")));
-            }
+                for line in &self.progress_lines {
+                    script.push_str(&format!("echo '{}'\n", line.replace('\'', "'\\''")));
+                }
 
-            if let Some(json) = &self.json_output {
-                script.push_str(&format!("echo '{}'\n", json.replace('\'', "'\\''")));
-            }
+                if let Some(json) = &self.json_output {
+                    script.push_str(&format!("echo '{}'\n", json.replace('\'', "'\\''")));
+                }
 
-            script.push_str(&format!("exit {}\n", self.exit_code));
+                script.push_str(&format!("exit {}\n", self.exit_code));
+            }
 
             std::fs::write(&script_path, script).expect("Failed to write mock yt-dlp");
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
@@ -76,19 +106,53 @@ impl MockYtDlpBuilder {
             let script_path = dir.join("yt-dlp.bat");
             let mut script = String::from("@echo off\r\n");
 
-            if let Some(err) = &self.stderr_output {
-                script.push_str(&format!("echo {} >&2\r\n", escape_batch_line(err)));
-            }
+            if has_both {
+                script.push_str("echo %* | findstr /C:\"-J\" >nul\r\n");
+                script.push_str("if %ERRORLEVEL% equ 0 (\r\n");
+                if let Some(json) = &self.json_output {
+                    script.push_str(&format!("    echo {}\r\n", escape_batch_line(json)));
+                }
+                script.push_str("    exit /b 0\r\n)\r\n");
+                script.push_str("echo %* | findstr /C:\"--dump-json\" >nul\r\n");
+                script.push_str("if %ERRORLEVEL% equ 0 (\r\n");
+                if let Some(json) = &self.json_output {
+                    script.push_str(&format!("    echo {}\r\n", escape_batch_line(json)));
+                }
+                script.push_str("    exit /b 0\r\n)\r\n");
+                script.push_str("echo %* | findstr /C:\"--progress-template\" /C:\"--newline\" /C:\"--print\" >nul\r\n");
+                script.push_str("if %ERRORLEVEL% equ 0 (\r\n");
+                if let Some(err) = &self.stderr_output {
+                    script.push_str(&format!("    echo {} >&2\r\n", escape_batch_line(err)));
+                }
+                for line in &self.progress_lines {
+                    script.push_str(&format!("    echo {}\r\n", escape_batch_line(line)));
+                }
+                script.push_str(&format!("    exit /b {}\r\n)\r\n", self.exit_code));
+                if let Some(err) = &self.stderr_output {
+                    script.push_str(&format!("echo {} >&2\r\n", escape_batch_line(err)));
+                }
+                for line in &self.progress_lines {
+                    script.push_str(&format!("echo {}\r\n", escape_batch_line(line)));
+                }
+                if let Some(json) = &self.json_output {
+                    script.push_str(&format!("echo {}\r\n", escape_batch_line(json)));
+                }
+                script.push_str(&format!("exit /b {}\r\n", self.exit_code));
+            } else {
+                if let Some(err) = &self.stderr_output {
+                    script.push_str(&format!("echo {} >&2\r\n", escape_batch_line(err)));
+                }
 
-            for line in &self.progress_lines {
-                script.push_str(&format!("echo {}\r\n", escape_batch_line(line)));
-            }
+                for line in &self.progress_lines {
+                    script.push_str(&format!("echo {}\r\n", escape_batch_line(line)));
+                }
 
-            if let Some(json) = &self.json_output {
-                script.push_str(&format!("echo {}\r\n", escape_batch_line(json)));
-            }
+                if let Some(json) = &self.json_output {
+                    script.push_str(&format!("echo {}\r\n", escape_batch_line(json)));
+                }
 
-            script.push_str(&format!("exit /b {}\r\n", self.exit_code));
+                script.push_str(&format!("exit /b {}\r\n", self.exit_code));
+            }
 
             std::fs::write(&script_path, script).expect("Failed to write mock yt-dlp.bat");
             script_path

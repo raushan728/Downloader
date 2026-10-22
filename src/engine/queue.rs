@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use colored::Colorize;
 use fs2::FileExt;
-#[cfg(not(test))]
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::manager::ConfigManager;
@@ -833,6 +832,69 @@ impl QueueManager {
         Self::render_status_snapshot(&self.tasks, self.max_parallel);
     }
 
+    pub fn render_live_status_lines(
+        active_tasks: &[(usize, String, String, TaskStatus, TaskProgress)],
+        max_parallel: usize,
+        queued_count: usize,
+        term_w: usize,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Active Downloads: {}/{} | Queued in line: {}",
+            active_tasks.len(),
+            max_parallel,
+            queued_count
+        ));
+
+        for (id, title, format_desc, status, prog) in active_tasks {
+            let available_bar_width = term_w.saturating_sub(7);
+            let bar = render_progress_bar_with_width(
+                prog.percent,
+                &prog.downloaded_str,
+                &prog.total_str,
+                &prog.speed_str,
+                &prog.eta_str,
+                available_bar_width,
+            );
+            let bar_clean = bar.trim_start_matches('\r').trim_end();
+            let status_str = if *status == TaskStatus::Finalizing {
+                " [Finalizing media...]".yellow().to_string()
+            } else {
+                String::new()
+            };
+            let desc_tag = format!(" [{}]", format_desc);
+            let status_extra_len = if *status == TaskStatus::Finalizing {
+                24 + desc_tag.len()
+            } else {
+                desc_tag.len()
+            };
+            let max_title_len = term_w.saturating_sub(15 + status_extra_len).max(10);
+            let title_display = if title.width() > max_title_len {
+                let mut current_width = 0;
+                let mut truncated = String::new();
+                let target_width = max_title_len.saturating_sub(3);
+                for ch in title.chars() {
+                    let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
+                    if current_width + ch_w > target_width {
+                        break;
+                    }
+                    current_width += ch_w;
+                    truncated.push(ch);
+                }
+                format!("{}...", truncated)
+            } else {
+                title.clone()
+            };
+            lines.push(format!(
+                "  [#{}] \"{}\"{}{}",
+                id, title_display, desc_tag, status_str
+            ));
+            lines.push(format!("       {}", bar_clean));
+        }
+
+        lines
+    }
+
     pub fn print_status_live(manager_arc: &Arc<Mutex<Self>>) {
         let (tasks, max_parallel, is_active) = {
             let mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
@@ -901,6 +963,7 @@ impl QueueManager {
                     .filter(|(_, _, _, s, _)| {
                         matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
                     })
+                    .cloned()
                     .collect();
 
                 let queued_count = tasks_snapshot
@@ -922,66 +985,18 @@ impl QueueManager {
                     break;
                 }
 
-                let mut count = 0;
-                println!(
-                    "Active Downloads: {}/{} | Queued in line: {}",
-                    active_tasks.len(),
-                    max_parallel,
-                    queued_count
-                );
-                count += 1;
-
                 let term_w = crate::engine::downloader::get_terminal_width();
-
-                for (id, title, format_desc, status, prog) in &active_tasks {
-                    let available_bar_width = term_w.saturating_sub(7);
-                    let bar = render_progress_bar_with_width(
-                        prog.percent,
-                        &prog.downloaded_str,
-                        &prog.total_str,
-                        &prog.speed_str,
-                        &prog.eta_str,
-                        available_bar_width,
-                    );
-                    let bar_clean = bar.trim_start_matches('\r').trim_end();
-                    let status_str = if *status == TaskStatus::Finalizing {
-                        " [Finalizing media...]".yellow()
-                    } else {
-                        "".normal()
-                    };
-                    let desc_tag = format!(" [{}]", format_desc);
-                    let status_extra_len = if *status == TaskStatus::Finalizing {
-                        24 + desc_tag.len()
-                    } else {
-                        desc_tag.len()
-                    };
-                    let max_title_len = term_w.saturating_sub(15 + status_extra_len).max(10);
-                    let title_display = if title.width() > max_title_len {
-                        let mut current_width = 0;
-                        let mut truncated = String::new();
-                        let target_width = max_title_len.saturating_sub(3);
-                        for ch in title.chars() {
-                            let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
-                            if current_width + ch_w > target_width {
-                                break;
-                            }
-                            current_width += ch_w;
-                            truncated.push(ch);
-                        }
-                        format!("{}...", truncated)
-                    } else {
-                        title.clone()
-                    };
-                    println!(
-                        "  [#{}] \"{}\"{}{}",
-                        id, title_display, desc_tag, status_str
-                    );
-                    println!("       {}", bar_clean);
-                    count += 2;
+                let status_lines = Self::render_live_status_lines(
+                    &active_tasks,
+                    max_parallel,
+                    queued_count,
+                    term_w,
+                );
+                for line in &status_lines {
+                    println!("{}", line);
                 }
-
                 let _ = io::stdout().flush();
-                lines_printed = count;
+                lines_printed = status_lines.len() as u16;
             }
 
             let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
@@ -1826,6 +1841,32 @@ mod tests {
     }
 
     #[test]
+    fn test_queue_immediate_cancel_after_enqueue() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+
+        let res = QueueManager::enqueue(
+            &mgr_arc,
+            "https://example.com/fast".to_string(),
+            "Immediate Cancel Video".to_string(),
+            "137".to_string(),
+            temp_dir.path().to_str().unwrap().to_string(),
+        );
+        assert!(matches!(res, EnqueueResult::Started { task_id: 1, .. }));
+
+        // Cancel immediately
+        QueueManager::cancel_and_join(&mgr_arc);
+
+        let mgr = mgr_arc.lock().unwrap();
+        assert!(mgr.cancelled.load(Ordering::SeqCst));
+        assert!(mgr.queue.is_empty());
+        assert_eq!(mgr.active_count, 0);
+
+        let task = mgr.tasks[0].lock().unwrap();
+        assert!(matches!(task.status, TaskStatus::Cancelled));
+    }
+
+    #[test]
     fn test_queue_find_completed_file_verification() {
         let temp_dir = tempfile::tempdir().unwrap();
         let download_dir = temp_dir.path().to_str().unwrap();
@@ -1877,6 +1918,58 @@ mod tests {
 
         QueueManager::print_queue_live(&mgr_arc);
         assert!(mgr_arc.try_lock().is_ok());
+    }
+
+    #[test]
+    fn test_render_live_status_lines_pure_formatting() {
+        let active_tasks = vec![
+            (
+                1,
+                "Normal Title Video".to_string(),
+                "1080p (mp4)".to_string(),
+                TaskStatus::Downloading,
+                TaskProgress {
+                    percent: 50.0,
+                    downloaded_str: "50 MiB".to_string(),
+                    total_str: "100 MiB".to_string(),
+                    speed_str: "5.0 MiB/s".to_string(),
+                    eta_str: "00:10".to_string(),
+                },
+            ),
+            (
+                2,
+                "Finalizing Title Video".to_string(),
+                "720p".to_string(),
+                TaskStatus::Finalizing,
+                TaskProgress::default(),
+            ),
+        ];
+
+        let lines = QueueManager::render_live_status_lines(&active_tasks, 3, 4, 80);
+        assert_eq!(lines.len(), 5);
+        assert_eq!(lines[0], "Active Downloads: 2/3 | Queued in line: 4");
+        assert!(lines[1].contains("[#1] \"Normal Title Video\" [1080p (mp4)]"));
+        assert!(lines[2].contains("50.0%"));
+        assert!(lines[3].contains("[#2] \"Finalizing Title Video\" [720p]"));
+        assert!(lines[3].contains("Finalizing media..."));
+    }
+
+    #[test]
+    fn test_render_live_status_lines_unicode_truncation() {
+        // Multi-byte wide Japanese title ("Japanese Title Very Long Filename Sample Test...")
+        // to verify double-width characters truncate safely without UTF-8 boundary panics.
+        let active_tasks = vec![(
+            1,
+            "日本語タイトル非常に長い動画ファイル名サンプルテストあいうえおかきくけこさしすせそ"
+                .to_string(),
+            "1080p".to_string(),
+            TaskStatus::Downloading,
+            TaskProgress::default(),
+        )];
+
+        let lines = QueueManager::render_live_status_lines(&active_tasks, 1, 0, 40);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[1].contains("..."));
     }
 
     #[test]
