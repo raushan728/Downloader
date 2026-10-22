@@ -2189,15 +2189,17 @@ mod tests {
             "unable to download video data: HTTP Error 403: Forbidden"
         );
 
-        // Update mock executable to simulate successful JSON extraction
+        // Use a separate mock script to avoid ETXTBSY (text file busy) on Unix when rewriting an executed file
+        let mock_engine_ok = temp_dir.path().join("mock_ytdlp_ok.sh");
         let mock_json = r#"{"title": "Offline Mock Video", "duration": 60, "formats": [{"format_id": "18", "ext": "mp4", "width": 640, "height": 360, "vcodec": "avc1", "acodec": "mp4a", "filesize": 1000000}]}"#;
         std::fs::write(
-            &mock_engine,
+            &mock_engine_ok,
             format!("#!/bin/sh\ncat << 'EOF'\n{}\nEOF\nexit 0\n", mock_json),
         )
         .unwrap();
+        std::fs::set_permissions(&mock_engine_ok, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let result_ok = fetch_video_info("https://youtube.com/watch?v=mock", &mock_engine);
+        let result_ok = fetch_video_info("https://youtube.com/watch?v=mock", &mock_engine_ok);
         assert!(result_ok.is_ok());
         let info = result_ok.unwrap();
         assert_eq!(info.title, "Offline Mock Video");

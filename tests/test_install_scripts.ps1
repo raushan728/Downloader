@@ -46,11 +46,31 @@ try {
     $PythonCmd = if (Get-Command "python" -ErrorAction SilentlyContinue) { "python" } elseif (Get-Command "python3" -ErrorAction SilentlyContinue) { "python3" } else { $null }
     if ($PythonCmd) {
         $ServerProcess = Start-Process -FilePath $PythonCmd -ArgumentList "-m", "http.server", "$Port", "--directory", "$TempStage" -PassThru -WindowStyle Hidden
-        Start-Sleep -Seconds 2
-        $HttpBase = "http://127.0.0.1:$Port"
-        $env:DWDR_INSTALL_URL = "$HttpBase/dwdr-windows.exe"
-        $env:DWDR_CHECKSUM_URL = "$HttpBase/SHA256SUMS"
-        Write-Host "INFO: Mock release server listening at $HttpBase" -ForegroundColor Cyan
+        $ServerUp = $false
+        for ($i = 0; $i -lt 10; $i++) {
+            Start-Sleep -Milliseconds 300
+            if ($ServerProcess.HasExited) { break }
+            try {
+                $tcp = New-Object System.Net.Sockets.TcpClient
+                $tcp.Connect("127.0.0.1", $Port)
+                $tcp.Close()
+                $ServerUp = $true
+                break
+            }
+            catch {}
+        }
+        if ($ServerUp) {
+            $HttpBase = "http://127.0.0.1:$Port"
+            $env:DWDR_INSTALL_URL = "$HttpBase/dwdr-windows.exe"
+            $env:DWDR_CHECKSUM_URL = "$HttpBase/SHA256SUMS"
+            Write-Host "INFO: Mock release server listening at $HttpBase" -ForegroundColor Cyan
+        }
+        else {
+            if ($ServerProcess -and -not $ServerProcess.HasExited) {
+                Stop-Process -Id $ServerProcess.Id -Force -ErrorAction SilentlyContinue
+            }
+            $ServerProcess = $null
+        }
     }
 }
 catch {
@@ -60,6 +80,7 @@ catch {
 if (-not $env:DWDR_INSTALL_URL) {
     $env:DWDR_INSTALL_URL = (New-Object System.Uri($MockExe)).AbsoluteUri
     $env:DWDR_CHECKSUM_URL = (New-Object System.Uri($SumsFile)).AbsoluteUri
+    Write-Host "INFO: Using hermetic file URI for test installation." -ForegroundColor Cyan
 }
 
 try {
