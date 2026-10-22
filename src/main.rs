@@ -6,9 +6,8 @@ use dwdr::cli::router::{Cli, Commands};
 use dwdr::cli::shell::{process_url, reset_terminal_state, start_repl};
 use dwdr::config::manager::ConfigManager;
 use dwdr::engine::downloader::cancel_direct_download;
-use dwdr::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
 use dwdr::engine::queue::cancel_global_downloads;
-use dwdr::engine::updater::{ensure_dependencies, ensure_ffmpeg, update_self};
+use dwdr::engine::updater::{update_core_engines, update_self};
 
 fn main() {
     #[cfg(target_os = "windows")]
@@ -67,8 +66,11 @@ fn main() {
     let mut config = ConfigManager::load();
 
     if let Some(url) = cli.url {
-        process_url(&url, &mut config, cli.force);
+        let result = process_url(&url, &mut config, cli.force);
         reset_terminal_state();
+        if result.is_err() {
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -83,46 +85,11 @@ fn main() {
                 ConfigManager::handle_cli(&mut config, action, key, value, force);
             }
             Commands::Update => {
-                println!("{}", "INFO: Forcing update for core engines...".cyan());
-                let yt = get_ytdlp_path();
-                let ff = get_ffmpeg_path();
-                let mut removal_failed = false;
-
-                if yt.exists()
-                    && let Err(e) = std::fs::remove_file(&yt)
-                {
-                    eprintln!(
-                        "WARNING: Failed to remove existing engine binary '{}': {}",
-                        yt.display(),
-                        e
-                    );
-                    removal_failed = true;
-                }
-                if ff.exists()
-                    && let Err(e) = std::fs::remove_file(&ff)
-                {
-                    eprintln!(
-                        "WARNING: Failed to remove existing media merger binary '{}': {}",
-                        ff.display(),
-                        e
-                    );
-                    removal_failed = true;
-                }
-
-                if removal_failed {
-                    println!(
-                        "{}",
-                        "ERROR: Could not remove old engine binaries because they are locked or in use. Please close active DWDR instances and retry."
-                            .red()
-                            .bold()
-                    );
-                    return;
-                }
-
-                if let Err(e) = ensure_dependencies() {
-                    println!("{}", format!("\nERROR: {}\n", e).red().bold());
-                } else if let Err(e) = ensure_ffmpeg() {
-                    println!("{}", format!("\nERROR: {}\n", e).red().bold());
+                println!("{}", "INFO: Updating core engines...".cyan());
+                if let Err(e) = update_core_engines() {
+                    eprintln!("{}", format!("\nERROR: {}\n", e).red().bold());
+                    reset_terminal_state();
+                    std::process::exit(1);
                 } else {
                     println!(
                         "{}",
@@ -136,7 +103,9 @@ fn main() {
                     "INFO: Updating DWDR CLI to the latest version...".cyan()
                 );
                 if let Err(e) = update_self() {
-                    println!("{}", format!("\nERROR: {}\n", e).red().bold());
+                    eprintln!("{}", format!("\nERROR: {}\n", e).red().bold());
+                    reset_terminal_state();
+                    std::process::exit(1);
                 }
             }
         }

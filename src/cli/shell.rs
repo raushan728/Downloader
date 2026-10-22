@@ -14,7 +14,7 @@ use crate::engine::downloader::{
 };
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
 use crate::engine::queue::{EnqueueResult, QueueManager, set_global_queue};
-use crate::engine::updater::ensure_dependencies;
+use crate::engine::updater::{check_core_engines_update, ensure_dependencies};
 use crate::utils::validator::is_valid_url;
 
 /// Resets terminal raw mode and restores cursor and colors to prevent leaked terminal styling.
@@ -48,7 +48,7 @@ pub fn resolve_media_to_download(
     force: bool,
 ) -> Option<ResolvedMedia> {
     if !is_valid_url(url) {
-        println!(
+        eprintln!(
             "{}",
             "\nERROR: Invalid URL provided. It must start with http:// or https://\n"
                 .red()
@@ -63,7 +63,7 @@ pub fn resolve_media_to_download(
     let ffmpeg_path = get_ffmpeg_path();
 
     if let Err(e) = ensure_dependencies() {
-        println!(
+        eprintln!(
             "{}",
             format!("\nERROR: Failed to setup engine: {}\n", e)
                 .red()
@@ -90,16 +90,19 @@ pub fn resolve_media_to_download(
             info
         }
         Err(e) => {
-            println!(
+            eprintln!(
                 "{}",
                 format!("\nERROR: Failed to extract video info: {}\n", e).red()
             );
+            if let Some(msg) = check_core_engines_update(&yt_dlp_path, &ffmpeg_path) {
+                eprintln!("{}\n", msg.yellow());
+            }
             return None;
         }
     };
 
     if info.formats.is_empty() {
-        println!(
+        eprintln!(
             "{}",
             "\nERROR: No downloadable formats found for this media stream.\n"
                 .red()
@@ -190,8 +193,16 @@ pub fn resolve_media_to_download(
         }
     };
 
+    let has_audio = !is_audio
+        && info
+            .formats
+            .iter()
+            .any(|f| f.format_id == chosen_id && f.acodec != "none" && !f.acodec.is_empty());
+
     let format_id = if is_audio {
         format!("audio:{}", chosen_id)
+    } else if has_audio {
+        format!("direct:{}", chosen_id)
     } else {
         chosen_id
     };
@@ -222,7 +233,7 @@ pub fn resolve_media_to_download(
                         Ok(valid_dir) => {
                             config.download_path = valid_dir.to_string_lossy().to_string();
                             if let Err(save_err) = ConfigManager::save(config) {
-                                println!(
+                                eprintln!(
                                     "{}",
                                     format!(
                                         "\nERROR: Failed to save download path: {}\n",
@@ -242,7 +253,7 @@ pub fn resolve_media_to_download(
                         }
                     }
                 } else {
-                    println!(
+                    eprintln!(
                         "{}",
                         "\nERROR: No valid download folder selected. Download cancelled.\n"
                             .red()
@@ -355,44 +366,52 @@ pub fn resolve_media_to_download(
 }
 
 /// Single-URL direct execution entry point for non-interactive CLI usage.
-pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) {
-    if let Some(media) = resolve_media_to_download(url, config, force) {
-        println!(
-            "{}",
-            format!(
-                "INFO: Starting download for: \"{}\" [{}]",
-                media.title, media.format_desc
-            )
-            .cyan()
-        );
-        match download_media_ext(
-            url,
-            &media.format_id,
-            &media.yt_dlp_path,
-            &media.ffmpeg_path,
-            &config.download_path,
-            Some(&media.title),
-            media.custom_output_template.as_deref(),
-            media.force_overwrite,
-        ) {
-            Ok(()) => {
-                println!(
-                    "{}",
-                    format!(
-                        "SUCCESS: Download completed successfully! File saved: \"{}\" in {}",
-                        media.title, config.download_path
-                    )
-                    .green()
-                    .bold()
-                );
+pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<(), String> {
+    let media = match resolve_media_to_download(url, config, force) {
+        Some(m) => m,
+        None => return Err("Failed to resolve media".to_string()),
+    };
+
+    println!(
+        "{}",
+        format!(
+            "INFO: Starting download for: \"{}\" [{}]",
+            media.title, media.format_desc
+        )
+        .cyan()
+    );
+    match download_media_ext(
+        url,
+        &media.format_id,
+        &media.yt_dlp_path,
+        &media.ffmpeg_path,
+        &config.download_path,
+        Some(&media.title),
+        media.custom_output_template.as_deref(),
+        media.force_overwrite,
+    ) {
+        Ok(()) => {
+            println!(
+                "{}",
+                format!(
+                    "SUCCESS: Download completed successfully! File saved: \"{}\" in {}",
+                    media.title, config.download_path
+                )
+                .green()
+                .bold()
+            );
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!(
+                "{}",
+                format!("\nERROR: Download failed: {}\n", e).red().bold()
+            );
+            if let Some(msg) = check_core_engines_update(&media.yt_dlp_path, &media.ffmpeg_path) {
+                eprintln!("{}\n", msg.yellow());
             }
-            Err(e) => {
-                println!(
-                    "{}",
-                    format!("\nERROR: Download failed: {}\n", e).red().bold()
-                );
-                reset_terminal_state();
-            }
+            reset_terminal_state();
+            Err(e)
         }
     }
 }

@@ -136,7 +136,6 @@ dwdr config show
 ```text
 Current Configuration:
 download_path: /media/external/downloads
-update_check_days: 0
 max_parallel_downloads: 5
 default_quality: 720p
 ```

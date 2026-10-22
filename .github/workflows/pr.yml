@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,6 +37,13 @@ jobs:
       - name: Build
         run: cargo build --all-targets
 
+      - name: Verify macOS Dual-Target Build
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo check --target x86_64-apple-darwin
+          cargo check --target aarch64-apple-darwin
+
       - name: Run Tests
         run: cargo test
 
@@ -52,6 +59,8 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux
+          - os: ubuntu-24.04-arm
+            platform: linux-arm
           - os: macos-latest
             platform: macos
           - os: windows-latest
@@ -63,6 +72,10 @@ jobs:
       - name: Test Install & Uninstall Scripts (Linux via Docker)
         if: matrix.platform == 'linux'
         run: bash tests/test_install_scripts.sh
+
+      - name: Test Install & Uninstall Scripts (Linux ARM64 Native)
+        if: matrix.platform == 'linux-arm'
+        run: bash tests/test_install_scripts.sh --native
 
       - name: Test Install & Uninstall Scripts (macOS Native)
         if: matrix.platform == 'macos'

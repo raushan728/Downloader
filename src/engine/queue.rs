@@ -13,6 +13,7 @@ use colored::Colorize;
 
 use crate::config::manager::ConfigManager;
 use crate::engine::downloader::{download_media_background_ext, render_progress_bar};
+use crate::engine::updater::check_core_engines_update;
 
 /// Lifecycle states of a queued or active media download task.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -511,6 +512,9 @@ impl QueueManager {
                                 .red()
                                 .bold()
                         );
+                        if let Some(msg) = check_core_engines_update(&yt_dlp_path, &ffmpeg_path) {
+                            println!("{}\n", msg.yellow());
+                        }
                     }
                 }
             }
@@ -586,6 +590,12 @@ impl QueueManager {
         self.cancelled.store(true, Ordering::SeqCst);
         self.queue.clear();
 
+        // Terminate all active processes first to prevent dying processes from recreating partial files.
+        for &pid in &self.active_pids {
+            kill_process_by_pid(pid);
+        }
+        self.active_pids.clear();
+
         for task in &self.tasks {
             let mut t = match task.lock() {
                 Ok(guard) => guard,
@@ -602,10 +612,6 @@ impl QueueManager {
             }
         }
 
-        for &pid in &self.active_pids {
-            kill_process_by_pid(pid);
-        }
-        self.active_pids.clear();
         self.active_count = 0;
         clear_active_download();
     }

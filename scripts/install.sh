@@ -41,7 +41,8 @@ curl -fsSL "${URL}" -o "${TMP_BIN}"
 
 # Verify SHA256 checksum if release manifest is available
 if curl -fsSL "${CHECKSUM_URL}" -o "${TMP_BIN}.sums" 2>/dev/null; then
-	EXPECTED_HASH=$(grep "dwdr-${SUFFIX}\$" "${TMP_BIN}.sums" | awk '{print $1}')
+	TARGET_NAME="$(basename "${URL}")"
+	EXPECTED_HASH=$(grep -E "(dwdr-${SUFFIX}|${TARGET_NAME})\$" "${TMP_BIN}.sums" | awk '{print $1}' | head -n 1)
 	if [ -n "${EXPECTED_HASH}" ]; then
 		ACTUAL_HASH=""
 		if command -v sha256sum >/dev/null 2>&1; then
@@ -57,6 +58,9 @@ if curl -fsSL "${CHECKSUM_URL}" -o "${TMP_BIN}.sums" 2>/dev/null; then
 			fi
 			echo "INFO: SHA256 checksum verified."
 		fi
+	else
+		echo "ERROR: Checksum manifest at ${CHECKSUM_URL} does not contain an entry for dwdr-${SUFFIX} or ${TARGET_NAME}."
+		exit 1
 	fi
 	rm -f "${TMP_BIN}.sums"
 fi

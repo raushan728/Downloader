@@ -13,9 +13,9 @@ use crate::engine::queue::{is_download_active, is_pid_alive};
 
 /// Global runtime configuration serialized in `~/.dwdr/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DwdrConfig {
     pub download_path: String,
-    pub update_check_days: u32,
     pub max_parallel_downloads: u8,
     pub default_quality: String,
 }
@@ -41,7 +41,6 @@ impl Default for DwdrConfig {
 
         Self {
             download_path,
-            update_check_days: 0,
             max_parallel_downloads: 3,
             default_quality: "1080p".to_string(),
         }
@@ -216,8 +215,14 @@ impl ConfigManager {
 
         if file_path.is_file()
             && let Ok(content) = fs::read_to_string(&file_path)
-            && let Ok(config) = toml::from_str(&content)
+            && let Ok(mut config) = toml::from_str::<DwdrConfig>(&content)
         {
+            if !(1..=16).contains(&config.max_parallel_downloads) {
+                config.max_parallel_downloads = config.max_parallel_downloads.clamp(1, 16);
+            }
+            if !is_valid_quality(&config.default_quality) {
+                config.default_quality = "1080p".to_string();
+            }
             return config;
         }
 
@@ -314,11 +319,6 @@ impl ConfigManager {
                         "{}: {}",
                         "download_path".cyan(),
                         config.download_path.yellow()
-                    );
-                    println!(
-                        "{}: {}",
-                        "update_check_days".cyan(),
-                        config.update_check_days.to_string().yellow()
                     );
                     println!(
                         "{}: {}",
@@ -436,17 +436,6 @@ impl ConfigManager {
                                 return;
                             }
                         },
-                        "update-days" => match value.parse::<u32>() {
-                            Ok(v) if v <= 365 => new_config.update_check_days = v,
-                            Ok(_) | Err(_) => {
-                                println!(
-                                    "{}",
-                                    "\nERROR: Invalid update-days value. Must be between 0 and 365.\n"
-                                        .red()
-                                );
-                                return;
-                            }
-                        },
                         _ => {
                             println!("{}", "\nERROR: Unknown config key.\n".red());
                             return;
@@ -484,7 +473,6 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = DwdrConfig::default();
-        assert_eq!(config.update_check_days, 0);
         assert_eq!(config.max_parallel_downloads, 3);
         assert_eq!(config.default_quality, "1080p");
         assert!(!config.download_path.is_empty());
@@ -563,15 +551,6 @@ mod tests {
             false,
         );
 
-        // Invalid update-days
-        ConfigManager::handle_cli(
-            &mut config,
-            Some("set".to_string()),
-            Some("update-days".to_string()),
-            Some("invalid_num".to_string()),
-            false,
-        );
-
         // Invalid parallel (out of 1..=16 bounds)
         ConfigManager::handle_cli(
             &mut config,
@@ -604,19 +583,12 @@ mod tests {
             false,
         );
 
-        // Invalid update-days (out of 0..=365 bounds)
+        // Obsolete update-days is treated as unknown key
         ConfigManager::handle_cli(
             &mut config,
             Some("set".to_string()),
             Some("update-days".to_string()),
-            Some("366".to_string()),
-            false,
-        );
-        ConfigManager::handle_cli(
-            &mut config,
-            Some("set".to_string()),
-            Some("update-days".to_string()),
-            Some("10000".to_string()),
+            Some("30".to_string()),
             false,
         );
 
@@ -632,7 +604,6 @@ mod tests {
         // Values remain unaffected by erroneous input
         assert_eq!(config.default_quality, "1080p");
         assert_eq!(config.max_parallel_downloads, 3);
-        assert_eq!(config.update_check_days, 0);
 
         // Valid updates succeed
         let temp_dir = tempfile::tempdir().unwrap();
@@ -666,15 +637,6 @@ mod tests {
             true,
         );
         assert_eq!(config.max_parallel_downloads, 16);
-
-        ConfigManager::handle_cli(
-            &mut config,
-            Some("set".to_string()),
-            Some("update-days".to_string()),
-            Some("30".to_string()),
-            true,
-        );
-        assert_eq!(config.update_check_days, 30);
     }
 
     #[test]
@@ -707,6 +669,45 @@ mod tests {
         let path = std::path::Path::new(&config.download_path);
         assert!(path.is_absolute());
         assert!(!config.download_path.starts_with('.'));
+    }
+
+    #[test]
+    fn test_config_partial_toml_serde_default() {
+        let partial_toml = r#"
+download_path = "/custom/downloads"
+"#;
+        let config: DwdrConfig = toml::from_str(partial_toml).unwrap();
+        assert_eq!(config.download_path, "/custom/downloads");
+        assert_eq!(config.max_parallel_downloads, 3);
+        assert_eq!(config.default_quality, "1080p");
+    }
+
+    #[test]
+    fn test_config_load_clamps_parallel_and_quality() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("config.toml");
+
+        // Test clamping parallel to 1 when set to 0, and invalid quality to 1080p
+        std::fs::write(
+            &path,
+            "download_path = \"/test\"\nmax_parallel_downloads = 0\ndefault_quality = \"invalid_tier\"\n",
+        )
+        .unwrap();
+
+        let config = ConfigManager::load_from_path(&path);
+        assert_eq!(config.max_parallel_downloads, 1);
+        assert_eq!(config.default_quality, "1080p");
+
+        // Test clamping parallel to 16 when set to 99
+        std::fs::write(
+            &path,
+            "download_path = \"/test\"\nmax_parallel_downloads = 99\ndefault_quality = \"720p\"\n",
+        )
+        .unwrap();
+
+        let config_high = ConfigManager::load_from_path(&path);
+        assert_eq!(config_high.max_parallel_downloads, 16);
+        assert_eq!(config_high.default_quality, "720p");
     }
 
     #[test]
