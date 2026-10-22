@@ -114,13 +114,11 @@ Update specific keys from scripts or terminal commands:
 dwdr config set quality 720p
 dwdr config set path /path/to/downloads
 dwdr config set parallel 5
-dwdr config set update-days 14
 ```
 
 Validation bounds enforced:
 - `quality`: Must be one of `"always ask"`, `"best"`, `"8k"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"360p"`, `"240p"`, `"144p"`, `"audio"`.
 - `parallel`: Integer between `1` and `16`.
-- `update-days`: Integer between `0` and `365` (`0` disables check).
 - `path`: Must point to an existing or creatable directory with write permissions.
 
 If a download is actively running in another DWDR process, configuration changes are blocked by `~/.dwdr/active_downloads.lock`. To bypass validation bounds or concurrency locks, append `--force`:

@@ -14,7 +14,7 @@ DWDR provides a total of **20 primary commands and subcommands** across three ex
 | `dwdr -V`, `--version` | Direct CLI | None | Prints the compiled DWDR binary version string. | `dwdr --version` |
 | `dwdr config` | Subcommand | None | Launches the guided terminal menu to configure download folders, resolutions, and parallel limits. | `dwdr config` |
 | `dwdr config show` | Subcommand | None | Displays current persistent configuration values from `~/.dwdr/config.toml`. | `dwdr config show` |
-| `dwdr config set` | Subcommand | `<key>` `<value>` `[--force]` | Programmatically updates a configuration key (`path`, `quality`, `parallel`, `update-days`). | `dwdr config set quality 720p` |
+| `dwdr config set` | Subcommand | `<key>` `<value>` `[--force]` | Programmatically updates a configuration key (`path`, `quality`, `parallel`). | `dwdr config set quality 720p` |
 | `dwdr config reset` | Subcommand | `[--force]` | Restores `~/.dwdr/config.toml` to clean factory defaults (prompts confirmation unless `--force`). | `dwdr config reset` |
 | `dwdr update` | Subcommand | None | Forces an immediate redownload and verification of internal `yt-dlp` and `ffmpeg` engine binaries. | `dwdr update` |
 | `dwdr self-update` | Subcommand | None | Downloads and atomically replaces the running DWDR CLI executable with the latest GitHub release. | `dwdr self-update` |
@@ -68,8 +68,8 @@ DWDR provides a total of **20 primary commands and subcommands** across three ex
   - Option 5: Cancels without saving.
   - In non-TTY environments, exits cleanly with an informative error rather than looping.
 - **Programmatic Set** (`dwdr config set <key> <value>`):
-  - Supported keys: `path`, `quality`, `parallel`, `update-days`.
-  - Validation bounds: `parallel` (`1..=16`), `update-days` (`0..=365`), valid quality tiers, write-permission directory check.
+  - Supported keys: `path`, `quality`, `parallel`.
+  - Validation bounds: `parallel` (`1..=16`), valid quality tiers, write-permission directory check.
   - Concurrency safety: Rejects mutations when downloads are running in another process (`active_downloads.lock`).
   - Flags: `--force` overrides safety bounds and active download locks.
 - **Reset Configuration** (`dwdr config reset`):

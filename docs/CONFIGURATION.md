@@ -16,7 +16,6 @@ DWDR stores user configuration in an isolated TOML file with automatic self-heal
 
 ```toml
 download_path = "/home/user/Downloads/DWDR"
-update_check_days = 0
 max_parallel_downloads = 3
 default_quality = "1080p"
 ```
@@ -30,7 +29,6 @@ default_quality = "1080p"
 | `download_path` | string | `~/Downloads/DWDR` | Destination directory where downloaded media files are saved. Verified for write permissions. | Valid directory path |
 | `default_quality` | string | `"1080p"` | Preferred video resolution matched during Smart Fallback downloads, or manual prompt. | `"always ask"`, `"best"`, `"8k"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"360p"`, `"240p"`, `"144p"`, `"audio"` |
 | `max_parallel_downloads` | integer | `3` | Maximum number of concurrent media downloads allowed simultaneously in interactive mode (additional tasks wait in queue). | `1` to `16` |
-| `update_check_days` | integer | `0` | Frequency in days to check for dependency updates (`0` disables automatic checks). | `0` to `365` |
 
 ---
 
@@ -80,7 +78,6 @@ dwdr config show
 # Set specific settings (enforces validation bounds)
 dwdr config set quality 720p
 dwdr config set parallel 5
-dwdr config set update-days 14
 dwdr config set path /media/downloads
 
 # Force update bypassing validation and concurrency locks

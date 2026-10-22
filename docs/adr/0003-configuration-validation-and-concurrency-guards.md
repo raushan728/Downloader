@@ -17,7 +17,6 @@ During early development, configuration persistence and validation presented sev
 1. **Strict Input Validation and Bounds**:
    - `quality` must match supported resolution profiles (`always ask`, `best`, `8k`, `4k`, `2k`, `1080p`, `720p`, `480p`, `360p`, `240p`, `144p`, `audio`).
    - `parallel` is bounded between `1` and `16`.
-   - `update-days` is bounded between `0` and `365`.
    - `dwdr config reset` prompts for `[y/N]` confirmation in interactive terminals; in non-TTY environments without `--force`, it fails fast directing users to use `--force`.
 
 2. **Directory Configuration Resolution and Atomic Persistence**:

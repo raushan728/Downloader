@@ -15,7 +15,6 @@ use crate::engine::queue::{is_download_active, is_pid_alive};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DwdrConfig {
     pub download_path: String,
-    pub update_check_days: u32,
     pub max_parallel_downloads: u8,
     pub default_quality: String,
 }
@@ -41,7 +40,6 @@ impl Default for DwdrConfig {
 
         Self {
             download_path,
-            update_check_days: 0,
             max_parallel_downloads: 3,
             default_quality: "1080p".to_string(),
         }
@@ -317,11 +315,6 @@ impl ConfigManager {
                     );
                     println!(
                         "{}: {}",
-                        "update_check_days".cyan(),
-                        config.update_check_days.to_string().yellow()
-                    );
-                    println!(
-                        "{}: {}",
                         "max_parallel_downloads".cyan(),
                         config.max_parallel_downloads.to_string().yellow()
                     );
@@ -436,17 +429,6 @@ impl ConfigManager {
                                 return;
                             }
                         },
-                        "update-days" => match value.parse::<u32>() {
-                            Ok(v) if v <= 365 => new_config.update_check_days = v,
-                            Ok(_) | Err(_) => {
-                                println!(
-                                    "{}",
-                                    "\nERROR: Invalid update-days value. Must be between 0 and 365.\n"
-                                        .red()
-                                );
-                                return;
-                            }
-                        },
                         _ => {
                             println!("{}", "\nERROR: Unknown config key.\n".red());
                             return;
@@ -484,7 +466,6 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = DwdrConfig::default();
-        assert_eq!(config.update_check_days, 0);
         assert_eq!(config.max_parallel_downloads, 3);
         assert_eq!(config.default_quality, "1080p");
         assert!(!config.download_path.is_empty());
@@ -563,15 +544,6 @@ mod tests {
             false,
         );
 
-        // Invalid update-days
-        ConfigManager::handle_cli(
-            &mut config,
-            Some("set".to_string()),
-            Some("update-days".to_string()),
-            Some("invalid_num".to_string()),
-            false,
-        );
-
         // Invalid parallel (out of 1..=16 bounds)
         ConfigManager::handle_cli(
             &mut config,
@@ -604,19 +576,12 @@ mod tests {
             false,
         );
 
-        // Invalid update-days (out of 0..=365 bounds)
+        // Obsolete update-days is treated as unknown key
         ConfigManager::handle_cli(
             &mut config,
             Some("set".to_string()),
             Some("update-days".to_string()),
-            Some("366".to_string()),
-            false,
-        );
-        ConfigManager::handle_cli(
-            &mut config,
-            Some("set".to_string()),
-            Some("update-days".to_string()),
-            Some("10000".to_string()),
+            Some("30".to_string()),
             false,
         );
 
@@ -632,7 +597,6 @@ mod tests {
         // Values remain unaffected by erroneous input
         assert_eq!(config.default_quality, "1080p");
         assert_eq!(config.max_parallel_downloads, 3);
-        assert_eq!(config.update_check_days, 0);
 
         // Valid updates succeed
         let temp_dir = tempfile::tempdir().unwrap();
@@ -666,15 +630,6 @@ mod tests {
             true,
         );
         assert_eq!(config.max_parallel_downloads, 16);
-
-        ConfigManager::handle_cli(
-            &mut config,
-            Some("set".to_string()),
-            Some("update-days".to_string()),
-            Some("30".to_string()),
-            true,
-        );
-        assert_eq!(config.update_check_days, 30);
     }
 
     #[test]

@@ -246,51 +246,16 @@ fn test_config_set_invalid_path() {
 
 #[test]
 #[serial]
-fn test_config_set_invalid_update_days() {
+fn test_config_set_obsolete_update_days() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
 
-    // Non-numeric string
-    let mut cmd_str = Command::cargo_bin("dwdr").unwrap();
-    cmd_str
-        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
-        .args(["config", "set", "update-days", "invalid"])
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "update-days", "14"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("ERROR: Invalid update-days value"));
-
-    // Upper bound violation: 366
-    let mut cmd_bound = Command::cargo_bin("dwdr").unwrap();
-    cmd_bound
-        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
-        .args(["config", "set", "update-days", "366"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "ERROR: Invalid update-days value. Must be between 0 and 365.",
-        ));
-
-    // Valid lower boundary: 0
-    let mut cmd_zero = Command::cargo_bin("dwdr").unwrap();
-    cmd_zero
-        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
-        .args(["config", "set", "update-days", "0"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "Successfully updated update-days to 0",
-        ));
-
-    // Valid upper boundary: 365
-    let mut cmd_max = Command::cargo_bin("dwdr").unwrap();
-    cmd_max
-        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
-        .args(["config", "set", "update-days", "365"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "Successfully updated update-days to 365",
-        ));
+        .stdout(predicate::str::contains("ERROR: Unknown config key."));
 }
 
 #[test]

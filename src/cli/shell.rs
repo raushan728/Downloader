@@ -14,7 +14,7 @@ use crate::engine::downloader::{
 };
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
 use crate::engine::queue::{EnqueueResult, QueueManager, set_global_queue};
-use crate::engine::updater::ensure_dependencies;
+use crate::engine::updater::{check_core_engines_update, ensure_dependencies};
 use crate::utils::validator::is_valid_url;
 
 /// Resets terminal raw mode and restores cursor and colors to prevent leaked terminal styling.
@@ -94,6 +94,9 @@ pub fn resolve_media_to_download(
                 "{}",
                 format!("\nERROR: Failed to extract video info: {}\n", e).red()
             );
+            if let Some(msg) = check_core_engines_update(&yt_dlp_path, &ffmpeg_path) {
+                println!("{}\n", msg.yellow());
+            }
             return None;
         }
     };
@@ -391,6 +394,10 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) {
                     "{}",
                     format!("\nERROR: Download failed: {}\n", e).red().bold()
                 );
+                if let Some(msg) = check_core_engines_update(&media.yt_dlp_path, &media.ffmpeg_path)
+                {
+                    println!("{}\n", msg.yellow());
+                }
                 reset_terminal_state();
             }
         }

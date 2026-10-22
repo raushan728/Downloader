@@ -64,7 +64,7 @@ Interactive shell commands provide differentiated observability into background 
 Configuration management (`ConfigManager`) provides robust multi-process and error recovery guarantees:
 - **Atomic Persistence**: Configurations write to a sibling temporary file (`config.toml.tmp`), flush with `sync_all()`, and atomically replace the destination file to prevent partial or corrupted settings on sudden interruption.
 - **Directory Path Resolution**: If `DWDR_CONFIG_PATH` points to a directory, it automatically resolves to `<directory>/config.toml`.
-- **Validation Bounds**: CLI commands enforce bounds on values (`parallel 1..=16`, `update_check_days 0..=365`, valid quality resolution tiers).
+- **Validation Bounds**: CLI commands enforce bounds on values (`parallel 1..=16`, valid quality resolution tiers).
 - **Concurrency Locks**: An isolated lock file (`~/.dwdr/active_downloads.lock`) tracks active download PIDs across processes, preventing race conditions or concurrent overwrite of user settings unless explicitly bypassed with `--force`.
 
 ### 11. Hermetic Testing Harness & Multi-OS CI Matrix

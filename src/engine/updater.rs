@@ -636,6 +636,162 @@ pub fn update_self() -> Result<(), String> {
     Ok(())
 }
 
+/// Compares two CalVer or SemVer version strings and returns true if `latest` is strictly newer than `installed`.
+pub fn is_newer_version(installed: &str, latest: &str) -> bool {
+    let parse_parts = |v: &str| -> Vec<u32> {
+        v.trim_start_matches('v')
+            .split('.')
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect()
+    };
+    let inst_parts = parse_parts(installed);
+    let lat_parts = parse_parts(latest);
+
+    if inst_parts.is_empty() || lat_parts.is_empty() {
+        return false;
+    }
+
+    lat_parts > inst_parts
+}
+
+/// Queries the installed yt-dlp binary version via `--version`.
+pub fn get_installed_ytdlp_version(yt_dlp_path: &Path) -> Option<String> {
+    if !yt_dlp_path.exists() {
+        return None;
+    }
+    let output = std::process::Command::new(yt_dlp_path)
+        .arg("--version")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let ver = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !ver.is_empty() {
+            return Some(ver);
+        }
+    }
+    None
+}
+
+/// Queries the latest yt-dlp release version tag via GitHub releases redirect header.
+pub fn fetch_latest_ytdlp_version(endpoint_url: Option<&str>) -> Result<String, String> {
+    let url = endpoint_url.unwrap_or("https://github.com/yt-dlp/yt-dlp/releases/latest");
+    let mut builder = reqwest::blocking::Client::builder()
+        .user_agent("dwdr-cli/1.0")
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(3));
+
+    if let Some(proxy_url) = resolve_proxy_url()
+        && let Ok(proxy) = reqwest::Proxy::all(&proxy_url)
+    {
+        builder = builder.proxy(proxy);
+    }
+
+    let client = builder
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    let res = client
+        .head(url)
+        .send()
+        .or_else(|_| client.get(url).send())
+        .map_err(|e| format!("Request failed: {}", e))?;
+
+    if let Some(loc) = res.headers().get(reqwest::header::LOCATION) {
+        if let Ok(loc_str) = loc.to_str()
+            && let Some(tag) = loc_str.rsplit('/').next()
+        {
+            let clean_tag = tag.trim_start_matches('v').trim();
+            if !clean_tag.is_empty() {
+                return Ok(clean_tag.to_string());
+            }
+        }
+    } else if res.status().is_success()
+        && let Ok(body) = res.text()
+    {
+        let trimmed = body.trim().trim_start_matches('v').trim();
+        if !trimmed.is_empty() && trimmed.chars().all(|c| c.is_ascii_digit() || c == '.') {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    Err("Could not determine latest version from release response".to_string())
+}
+
+/// Checks if a newer yt-dlp engine release is available compared to the locally installed binary.
+/// Returns Some((installed_version, latest_version)) if an update is available.
+pub fn check_engine_update_available(yt_dlp_path: &Path) -> Option<(String, String)> {
+    // Hermetic test guard: do not make external network requests in test environment
+    if std::env::var("DWDR_YTDLP_PATH").is_ok() {
+        return None;
+    }
+
+    let installed = get_installed_ytdlp_version(yt_dlp_path)?;
+    let latest = fetch_latest_ytdlp_version(None).ok()?;
+
+    if is_newer_version(&installed, &latest) {
+        Some((installed, latest))
+    } else {
+        None
+    }
+}
+
+/// Formats an actionable warning message when media extraction or download fails
+/// and a newer core engine release is available.
+pub fn format_engine_update_reason(installed: &str, latest: &str) -> String {
+    format!(
+        "WARNING: A newer engine version ({}) is available (installed: {}).\n\
+         Media platforms (e.g. YouTube) frequently update extraction algorithms and video players.\n\
+         Run 'dwdr update' to update both core engines (yt-dlp and ffmpeg) to the latest release.",
+        latest, installed
+    )
+}
+
+/// Queries the installed FFmpeg binary version via `-version`.
+pub fn get_installed_ffmpeg_version(ffmpeg_path: &Path) -> Option<String> {
+    if !ffmpeg_path.exists() {
+        return None;
+    }
+    let output = std::process::Command::new(ffmpeg_path)
+        .arg("-version")
+        .output()
+        .ok()?;
+    if output.status.success() {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if let Some(first_line) = stdout.lines().next() {
+            let parts: Vec<&str> = first_line.split_whitespace().collect();
+            if parts.len() >= 3 && parts[0] == "ffmpeg" && parts[1] == "version" {
+                return Some(parts[2].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Inspects core engine dependencies (yt-dlp and ffmpeg) upon download failure and returns
+/// actionable advice if an engine is outdated, missing, or corrupted.
+pub fn check_core_engines_update(yt_dlp_path: &Path, ffmpeg_path: &Path) -> Option<String> {
+    // Hermetic test guard: do not make external network requests in test environment
+    if std::env::var("DWDR_YTDLP_PATH").is_ok() || std::env::var("DWDR_FFMPEG_PATH").is_ok() {
+        return None;
+    }
+
+    // Check FFmpeg binary validity
+    if !is_valid_executable(ffmpeg_path, true) {
+        return Some(
+            "WARNING: FFmpeg media merger binary is missing or corrupted.\n\
+             Run 'dwdr update' to re-download and restore core engines (yt-dlp and ffmpeg)."
+                .to_string(),
+        );
+    }
+
+    // Check if a newer yt-dlp release is available
+    if let Some((installed, latest)) = check_engine_update_available(yt_dlp_path) {
+        return Some(format_engine_update_reason(&installed, &latest));
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -858,5 +1014,93 @@ mod tests {
         assert_eq!(resp.bytes().unwrap(), b"success");
 
         let _ = handle.join();
+    }
+
+    #[test]
+    fn test_is_newer_version() {
+        assert!(is_newer_version("2026.08.19", "2026.10.21"));
+        assert!(is_newer_version("v2026.08.19", "v2026.10.21"));
+        assert!(is_newer_version("2026.10.21", "2026.10.21.1"));
+        assert!(!is_newer_version("2026.10.21", "2026.10.21"));
+        assert!(!is_newer_version("2026.10.22", "2026.10.21"));
+        assert!(!is_newer_version("invalid", "2026.10.21"));
+        assert!(!is_newer_version("2026.10.21", "invalid"));
+        assert!(!is_newer_version("", ""));
+    }
+
+    #[test]
+    fn test_format_engine_update_reason() {
+        let msg = format_engine_update_reason("2026.08.19", "2026.10.21");
+        assert!(msg.contains(
+            "WARNING: A newer engine version (2026.10.21) is available (installed: 2026.08.19)"
+        ));
+        assert!(msg.contains("YouTube"));
+        assert!(msg.contains("dwdr update"));
+    }
+
+    #[test]
+    fn test_fetch_latest_ytdlp_version_redirect() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let handle = std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let resp = b"HTTP/1.1 302 Found\r\nLocation: https://github.com/yt-dlp/yt-dlp/releases/tag/2026.10.21\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = stream.write_all(resp);
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+        });
+
+        let url = format!("http://{}/releases/latest", addr);
+        let version = fetch_latest_ytdlp_version(Some(&url)).unwrap();
+        assert_eq!(version, "2026.10.21");
+
+        let _ = handle.join();
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_engine_update_available_offline_guard() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fake_bin = temp_dir.path().join("fake_yt");
+        std::fs::write(&fake_bin, b"#!/bin/sh\necho 2026.08.19\n").unwrap();
+
+        // DWDR_YTDLP_PATH set -> hermetic guard returns None without network calls
+        unsafe {
+            std::env::set_var("DWDR_YTDLP_PATH", fake_bin.to_str().unwrap());
+        }
+        let result = check_engine_update_available(&fake_bin);
+        assert!(result.is_none());
+        unsafe {
+            std::env::remove_var("DWDR_YTDLP_PATH");
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn test_check_core_engines_update_guards() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let yt = temp_dir.path().join("yt");
+        let ff = temp_dir.path().join("ff");
+
+        // When DWDR_FFMPEG_PATH or DWDR_YTDLP_PATH is set, returns None (offline test guard)
+        unsafe {
+            std::env::set_var("DWDR_FFMPEG_PATH", ff.to_str().unwrap());
+        }
+        assert!(check_core_engines_update(&yt, &ff).is_none());
+        unsafe {
+            std::env::remove_var("DWDR_FFMPEG_PATH");
+        }
+
+        // When FFmpeg binary is missing / invalid executable, detects corruption
+        let advice = check_core_engines_update(&yt, &ff);
+        assert!(advice.is_some());
+        let msg = advice.unwrap();
+        assert!(msg.contains("FFmpeg media merger binary is missing or corrupted"));
+        assert!(msg.contains("dwdr update"));
     }
 }
