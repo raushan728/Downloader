@@ -18,7 +18,7 @@ Source code repository for [DWDR]. It contains the CLI engine, interactive termi
 
 ## Why DWDR?
 
-- **Performance:** Direct progressive stream downloading with multi-tier exact filesize resolution, real-time responsive visual progress bar tracking downloaded/total sizes, speed, percentage, and ETA metrics, plus clean background execution and strict MP4 audio/video merging.
+- **Performance:** Direct progressive stream downloading with multi-tier exact filesize resolution, real-time responsive visual progress bar featuring sub-character blocks (`▏▎▍▌▋▊▉█`), TrueColor cyan-to-green gradients, EMA speed smoothing with 20-sample sparkline history (`▁▂▃▅▇`), Braille spinners, boxed summary cards, and strict MP4 audio/video merging.
 
 - **Reliability:** Zero system pollution. Isolated engines ([yt-dlp], [FFmpeg]) reside exclusively in `~/.dwdr/deps/` without modifying system package directories. Process group isolation and signal handling terminate intermediate child processes cleanly on cancellation without orphans. Single-video safeguards (`--no-playlist`) prevent accidental multi-track playlist dumps, self-healing configuration handles corrupted settings automatically, active download locks prevent race conditions, duplicate detection protects existing files, and automated cleanup purges incomplete `.part` files on cancellation.
 
@@ -60,7 +60,7 @@ Comprehensive topic guides covering every subsystem:
 | Guide | Scope | Description |
 | :--- | :--- | :--- |
 | [CLI Reference Guide][cli-guide] | Syntax & Flags | CLI arguments, options, direct downloads, and exit codes. |
-| [Command Catalog][Commands] | Command Matrix | Complete reference table of all 20 CLI options, subcommands, and REPL actions. |
+| [Command Catalog][Commands] | Command Matrix | Complete reference table of all CLI options, subcommands, and REPL actions. |
 | [Usage Examples][Examples] | Practical Walkthroughs | Step-by-step scenarios: single downloads, audio extraction, GUI folder pickers, and troubleshooting. |
 | [Configuration Guide][Configuration] | Settings & Schema | `config.toml` structure, default resolutions, parallel thread limits, and self-healing recovery. |
 | [Architecture Deep Dive][Architecture] | Core Mechanics | Process streaming, dependency lifecycle, single-video safeguards, and cross-platform compilation architecture. |

@@ -43,7 +43,6 @@ fn test_cli_valid_url() {
         .assert()
         .failure()
         .code(1)
-        .stdout(predicate::str::contains("Valid URL detected"))
         .stderr(predicate::str::contains(
             "ERROR: Failed to extract video info",
         ));
@@ -87,13 +86,10 @@ fn test_cli_success_download() {
         .assert()
         .success()
         .code(0)
-        .stdout(predicate::str::contains("Valid URL detected"))
         .stdout(predicate::str::contains(
             "Successfully fetched data for: Test Single Video",
         ))
-        .stdout(predicate::str::contains(
-            "SUCCESS: Media finalization complete!",
-        ))
+        .stdout(predicate::str::contains("100.0%"))
         .stdout(predicate::str::contains(
             "SUCCESS: Download completed successfully!",
         ));
@@ -320,6 +316,54 @@ fn test_config_set_obsolete_update_days() {
 
 #[test]
 #[serial]
+fn test_cli_ui_flags() {
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.args(["--quiet", "--no-animation", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage:"));
+}
+
+#[test]
+#[serial]
+fn test_cli_config_set_ui_keys() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd1 = Command::cargo_bin("dwdr").unwrap();
+    cmd1.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "animations", "false"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Successfully updated animations"));
+
+    let mut cmd2 = Command::cargo_bin("dwdr").unwrap();
+    cmd2.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "theme", "ascii"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Successfully updated theme"));
+
+    let mut cmd3 = Command::cargo_bin("dwdr").unwrap();
+    cmd3.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "bell", "true"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Successfully updated bell"));
+
+    let mut cmd_show = Command::cargo_bin("dwdr").unwrap();
+    cmd_show
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("animations: false"))
+        .stdout(predicate::str::contains("theme: ascii"))
+        .stdout(predicate::str::contains("bell: true"));
+}
+
+#[test]
+#[serial]
 fn test_interactive_config_non_tty_error() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");
@@ -377,18 +421,188 @@ fn test_cli_version() {
 }
 
 #[test]
-fn test_cli_help_shows_all_subcommands() {
+#[serial]
+fn test_config_show_verifies_all_fields() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
     let mut cmd = Command::cargo_bin("dwdr").unwrap();
-    cmd.arg("--help")
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "show"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("config"))
-        .stdout(predicate::str::contains("update"))
-        .stdout(predicate::str::contains("self-update"))
-        .stdout(predicate::str::contains("INTERACTIVE SHELL COMMANDS"))
-        .stdout(predicate::str::contains("status"))
-        .stdout(predicate::str::contains("list"))
-        .stdout(predicate::str::contains("queue"));
+        .stdout(predicate::str::contains("Current Configuration:"))
+        .stdout(predicate::str::contains("animations:"))
+        .stdout(predicate::str::contains("theme:"))
+        .stdout(predicate::str::contains("auto_watch:"))
+        .stdout(predicate::str::contains("bell:"))
+        .stdout(predicate::str::contains("download_path:"))
+        .stdout(predicate::str::contains("max_parallel_downloads:"))
+        .stdout(predicate::str::contains("default_quality:"))
+        .stdout(predicate::str::contains("compat_mode:"));
+}
+
+#[test]
+#[serial]
+fn test_non_tty_no_ansi_escapes() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    let assert = cmd
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "show"])
+        .assert()
+        .success();
+
+    let output = assert.get_output();
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !stdout_str.contains('\x1b'),
+        "stdout contains ANSI escapes: {:?}",
+        stdout_str
+    );
+    assert!(
+        !stderr_str.contains('\x1b'),
+        "stderr contains ANSI escapes: {:?}",
+        stderr_str
+    );
+}
+
+#[test]
+#[serial]
+fn test_failed_mock_download_single_error() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+    let mock_ytdlp = MockYtDlpBuilder::new()
+        .with_exit_code(1)
+        .with_stderr("ERROR: Video unavailable: Private video")
+        .build(temp_dir.path());
+    let mock_ffmpeg = MockFfmpegBuilder::new().build(temp_dir.path());
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    let assert = cmd
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .env("DWDR_YTDLP_PATH", mock_ytdlp.to_str().unwrap())
+        .env("DWDR_FFMPEG_PATH", mock_ffmpeg.to_str().unwrap())
+        .arg("https://youtube.com/watch?v=fail123")
+        .assert()
+        .failure()
+        .code(1);
+
+    let output = assert.get_output();
+    let stderr_str = String::from_utf8_lossy(&output.stderr);
+    let error_count = stderr_str.matches("ERROR:").count();
+    assert_eq!(
+        error_count, 1,
+        "expected exactly one error output, got {}: {:?}",
+        error_count, stderr_str
+    );
+    assert!(!stderr_str.contains("stack backtrace:"));
+}
+
+#[test]
+#[serial]
+fn test_successful_mock_download_single_success_line() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+    let download_dir = temp_dir.path().join("downloads");
+    std::fs::create_dir_all(&download_dir).unwrap();
+
+    let json = sample_single_format_json("Single Success Video");
+    let downloaded_file = download_dir.join("Single Success Video.mp4");
+
+    let mock_ytdlp = MockYtDlpBuilder::new()
+        .with_json(&json)
+        .with_progress_lines(vec![
+            "download:PROGRESS|100.0%|10M|10M|2M/s|00:00|avc1".to_string(),
+            downloaded_file.to_str().unwrap().to_string(),
+        ])
+        .build(temp_dir.path());
+    let mock_ffmpeg = MockFfmpegBuilder::new().build(temp_dir.path());
+
+    std::fs::write(
+        &config_file,
+        format!(
+            "download_path = \"{}\"\nmax_parallel_downloads = 1\ndefault_quality = \"1080p\"\ncompat_mode = false\n",
+            download_dir.to_str().unwrap()
+        ),
+    )
+    .unwrap();
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    let assert = cmd
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .env("DWDR_YTDLP_PATH", mock_ytdlp.to_str().unwrap())
+        .env("DWDR_FFMPEG_PATH", mock_ffmpeg.to_str().unwrap())
+        .arg("https://youtube.com/watch?v=succ123")
+        .assert()
+        .success()
+        .code(0);
+
+    let output = assert.get_output();
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let success_count = stdout_str.matches("SUCCESS:").count();
+    assert_eq!(
+        success_count, 1,
+        "expected exactly one SUCCESS line, got {}: {:?}",
+        success_count, stdout_str
+    );
+    assert!(stdout_str.contains("SUCCESS: Download completed successfully!"));
+}
+
+#[test]
+#[serial]
+fn test_repl_quiet_shows_no_banner_no_welcome() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    let assert = cmd
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .arg("--quiet")
+        .write_stdin("exit\n")
+        .assert()
+        .success();
+
+    let output = assert.get_output();
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout_str.contains("Modular Terminal UI")
+            && !stdout_str.contains("Terminal Media Downloader")
+            && !stdout_str.contains("╭───"),
+        "stdout should not contain banner: {:?}",
+        stdout_str
+    );
+    assert!(
+        !stdout_str.contains("Welcome to DWDR Interactive Shell"),
+        "stdout should not contain welcome line: {:?}",
+        stdout_str
+    );
+}
+
+#[test]
+#[serial]
+fn test_repl_non_tty_shows_plain_welcome_without_quiet() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    let assert = cmd
+        .env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .write_stdin("exit\n")
+        .assert()
+        .success();
+
+    let output = assert.get_output();
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout_str.contains("INFO: Welcome to DWDR Interactive Shell"),
+        "stdout should contain plain welcome line in non-TTY: {:?}",
+        stdout_str
+    );
 }
 
 #[test]
@@ -515,7 +729,7 @@ fn test_interactive_shell_url_extraction_failure_recovery() {
         .write_stdin("https://youtube.com/watch?v=123\nexit\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Valid URL detected"))
+        .stdout(predicate::str::contains("Fetching media details"))
         .stderr(predicate::str::contains(
             "ERROR: Failed to extract video info",
         ))
@@ -540,7 +754,7 @@ fn test_interactive_shell_uppercase_url() {
         .write_stdin("HTTP://youtube.com/watch?v=123\nexit\n")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Valid URL detected"))
+        .stdout(predicate::str::contains("Fetching media details"))
         .stderr(predicate::str::contains(
             "ERROR: Failed to extract video info",
         ))

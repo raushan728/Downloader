@@ -1,15 +1,17 @@
-use colored::Colorize;
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Seek, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
+use colored::Colorize;
+use sha2::{Digest, Sha256};
 
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
+use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
+use crate::ui::UiContext;
+use crate::ui::spinner::Spinner;
 
 /// Validates binary file integrity via minimum filesize, executable magic headers, and test execution.
 pub fn is_valid_executable(path: &Path, is_ffmpeg: bool) -> bool {
@@ -299,7 +301,13 @@ pub fn update_ytdlp_engine() -> Result<(), String> {
     }
 
     let yt_dlp_path = get_ytdlp_path();
-    println!("{}", "INFO: Downloading latest yt-dlp release...".cyan());
+    let ctx = UiContext::get();
+    let spinner = Spinner::new(
+        "Downloading latest yt-dlp release...",
+        ctx.theme,
+        ctx.color_level,
+        ctx.animations,
+    );
 
     let url = get_ytdlp_download_url();
     let client = create_http_client("dwdr-cli/1.0")?;
@@ -358,7 +366,7 @@ pub fn update_ytdlp_engine() -> Result<(), String> {
     fs::rename(&tmp_path, &yt_dlp_path)
         .map_err(|e| format!("Failed to finalize yt-dlp binary: {}", e))?;
 
-    println!("{}", "SUCCESS: Engine yt-dlp updated successfully!".green());
+    spinner.finish_success("Engine yt-dlp updated successfully!");
     Ok(())
 }
 
@@ -376,7 +384,13 @@ pub fn update_ffmpeg_engine() -> Result<(), String> {
     }
 
     let ffmpeg_path = get_ffmpeg_path();
-    println!("{}", "INFO: Downloading latest FFmpeg release...".cyan());
+    let ctx = UiContext::get();
+    let spinner = Spinner::new(
+        "Downloading latest FFmpeg release...",
+        ctx.theme,
+        ctx.color_level,
+        ctx.animations,
+    );
 
     let url = get_ffmpeg_download_url();
     let client = create_http_client("dwdr-cli/1.0")?;
@@ -475,10 +489,7 @@ pub fn update_ffmpeg_engine() -> Result<(), String> {
     fs::rename(&tmp_ffmpeg, &ffmpeg_path)
         .map_err(|e| format!("Failed to finalize FFmpeg binary: {}", e))?;
 
-    println!(
-        "{}",
-        "SUCCESS: Media Merger (FFmpeg) updated successfully!".green()
-    );
+    spinner.finish_success("Media Merger (FFmpeg) updated successfully!");
     Ok(())
 }
 
@@ -625,7 +636,13 @@ pub fn update_self() -> Result<(), String> {
 
     let url = get_dwdr_download_url();
 
-    println!("{}", "INFO: Downloading latest DWDR release...".cyan());
+    let ctx = UiContext::get();
+    let spinner = Spinner::new(
+        "Downloading latest DWDR release...",
+        ctx.theme,
+        ctx.color_level,
+        ctx.animations,
+    );
 
     let response = download_with_retry(&client, &url, 3, Duration::from_millis(1000))?;
 
@@ -781,10 +798,8 @@ pub fn update_self() -> Result<(), String> {
         }
     }
 
-    println!(
-        "{}",
-        "SUCCESS: DWDR updated to the latest version! Restart the tool to apply changes.".green()
-    );
+    spinner
+        .finish_success("DWDR updated to the latest version! Restart the tool to apply changes.");
 
     Ok(())
 }
@@ -1192,6 +1207,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fetch_latest_ytdlp_version_redirect() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();

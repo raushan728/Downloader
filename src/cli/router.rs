@@ -32,6 +32,14 @@ pub struct Cli {
     #[arg(short, long)]
     pub force: bool,
 
+    /// Disable spinners and animated progress.
+    #[arg(long)]
+    pub no_animation: bool,
+
+    /// Suppress banner and non-essential output.
+    #[arg(short, long)]
+    pub quiet: bool,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

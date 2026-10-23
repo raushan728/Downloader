@@ -19,6 +19,10 @@ download_path = "/home/user/Downloads/DWDR"
 max_parallel_downloads = 3
 default_quality = "1080p"
 compat_mode = false
+animations = true
+auto_watch = true
+bell = false
+theme = "auto"
 ```
 
 ---
@@ -30,7 +34,11 @@ compat_mode = false
 | `download_path` | string | `~/Downloads/DWDR` | Destination directory where downloaded media files are saved. Must be an existing directory with write permissions. | Valid existing directory path |
 | `default_quality` | string | `"1080p"` | Preferred video resolution matched during Smart Fallback downloads, or manual prompt. | `"always ask"`, `"best"`, `"8k"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"360p"`, `"240p"`, `"144p"`, `"audio"` |
 | `max_parallel_downloads` | integer | `3` | Maximum number of concurrent media downloads allowed simultaneously in interactive mode (additional tasks wait in queue). | `1` to `16` |
-| `compat_mode` | boolean | `false` | When enabled, prioritizes AVC (H.264) video and AAC audio codecs over AV1/VP9 for broad player compatibility. | `true`, `false` |
+| `compat_mode` | boolean | `false` | When enabled, prioritizes AVC (H.264) video and AAC audio codecs over AV1/VP9 for broad player compatibility. | `true`, `false` (also accepts `"1"`/`"0"`, `"yes"`/`"no"`, `"on"`/`"off"`) |
+| `animations` | boolean | `true` | Toggles rich terminal animations, Braille spinners, and responsive sub-character progress bar. | `true`, `false` (also accepts `"1"`/`"0"`, `"yes"`/`"no"`, `"on"`/`"off"`) |
+| `auto_watch` | boolean | `true` | When enqueuing downloads in the REPL shell, automatically launches the live download monitor. | `true`, `false` (also accepts `"1"`/`"0"`, `"yes"`/`"no"`, `"on"`/`"off"`) |
+| `bell` | boolean | `false` | Rings the terminal bell character (`\x07`) upon download completion. | `true`, `false` (also accepts `"1"`/`"0"`, `"yes"`/`"no"`, `"on"`/`"off"`) |
+| `theme` | string | `"auto"` | Terminal character set mode: auto-detected, Unicode (box-drawing, Braille, block glyphs), or ASCII fallback. | `"auto"`, `"unicode"`, `"ascii"` |
 
 ---
 
@@ -82,6 +90,9 @@ dwdr config set quality 720p
 dwdr config set parallel 5
 dwdr config set path /media/downloads
 dwdr config set compat true
+dwdr config set animations false
+dwdr config set theme unicode
+dwdr config set bell true
 
 # Force update bypassing active download concurrency locks
 dwdr config set parallel 16 --force

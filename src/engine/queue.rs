@@ -1,21 +1,36 @@
 use std::collections::VecDeque;
 #[cfg(not(test))]
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
+use std::io::{Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-#[cfg(not(test))]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use colored::Colorize;
+use crossterm::event::KeyCode;
 use fs2::FileExt;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::config::manager::ConfigManager;
-use crate::engine::downloader::{download_media_background_ext, render_progress_bar_with_width};
+use crate::engine::downloader::{
+    download_media_background_ext, get_terminal_width, is_direct_download_active,
+    render_progress_bar_with_width, sanitize_media_title,
+};
 use crate::engine::updater::check_core_engines_update;
+#[cfg(not(test))]
+use crate::ui::UiContext;
+use crate::ui::progress::{
+    DownloadPhase, ProgressState, format_bytes, format_eta, format_speed, render_bar_pure,
+};
+use crate::ui::smooth::SpeedSmoother;
+#[cfg(not(test))]
+use crate::ui::terminal_title::set_terminal_title;
+use crate::ui::text::{sanitize_display, truncate_display, visible_width};
+#[cfg(not(test))]
+use crate::ui::theme::TICK_MS;
+use crate::ui::theme::{ColorLevel, SAMPLE_INTERVAL_MS, ThemeMode};
 
 static IN_INTERACTIVE_PROMPT: AtomicBool = AtomicBool::new(false);
 static NOTIFICATION_QUEUE: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -61,6 +76,12 @@ pub enum TaskStatus {
 #[derive(Debug, Clone)]
 pub struct TaskProgress {
     pub percent: f64,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub speed_bytes_sec: f64,
+    pub eta_seconds: Option<u64>,
+    pub phase: DownloadPhase,
+    pub sparkline_samples: Vec<f64>,
     pub downloaded_str: String,
     pub total_str: String,
     pub speed_str: String,
@@ -71,6 +92,12 @@ impl Default for TaskProgress {
     fn default() -> Self {
         Self {
             percent: 0.0,
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            speed_bytes_sec: 0.0,
+            eta_seconds: None,
+            phase: DownloadPhase::Video,
+            sparkline_samples: Vec::new(),
             downloaded_str: "0 B".to_string(),
             total_str: "Unknown".to_string(),
             speed_str: "Unknown".to_string(),
@@ -92,6 +119,25 @@ pub struct DownloadTask {
     pub custom_output_template: Option<String>,
     pub force_overwrite: bool,
     pub final_filepath: Option<PathBuf>,
+    pub smoother: SpeedSmoother,
+    pub last_sample_time: Option<Instant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskSnapshot {
+    pub id: usize,
+    pub title: String,
+    pub format_desc: String,
+    pub status: TaskStatus,
+    pub progress: TaskProgress,
+}
+
+#[derive(Debug, Clone)]
+pub struct StatusSnapshot {
+    pub active_tasks: Vec<TaskSnapshot>,
+    pub max_parallel: usize,
+    pub queued_count: usize,
+    pub total_speed: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +158,9 @@ pub enum EnqueueResult {
 /// FIFO worker pool bounding concurrent media downloads to `max_parallel`.
 pub struct QueueManager {
     pub max_parallel: usize,
+    /// Disables background worker thread execution for offline unit testing.
+    #[doc(hidden)]
+    pub auto_spawn: bool,
     next_task_id: usize,
     tasks: Vec<Arc<Mutex<DownloadTask>>>,
     queue: VecDeque<usize>,
@@ -137,12 +186,17 @@ pub fn clear_global_queue() {
     }
 }
 
+/// Resolves the filesystem path to the advisory download lockfile (`~/.dwdr/active_downloads.lock`).
 pub fn active_downloads_lock_path() -> Option<PathBuf> {
     ConfigManager::config_path().and_then(|p| p.parent().map(|d| d.join("active_downloads.lock")))
 }
 
 static ACTIVE_DOWNLOAD_LOCK_FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
+/// Acquires an exclusive advisory lock on `active_downloads.lock` and records the current process PID.
+///
+/// Retains the open file descriptor in `ACTIVE_DOWNLOAD_LOCK_FILE` for the session duration
+/// so other DWDR processes or config mutations can detect active downloads.
 pub fn record_active_download() {
     let mut guard = match ACTIVE_DOWNLOAD_LOCK_FILE.lock() {
         Ok(g) => g,
@@ -154,21 +208,25 @@ pub fn record_active_download() {
         if let Some(parent) = lock_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        if let Ok(file) = std::fs::OpenOptions::new()
+        if let Ok(mut file) = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(&lock_path)
+            && file.try_lock_exclusive().is_ok()
         {
-            let _ = file.try_lock_exclusive();
+            let _ = file.set_len(0);
+            let _ = file.seek(SeekFrom::Start(0));
             let my_pid = std::process::id();
-            let _ = std::fs::write(&lock_path, my_pid.to_string());
+            let _ = file.write_all(my_pid.to_string().as_bytes());
+            let _ = file.flush();
             *guard = Some(file);
         }
     }
 }
 
+/// Releases the advisory file lock and deletes `active_downloads.lock` on disk.
 pub fn clear_active_download() {
     let mut guard = match ACTIVE_DOWNLOAD_LOCK_FILE.lock() {
         Ok(g) => g,
@@ -183,6 +241,7 @@ pub fn clear_active_download() {
 }
 
 #[cfg(unix)]
+/// Checks whether a process with the given PID is currently running via `/proc` or `kill -0`.
 pub fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -197,6 +256,7 @@ pub fn is_pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
+/// Checks whether a process with the given PID is currently running via `tasklist`.
 pub fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -211,6 +271,11 @@ pub fn is_pid_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// Evaluates three-tier download activity: in-process queue, direct tracker, and cross-process file lock.
+///
+/// If `active_downloads.lock` exists on disk but can be exclusively locked by this process,
+/// the previous holder exited or crashed; the recorded PID is verified via `is_pid_alive`
+/// so stale lock files from abnormal terminations do not block subsequent operations.
 pub fn is_download_active() -> bool {
     if let Ok(g) = GLOBAL_QUEUE.lock()
         && let Some(queue) = &*g
@@ -220,7 +285,7 @@ pub fn is_download_active() -> bool {
         return true;
     }
 
-    if crate::engine::downloader::is_direct_download_active() {
+    if is_direct_download_active() {
         return true;
     }
 
@@ -270,9 +335,13 @@ pub fn cancel_global_downloads() {
     clear_active_download();
 }
 
-/// Kills the entire process tree to prevent orphan child workers (e.g. ffmpeg) from surviving.
+/// Terminates an entire process tree to prevent orphan child workers (e.g. ffmpeg) from surviving.
+///
+/// On Unix, broadcasts `SIGTERM` to the process group (`libc::killpg`), polls for clean exit up to
+/// 500ms, and escalates to uncatchable `SIGKILL` if the process remains active.
+/// On Windows, issues a graceful `taskkill /T /PID` tree sweep, polls for 500ms, and escalates to `/F`.
 pub fn kill_process_by_pid(pid: u32) {
-    if pid == 0 {
+    if pid == 0 || pid > i32::MAX as u32 {
         return;
     }
 
@@ -329,6 +398,71 @@ pub fn kill_process_by_pid(pid: u32) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveAction {
+    Detach,
+    AskCancel,
+    ConfirmCancel,
+    DismissCancel,
+    None,
+}
+
+/// Maps keyboard events to interactive actions in the real-time live monitor.
+///
+/// In normal view (`confirming == false`), `'c'` initiates cancellation, while `'q'`, `'d'`,
+/// `Esc`, and `Enter` detach cleanly back to the REPL shell without cancelling downloads.
+/// When confirming (`confirming == true`), `'y'` confirms cancellation, while any other key dismisses.
+pub fn handle_live_key(code: KeyCode, confirming: bool) -> LiveAction {
+    if confirming {
+        match code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => LiveAction::ConfirmCancel,
+            _ => LiveAction::DismissCancel,
+        }
+    } else {
+        match code {
+            KeyCode::Char('c') | KeyCode::Char('C') => LiveAction::AskCancel,
+            KeyCode::Char('d')
+            | KeyCode::Char('D')
+            | KeyCode::Char('q')
+            | KeyCode::Char('Q')
+            | KeyCode::Esc
+            | KeyCode::Enter => LiveAction::Detach,
+            _ => LiveAction::None,
+        }
+    }
+}
+
+#[cfg(not(test))]
+struct RawModeGuard {
+    active: bool,
+}
+
+#[cfg(not(test))]
+impl RawModeGuard {
+    fn new() -> Self {
+        let active = crossterm::terminal::enable_raw_mode().is_ok();
+        if active {
+            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Hide);
+        }
+        Self { active }
+    }
+
+    fn restore(&mut self) {
+        if self.active {
+            let _ = crossterm::terminal::disable_raw_mode();
+            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+            self.active = false;
+        }
+    }
+}
+
+#[cfg(not(test))]
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        self.restore();
+    }
+}
+
 impl QueueManager {
     pub fn new(
         max_parallel: usize,
@@ -339,6 +473,7 @@ impl QueueManager {
         let max_parallel = if max_parallel == 0 { 1 } else { max_parallel };
         Arc::new(Mutex::new(Self {
             max_parallel,
+            auto_spawn: true,
             next_task_id: 1,
             tasks: Vec::new(),
             queue: VecDeque::new(),
@@ -401,21 +536,26 @@ impl QueueManager {
             custom_output_template,
             force_overwrite,
             final_filepath: None,
+            smoother: SpeedSmoother::default(),
+            last_sample_time: None,
         }));
         mgr.tasks.push(Arc::clone(&task));
 
         if mgr.active_count < mgr.max_parallel {
             mgr.active_count += 1;
             task.lock().unwrap_or_else(|p| p.into_inner()).status = TaskStatus::Downloading;
-            record_active_download();
             let result = EnqueueResult::Started {
                 task_id,
                 active_count: mgr.active_count,
                 queued_count: mgr.queue.len(),
             };
+            let auto_spawn = mgr.auto_spawn;
             drop(mgr);
 
-            Self::spawn_worker(manager_arc, task);
+            if auto_spawn {
+                record_active_download();
+                Self::spawn_worker(manager_arc, task);
+            }
             result
         } else {
             mgr.queue.push_back(task_id);
@@ -431,7 +571,7 @@ impl QueueManager {
 
     pub fn set_max_parallel(manager_arc: &Arc<Mutex<Self>>, new_limit: usize) {
         let new_limit = if new_limit == 0 { 1 } else { new_limit };
-        let to_spawn: Vec<Arc<Mutex<DownloadTask>>> = {
+        let (to_spawn, auto_spawn): (Vec<Arc<Mutex<DownloadTask>>>, bool) = {
             let mut mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
             mgr.max_parallel = new_limit;
             let mut tasks = Vec::new();
@@ -453,10 +593,10 @@ impl QueueManager {
                     }
                 }
             }
-            tasks
+            (tasks, mgr.auto_spawn)
         };
 
-        if !to_spawn.is_empty() {
+        if !to_spawn.is_empty() && auto_spawn {
             record_active_download();
             for task in to_spawn {
                 Self::spawn_worker(manager_arc, task);
@@ -531,25 +671,49 @@ impl QueueManager {
                         mgr.active_pids.push(pid);
                     }
                 },
-                move |percent, downloaded, total, speed, eta, is_finalizing| {
+                move |percent,
+                      downloaded_bytes,
+                      total_bytes,
+                      speed_bytes_sec,
+                      eta_seconds,
+                      phase,
+                      is_finalizing| {
                     let mut t = task_for_progress.lock().unwrap_or_else(|p| p.into_inner());
                     if is_finalizing {
                         t.status = TaskStatus::Finalizing;
                         t.progress.percent = 100.0;
+                        t.progress.phase = phase;
+                        t.progress.speed_bytes_sec = 0.0;
+                        t.progress.speed_str = format_speed(0.0);
+                        t.progress.eta_seconds = None;
+                        t.progress.eta_str = "00:00".to_string();
                     } else {
                         t.progress.percent = percent;
-                        if !downloaded.is_empty() {
-                            t.progress.downloaded_str = downloaded.to_string();
-                        }
-                        if !total.is_empty() {
-                            t.progress.total_str = total.to_string();
-                        }
-                        if !speed.is_empty() {
-                            t.progress.speed_str = speed.to_string();
-                        }
-                        if !eta.is_empty() {
-                            t.progress.eta_str = eta.to_string();
-                        }
+                        t.progress.downloaded_bytes = downloaded_bytes;
+                        t.progress.total_bytes = total_bytes;
+                        t.progress.speed_bytes_sec = speed_bytes_sec;
+                        t.progress.phase = phase;
+                        let now = Instant::now();
+                        let smoothed_speed = if t.last_sample_time.is_none_or(|prev| {
+                            now.duration_since(prev) >= Duration::from_millis(SAMPLE_INTERVAL_MS)
+                        }) {
+                            t.last_sample_time = Some(now);
+                            t.smoother.feed(speed_bytes_sec, now)
+                        } else {
+                            t.smoother.ema
+                        };
+                        t.progress.sparkline_samples = t.smoother.samples.iter().copied().collect();
+                        let rem = total_bytes.saturating_sub(downloaded_bytes);
+                        let eff_eta = t.smoother.eta_seconds(rem).or(eta_seconds);
+                        t.progress.eta_seconds = eff_eta;
+                        t.progress.downloaded_str = format_bytes(downloaded_bytes);
+                        t.progress.total_str = if total_bytes > 0 {
+                            format_bytes(total_bytes)
+                        } else {
+                            "Unknown".to_string()
+                        };
+                        t.progress.speed_str = format_speed(smoothed_speed);
+                        t.progress.eta_str = format_eta(eff_eta);
                     }
                 },
             );
@@ -623,7 +787,7 @@ impl QueueManager {
 
     // Automatically promotes and spawns the next pending task in FIFO order.
     fn on_task_finished(manager_arc: &Arc<Mutex<Self>>) {
-        let next_task = {
+        let (next_task, auto_spawn) = {
             let mut mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
             if mgr.active_count > 0 {
                 mgr.active_count -= 1;
@@ -633,7 +797,7 @@ impl QueueManager {
                 return;
             }
 
-            if mgr.active_count < mgr.max_parallel {
+            let task_info = if mgr.active_count < mgr.max_parallel {
                 if let Some(next_id) = mgr.queue.pop_front() {
                     let task_opt = mgr
                         .tasks
@@ -653,7 +817,8 @@ impl QueueManager {
                 }
             } else {
                 None
-            }
+            };
+            (task_info, mgr.auto_spawn)
         };
 
         if let Some((next_task, active, queued, max_parallel)) = next_task {
@@ -670,8 +835,10 @@ impl QueueManager {
                 )
                 .cyan()
             ));
-            record_active_download();
-            Self::spawn_worker(manager_arc, next_task);
+            if auto_spawn {
+                record_active_download();
+                Self::spawn_worker(manager_arc, next_task);
+            }
         } else {
             let is_now_idle = {
                 let mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
@@ -731,15 +898,24 @@ impl QueueManager {
 
     /// Waits for all currently running worker threads to finish.
     pub fn join_workers(manager_arc: &Arc<Mutex<Self>>) {
-        let handles = {
-            let mut mgr = match manager_arc.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
+        loop {
+            let handles = {
+                let mut mgr = match manager_arc.lock() {
+                    Ok(guard) => guard,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                if !mgr.is_active() && mgr.worker_handles.is_empty() {
+                    break;
+                }
+                std::mem::take(&mut mgr.worker_handles)
             };
-            std::mem::take(&mut mgr.worker_handles)
-        };
-        for handle in handles {
-            let _ = handle.join();
+            if handles.is_empty() {
+                thread::sleep(Duration::from_millis(20));
+                continue;
+            }
+            for handle in handles {
+                let _ = handle.join();
+            }
         }
     }
 
@@ -786,8 +962,7 @@ impl QueueManager {
             println!("  (None)");
         } else {
             for (id, title, format_desc, status, prog) in &active_tasks {
-                let available_bar_width =
-                    crate::engine::downloader::get_terminal_width().saturating_sub(7);
+                let available_bar_width = get_terminal_width().saturating_sub(7);
                 let bar = render_progress_bar_with_width(
                     prog.percent,
                     &prog.downloaded_str,
@@ -802,7 +977,13 @@ impl QueueManager {
                 } else {
                     "".normal()
                 };
-                println!("  [#{}] \"{}\" [{}] {}", id, title, format_desc, status_str);
+                println!(
+                    "  [#{}] \"{}\" [{}] {}",
+                    id,
+                    sanitize_display(title),
+                    sanitize_display(format_desc),
+                    status_str
+                );
                 println!("       {}", bar_clean);
             }
         }
@@ -820,8 +1001,8 @@ impl QueueManager {
                     "  [#{}] (Position: {}) \"{}\" [{}]",
                     id,
                     i + 1,
-                    title,
-                    format_desc
+                    sanitize_display(title),
+                    sanitize_display(format_desc)
                 );
             }
         }
@@ -832,67 +1013,94 @@ impl QueueManager {
         Self::render_status_snapshot(&self.tasks, self.max_parallel);
     }
 
+    pub fn render_status_frame(
+        snapshot: &StatusSnapshot,
+        width: usize,
+        theme: &ThemeMode,
+        color: ColorLevel,
+        tick: u64,
+    ) -> Vec<String> {
+        let mut lines = Vec::new();
+        let speed_part = if snapshot.total_speed > 0.0 {
+            format!(" | Total Speed: {}", format_speed(snapshot.total_speed))
+        } else {
+            String::new()
+        };
+        let header_raw = format!(
+            "Active Downloads: {}/{} | Queued in line: {}{}",
+            snapshot.active_tasks.len(),
+            snapshot.max_parallel,
+            snapshot.queued_count,
+            speed_part
+        );
+        lines.push(header_raw);
+
+        for task in &snapshot.active_tasks {
+            let title_clean = sanitize_display(&task.title);
+            let desc_tag = format!(" [{}]", task.format_desc);
+            let status_str = if task.status == TaskStatus::Finalizing {
+                match color {
+                    ColorLevel::None => " [Finalizing media...]".to_string(),
+                    _ => " [Finalizing media...]".yellow().to_string(),
+                }
+            } else {
+                String::new()
+            };
+
+            let prefix = format!("  [#{}] \"", task.id);
+            let suffix = format!("\"{}{}", desc_tag, status_str);
+            let fixed_w = visible_width(&prefix) + visible_width(&suffix);
+            let max_title_w = width.saturating_sub(fixed_w).max(5);
+            let title_display = truncate_display(&title_clean, max_title_w);
+            lines.push(format!("{}{}{}", prefix, title_display, suffix));
+
+            const STATUS_INDENT: usize = 7;
+            let bar_width = width.saturating_sub(STATUS_INDENT);
+            let state = ProgressState {
+                percent: task.progress.percent,
+                downloaded_bytes: task.progress.downloaded_bytes,
+                total_bytes: task.progress.total_bytes,
+                speed_bytes_sec: task.progress.speed_bytes_sec,
+                eta_seconds: task.progress.eta_seconds,
+                sparkline_samples: task.progress.sparkline_samples.clone(),
+                phase: task.progress.phase,
+                is_finalizing: task.status == TaskStatus::Finalizing,
+                finalizing_msg: if task.status == TaskStatus::Finalizing {
+                    Some("Finalizing media...".to_string())
+                } else {
+                    None
+                },
+            };
+            let bar = render_bar_pure(&state, bar_width, theme, color, tick);
+            lines.push(format!("       {}", bar));
+        }
+
+        lines
+    }
+
     pub fn render_live_status_lines(
         active_tasks: &[(usize, String, String, TaskStatus, TaskProgress)],
         max_parallel: usize,
         queued_count: usize,
         term_w: usize,
     ) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push(format!(
-            "Active Downloads: {}/{} | Queued in line: {}",
-            active_tasks.len(),
+        let tasks = active_tasks
+            .iter()
+            .map(|(id, title, format_desc, status, prog)| TaskSnapshot {
+                id: *id,
+                title: title.clone(),
+                format_desc: format_desc.clone(),
+                status: status.clone(),
+                progress: prog.clone(),
+            })
+            .collect();
+        let snapshot = StatusSnapshot {
+            active_tasks: tasks,
             max_parallel,
-            queued_count
-        ));
-
-        for (id, title, format_desc, status, prog) in active_tasks {
-            let available_bar_width = term_w.saturating_sub(7);
-            let bar = render_progress_bar_with_width(
-                prog.percent,
-                &prog.downloaded_str,
-                &prog.total_str,
-                &prog.speed_str,
-                &prog.eta_str,
-                available_bar_width,
-            );
-            let bar_clean = bar.trim_start_matches('\r').trim_end();
-            let status_str = if *status == TaskStatus::Finalizing {
-                " [Finalizing media...]".yellow().to_string()
-            } else {
-                String::new()
-            };
-            let desc_tag = format!(" [{}]", format_desc);
-            let status_extra_len = if *status == TaskStatus::Finalizing {
-                24 + desc_tag.len()
-            } else {
-                desc_tag.len()
-            };
-            let max_title_len = term_w.saturating_sub(15 + status_extra_len).max(10);
-            let title_display = if title.width() > max_title_len {
-                let mut current_width = 0;
-                let mut truncated = String::new();
-                let target_width = max_title_len.saturating_sub(3);
-                for ch in title.chars() {
-                    let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
-                    if current_width + ch_w > target_width {
-                        break;
-                    }
-                    current_width += ch_w;
-                    truncated.push(ch);
-                }
-                format!("{}...", truncated)
-            } else {
-                title.clone()
-            };
-            lines.push(format!(
-                "  [#{}] \"{}\"{}{}",
-                id, title_display, desc_tag, status_str
-            ));
-            lines.push(format!("       {}", bar_clean));
-        }
-
-        lines
+            queued_count,
+            total_speed: 0.0,
+        };
+        Self::render_status_frame(&snapshot, term_w, &ThemeMode::Ascii, ColorLevel::None, 0)
     }
 
     pub fn print_status_live(manager_arc: &Arc<Mutex<Self>>) {
@@ -928,83 +1136,142 @@ impl QueueManager {
             );
 
             let mut lines_printed: u16 = 0;
-            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Hide);
+            let mut prev_frame = String::new();
+            let mut tick: u64 = 0;
+            let mut confirming_cancel = false;
+            let mut raw_guard = RawModeGuard::new();
 
             loop {
-                if let Ok(true) = crossterm::event::poll(Duration::from_millis(200))
+                if let Ok(true) = crossterm::event::poll(Duration::from_millis(TICK_MS))
                     && let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read()
                     && key_event.kind != crossterm::event::KeyEventKind::Release
                 {
-                    match key_event.code {
-                        crossterm::event::KeyCode::Char('q')
-                        | crossterm::event::KeyCode::Char('Q')
-                        | crossterm::event::KeyCode::Enter
-                        | crossterm::event::KeyCode::Esc => break,
-                        _ => {}
+                    match handle_live_key(key_event.code, confirming_cancel) {
+                        LiveAction::Detach => break,
+                        LiveAction::AskCancel => {
+                            confirming_cancel = true;
+                        }
+                        LiveAction::ConfirmCancel => {
+                            Self::cancel_and_join(manager_arc);
+                            break;
+                        }
+                        LiveAction::DismissCancel => {
+                            confirming_cancel = false;
+                        }
+                        LiveAction::None => {}
                     }
                 }
 
-                let tasks_snapshot: Vec<(usize, String, String, TaskStatus, TaskProgress)> = tasks
-                    .iter()
-                    .map(|t| {
+                let (active_tasks, queued_count, total_speed) = {
+                    let mut active = Vec::new();
+                    let mut queued = 0;
+                    let mut spd = 0.0;
+                    for t in &tasks {
                         let guard = t.lock().unwrap_or_else(|p| p.into_inner());
-                        (
-                            guard.id,
-                            guard.title.clone(),
-                            guard.format_desc.clone(),
-                            guard.status.clone(),
-                            guard.progress.clone(),
-                        )
-                    })
-                    .collect();
-
-                let active_tasks: Vec<_> = tasks_snapshot
-                    .iter()
-                    .filter(|(_, _, _, s, _)| {
-                        matches!(s, TaskStatus::Downloading | TaskStatus::Finalizing)
-                    })
-                    .cloned()
-                    .collect();
-
-                let queued_count = tasks_snapshot
-                    .iter()
-                    .filter(|(_, _, _, s, _)| matches!(s, TaskStatus::Queued))
-                    .count();
-
-                if lines_printed > 0 {
-                    let _ = crossterm::execute!(
-                        io::stdout(),
-                        crossterm::cursor::MoveUp(lines_printed),
-                        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
-                    );
-                }
+                        match guard.status {
+                            TaskStatus::Downloading | TaskStatus::Finalizing => {
+                                let mut progress = guard.progress.clone();
+                                if guard.status == TaskStatus::Downloading {
+                                    spd += progress.speed_bytes_sec;
+                                } else {
+                                    progress.speed_bytes_sec = 0.0;
+                                }
+                                active.push(TaskSnapshot {
+                                    id: guard.id,
+                                    title: guard.title.clone(),
+                                    format_desc: guard.format_desc.clone(),
+                                    status: guard.status.clone(),
+                                    progress,
+                                });
+                            }
+                            TaskStatus::Queued => {
+                                queued += 1;
+                            }
+                            _ => {}
+                        }
+                    }
+                    (active, queued, spd)
+                };
 
                 if active_tasks.is_empty() && queued_count == 0 {
+                    raw_guard.restore();
+                    if lines_printed > 0 {
+                        let _ = crossterm::execute!(
+                            io::stdout(),
+                            crossterm::cursor::MoveUp(lines_printed),
+                            crossterm::cursor::MoveToColumn(0),
+                            crossterm::terminal::Clear(
+                                crossterm::terminal::ClearType::FromCursorDown
+                            )
+                        );
+                    }
                     println!("{}", "SUCCESS: All active tasks completed!".green());
                     lines_printed = 0;
                     break;
                 }
 
-                let term_w = crate::engine::downloader::get_terminal_width();
-                let status_lines = Self::render_live_status_lines(
-                    &active_tasks,
+                set_terminal_title(&format!(
+                    "DWDR Live - Active: {}/{} - Queued: {}",
+                    active_tasks.len(),
+                    max_parallel,
+                    queued_count
+                ));
+
+                let term_w = UiContext::current_width();
+                let ctx = UiContext::get();
+                let snapshot = StatusSnapshot {
+                    active_tasks,
                     max_parallel,
                     queued_count,
-                    term_w,
-                );
-                for line in &status_lines {
-                    println!("{}", line);
+                    total_speed,
+                };
+
+                let status_lines =
+                    Self::render_status_frame(&snapshot, term_w, &ctx.theme, ctx.color_level, tick);
+
+                let mut current_frame = status_lines.join("\n");
+                if confirming_cancel {
+                    current_frame.push_str("\n  Cancel all downloads? [y/N] ");
+                } else {
+                    current_frame.push_str("\n  [q] Detach to prompt | [c] Cancel tasks");
+                }
+
+                if current_frame == prev_frame {
+                    tick = tick.wrapping_add(1);
+                    continue;
+                }
+                prev_frame = current_frame.clone();
+
+                if lines_printed > 0 {
+                    let _ = crossterm::execute!(
+                        io::stdout(),
+                        crossterm::cursor::MoveUp(lines_printed),
+                        crossterm::cursor::MoveToColumn(0),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+                    );
+                }
+
+                let use_sync = ctx.is_tty && ctx.color_level != ColorLevel::None;
+                if use_sync {
+                    print!("\x1b[?2026h");
+                }
+                print!("{}\r\n", current_frame.replace('\n', "\r\n"));
+                if use_sync {
+                    print!("\x1b[?2026l");
                 }
                 let _ = io::stdout().flush();
-                lines_printed = status_lines.len() as u16;
+                lines_printed = (status_lines.len() + 1) as u16;
+                tick = tick.wrapping_add(1);
             }
 
-            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+            raw_guard.restore();
+            set_terminal_title("DWDR");
 
             if lines_printed > 0 {
                 let _ = crossterm::execute!(
                     io::stdout(),
                     crossterm::cursor::MoveUp(lines_printed),
+                    crossterm::cursor::MoveToColumn(0),
                     crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
                 );
             }
@@ -1056,8 +1323,8 @@ impl QueueManager {
                     println!(
                         "  [#{}] \"{}\" [{}] - {} ({:.1}%)",
                         id,
-                        title,
-                        format_desc,
+                        sanitize_display(title),
+                        sanitize_display(format_desc),
                         "DOWNLOADING".cyan().bold(),
                         prog.percent
                     );
@@ -1070,8 +1337,8 @@ impl QueueManager {
                     println!(
                         "  [#{}] \"{}\" [{}] - {}",
                         id,
-                        title,
-                        format_desc,
+                        sanitize_display(title),
+                        sanitize_display(format_desc),
                         "FINALIZING MEDIA".yellow().bold()
                     );
                 }
@@ -1079,8 +1346,8 @@ impl QueueManager {
                     println!(
                         "  [#{}] \"{}\" [{}] - {}",
                         id,
-                        title,
-                        format_desc,
+                        sanitize_display(title),
+                        sanitize_display(format_desc),
                         "QUEUED".blue()
                     );
                 }
@@ -1092,8 +1359,8 @@ impl QueueManager {
                         println!(
                             "  [#{}] \"{}\" [{}] - {} -> {}",
                             id,
-                            title,
-                            format_desc,
+                            sanitize_display(title),
+                            sanitize_display(format_desc),
                             "COMPLETED".green().bold(),
                             path.display()
                         );
@@ -1101,8 +1368,8 @@ impl QueueManager {
                         println!(
                             "  [#{}] \"{}\" [{}] - {} -> {} (file not found)",
                             id,
-                            title,
-                            format_desc,
+                            sanitize_display(title),
+                            sanitize_display(format_desc),
                             "COMPLETED".yellow().bold(),
                             dir
                         );
@@ -1116,18 +1383,18 @@ impl QueueManager {
                     println!(
                         "  [#{}] \"{}\" [{}] - {} ({})",
                         id,
-                        title,
-                        format_desc,
+                        sanitize_display(title),
+                        sanitize_display(format_desc),
                         "FAILED".red().bold(),
-                        err
+                        sanitize_display(err)
                     );
                 }
                 TaskStatus::Cancelled => {
                     println!(
                         "  [#{}] \"{}\" [{}] - {}",
                         id,
-                        title,
-                        format_desc,
+                        sanitize_display(title),
+                        sanitize_display(format_desc),
                         "CANCELLED".yellow()
                     );
                 }
@@ -1187,8 +1454,8 @@ impl QueueManager {
                     "  [#{}] Position #{}: \"{}\" [{}]",
                     id,
                     i + 1,
-                    title,
-                    format_desc
+                    sanitize_display(title),
+                    sanitize_display(format_desc)
                 );
             }
             println!(
@@ -1238,7 +1505,7 @@ impl QueueManager {
             );
 
             let mut lines_printed: u16 = 0;
-            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Hide);
+            let mut raw_guard = RawModeGuard::new();
 
             loop {
                 if let Ok(true) = crossterm::event::poll(Duration::from_millis(200))
@@ -1284,11 +1551,13 @@ impl QueueManager {
                     let _ = crossterm::execute!(
                         io::stdout(),
                         crossterm::cursor::MoveUp(lines_printed),
+                        crossterm::cursor::MoveToColumn(0),
                         crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
                     );
                 }
 
                 if active_tasks.is_empty() && queued_tasks.is_empty() {
+                    raw_guard.restore();
                     println!(
                         "{}",
                         "SUCCESS: All active and queued downloads finished!".green()
@@ -1297,57 +1566,57 @@ impl QueueManager {
                     break;
                 }
 
-                let mut count = 0;
-                println!(
+                let mut frame_lines = Vec::new();
+                frame_lines.push(format!(
                     "Active Slots: {}/{} | Queued in line: {}",
                     active_tasks.len(),
                     max_parallel,
                     queued_tasks.len()
-                );
-                count += 1;
+                ));
 
                 if !active_tasks.is_empty() {
-                    println!("  {}", "Currently Downloading:".cyan());
-                    count += 1;
+                    frame_lines.push(format!("  {}", "Currently Downloading:".cyan()));
                     for (id, title, format_desc, status) in &active_tasks {
                         let status_tag = if *status == TaskStatus::Finalizing {
                             " [Finalizing media...]".yellow()
                         } else {
                             " [Downloading]".green()
                         };
-                        println!(
+                        frame_lines.push(format!(
                             "    [#{}] \"{}\" [{}] {}",
-                            id, title, format_desc, status_tag
-                        );
-                        count += 1;
+                            id,
+                            sanitize_display(title),
+                            sanitize_display(format_desc),
+                            status_tag
+                        ));
                     }
                 }
 
                 if !queued_tasks.is_empty() {
-                    println!("  {}", "Pending Queue:".blue());
-                    count += 1;
+                    frame_lines.push(format!("  {}", "Pending Queue:".blue()));
                     for (i, (id, title, format_desc, _)) in queued_tasks.iter().enumerate() {
-                        println!(
+                        frame_lines.push(format!(
                             "    [#{}] Position #{}: \"{}\" [{}]",
                             id,
                             i + 1,
-                            title,
-                            format_desc
-                        );
-                        count += 1;
+                            sanitize_display(title),
+                            sanitize_display(format_desc)
+                        ));
                     }
                 }
 
+                print!("{}\r\n", frame_lines.join("\r\n"));
                 let _ = io::stdout().flush();
-                lines_printed = count;
+                lines_printed = frame_lines.len() as u16;
             }
 
-            let _ = crossterm::execute!(io::stdout(), crossterm::cursor::Show);
+            raw_guard.restore();
 
             if lines_printed > 0 {
                 let _ = crossterm::execute!(
                     io::stdout(),
                     crossterm::cursor::MoveUp(lines_printed),
+                    crossterm::cursor::MoveToColumn(0),
                     crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
                 );
             }
@@ -1365,7 +1634,7 @@ pub fn find_completed_file(download_dir: &str, title: &str) -> Option<PathBuf> {
         return None;
     }
 
-    let sanitized_title = crate::engine::downloader::sanitize_media_title(title);
+    let sanitized_title = sanitize_media_title(title);
     if sanitized_title.is_empty() {
         return None;
     }
@@ -1435,10 +1704,10 @@ mod tests {
     #[test]
     fn test_queue_enqueue_and_capacity() {
         let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        mgr_arc.lock().unwrap().auto_spawn = false;
         assert_eq!(mgr_arc.lock().unwrap().max_parallel, 2);
         assert!(!mgr_arc.lock().unwrap().is_active());
 
-        // First task -> should start
         let res1 = QueueManager::enqueue(
             &mgr_arc,
             "url1".to_string(),
@@ -1459,7 +1728,6 @@ mod tests {
             _ => panic!("Expected task 1 to start"),
         }
 
-        // Second task -> should start
         let res2 = QueueManager::enqueue(
             &mgr_arc,
             "url2".to_string(),
@@ -1480,7 +1748,6 @@ mod tests {
             _ => panic!("Expected task 2 to start"),
         }
 
-        // Third task -> should be queued
         let res3 = QueueManager::enqueue(
             &mgr_arc,
             "url3".to_string(),
@@ -1509,6 +1776,7 @@ mod tests {
     #[test]
     fn test_queue_cancel_all() {
         let mgr_arc = QueueManager::new(1, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        mgr_arc.lock().unwrap().auto_spawn = false;
         let _ = QueueManager::enqueue(
             &mgr_arc,
             "url1".to_string(),
@@ -1530,6 +1798,14 @@ mod tests {
         assert_eq!(mgr.active_count, 0);
         assert!(mgr.queue.is_empty());
         assert!(!mgr.is_active());
+        assert!(matches!(
+            mgr.tasks[0].lock().unwrap().status,
+            TaskStatus::Cancelled
+        ));
+        assert!(matches!(
+            mgr.tasks[1].lock().unwrap().status,
+            TaskStatus::Cancelled
+        ));
     }
 
     #[test]
@@ -1576,6 +1852,7 @@ mod tests {
     #[test]
     fn test_queue_multiple_enqueues() {
         let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        mgr_arc.lock().unwrap().auto_spawn = false;
         for i in 1..=5 {
             let res = QueueManager::enqueue(
                 &mgr_arc,
@@ -1635,10 +1912,13 @@ mod tests {
                 total_str: "100 MiB".to_string(),
                 speed_str: "2.5 MiB/s".to_string(),
                 eta_str: "00:22".to_string(),
+                ..TaskProgress::default()
             },
             custom_output_template: None,
             force_overwrite: false,
             final_filepath: None,
+            smoother: SpeedSmoother::default(),
+            last_sample_time: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1653,6 +1933,8 @@ mod tests {
             custom_output_template: None,
             force_overwrite: false,
             final_filepath: None,
+            smoother: SpeedSmoother::default(),
+            last_sample_time: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1667,6 +1949,8 @@ mod tests {
             custom_output_template: None,
             force_overwrite: false,
             final_filepath: None,
+            smoother: SpeedSmoother::default(),
+            last_sample_time: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1683,10 +1967,13 @@ mod tests {
                 total_str: "100 MiB".to_string(),
                 speed_str: "0 B/s".to_string(),
                 eta_str: "00:00".to_string(),
+                ..TaskProgress::default()
             },
             custom_output_template: None,
             force_overwrite: false,
             final_filepath: None,
+            smoother: SpeedSmoother::default(),
+            last_sample_time: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1701,6 +1988,8 @@ mod tests {
             custom_output_template: None,
             force_overwrite: false,
             final_filepath: None,
+            smoother: SpeedSmoother::default(),
+            last_sample_time: None,
         })));
 
         mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
@@ -1715,6 +2004,8 @@ mod tests {
             custom_output_template: None,
             force_overwrite: false,
             final_filepath: None,
+            smoother: SpeedSmoother::default(),
+            last_sample_time: None,
         })));
 
         mgr.print_list();
@@ -1742,6 +2033,8 @@ mod tests {
                 custom_output_template: None,
                 force_overwrite: false,
                 final_filepath: None,
+                smoother: SpeedSmoother::default(),
+                last_sample_time: None,
             })));
             mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
                 id: 11,
@@ -1755,6 +2048,8 @@ mod tests {
                 custom_output_template: None,
                 force_overwrite: false,
                 final_filepath: None,
+                smoother: SpeedSmoother::default(),
+                last_sample_time: None,
             })));
 
             assert!(mgr.is_active());
@@ -1769,7 +2064,7 @@ mod tests {
         {
             let mut mgr = mgr_arc.lock().unwrap();
             mgr.active_count = 3;
-            mgr.max_parallel = 1; // Dynamically reduced to 1
+            mgr.max_parallel = 1;
             mgr.queue.push_back(100);
             mgr.tasks.push(Arc::new(Mutex::new(DownloadTask {
                 id: 100,
@@ -1783,6 +2078,8 @@ mod tests {
                 custom_output_template: None,
                 force_overwrite: false,
                 final_filepath: None,
+                smoother: SpeedSmoother::default(),
+                last_sample_time: None,
             })));
         }
 
@@ -1801,6 +2098,7 @@ mod tests {
     #[test]
     fn test_queue_cancelled_latch_resets_on_enqueue() {
         let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        mgr_arc.lock().unwrap().auto_spawn = false;
         {
             let mut mgr = mgr_arc.lock().unwrap();
             mgr.cancel_all();
@@ -1844,6 +2142,7 @@ mod tests {
     fn test_queue_immediate_cancel_after_enqueue() {
         let temp_dir = tempfile::tempdir().unwrap();
         let mgr_arc = QueueManager::new(2, PathBuf::from("yt-dlp"), PathBuf::from("ffmpeg"));
+        mgr_arc.lock().unwrap().auto_spawn = false;
 
         let res = QueueManager::enqueue(
             &mgr_arc,
@@ -1854,7 +2153,6 @@ mod tests {
         );
         assert!(matches!(res, EnqueueResult::Started { task_id: 1, .. }));
 
-        // Cancel immediately
         QueueManager::cancel_and_join(&mgr_arc);
 
         let mgr = mgr_arc.lock().unwrap();
@@ -1909,6 +2207,8 @@ mod tests {
                 custom_output_template: None,
                 force_overwrite: false,
                 final_filepath: None,
+                smoother: SpeedSmoother::default(),
+                last_sample_time: None,
             })));
             mgr.active_count = 1;
         }
@@ -1934,6 +2234,7 @@ mod tests {
                     total_str: "100 MiB".to_string(),
                     speed_str: "5.0 MiB/s".to_string(),
                     eta_str: "00:10".to_string(),
+                    ..TaskProgress::default()
                 },
             ),
             (
@@ -2023,5 +2324,128 @@ mod tests {
         assert!(terminated, "Grandchild process should have been terminated");
 
         let _ = child.wait();
+    }
+
+    #[test]
+    fn test_render_status_frame_pure() {
+        let task1 = TaskSnapshot {
+            id: 1,
+            title: "Download One".to_string(),
+            format_desc: "1080p".to_string(),
+            status: TaskStatus::Downloading,
+            progress: TaskProgress {
+                percent: 65.0,
+                downloaded_bytes: 650_000,
+                total_bytes: 1_000_000,
+                speed_bytes_sec: 150_000.0,
+                eta_seconds: Some(2),
+                phase: DownloadPhase::Video,
+                sparkline_samples: vec![10.0, 20.0, 30.0],
+                ..TaskProgress::default()
+            },
+        };
+        let task2 = TaskSnapshot {
+            id: 2,
+            title: "Download Two".to_string(),
+            format_desc: "Audio".to_string(),
+            status: TaskStatus::Finalizing,
+            progress: TaskProgress {
+                percent: 100.0,
+                downloaded_bytes: 500_000,
+                total_bytes: 500_000,
+                speed_bytes_sec: 0.0,
+                eta_seconds: None,
+                phase: DownloadPhase::Finalize,
+                sparkline_samples: Vec::new(),
+                ..TaskProgress::default()
+            },
+        };
+
+        let snapshot = StatusSnapshot {
+            active_tasks: vec![task1, task2],
+            max_parallel: 2,
+            queued_count: 3,
+            total_speed: 150_000.0,
+        };
+
+        let lines = QueueManager::render_status_frame(
+            &snapshot,
+            80,
+            &ThemeMode::Ascii,
+            ColorLevel::None,
+            0,
+        );
+
+        assert_eq!(lines.len(), 5);
+        assert!(lines[0].contains("Active Downloads: 2/2 | Queued in line: 3 | Total Speed:"));
+        assert!(lines[1].contains("[#1] \"Download One\" [1080p]"));
+        assert!(lines[2].contains("65.0%"));
+        assert!(lines[3].contains("[#2] \"Download Two\" [Audio] [Finalizing media...]"));
+        assert!(lines[4].contains("Finalizing"));
+    }
+
+    #[test]
+    fn test_handle_live_key() {
+        assert_eq!(
+            handle_live_key(KeyCode::Char('c'), false),
+            LiveAction::AskCancel
+        );
+        assert_eq!(
+            handle_live_key(KeyCode::Char('C'), false),
+            LiveAction::AskCancel
+        );
+
+        assert_eq!(
+            handle_live_key(KeyCode::Char('d'), false),
+            LiveAction::Detach
+        );
+        assert_eq!(
+            handle_live_key(KeyCode::Char('D'), false),
+            LiveAction::Detach
+        );
+        assert_eq!(
+            handle_live_key(KeyCode::Char('q'), false),
+            LiveAction::Detach
+        );
+        assert_eq!(
+            handle_live_key(KeyCode::Char('Q'), false),
+            LiveAction::Detach
+        );
+        assert_eq!(handle_live_key(KeyCode::Esc, false), LiveAction::Detach);
+        assert_eq!(handle_live_key(KeyCode::Enter, false), LiveAction::Detach);
+
+        assert_eq!(handle_live_key(KeyCode::Char('x'), false), LiveAction::None);
+        assert_eq!(handle_live_key(KeyCode::Char('y'), false), LiveAction::None);
+
+        assert_eq!(
+            handle_live_key(KeyCode::Char('y'), true),
+            LiveAction::ConfirmCancel
+        );
+        assert_eq!(
+            handle_live_key(KeyCode::Char('Y'), true),
+            LiveAction::ConfirmCancel
+        );
+
+        assert_eq!(
+            handle_live_key(KeyCode::Char('n'), true),
+            LiveAction::DismissCancel
+        );
+        assert_eq!(
+            handle_live_key(KeyCode::Char('N'), true),
+            LiveAction::DismissCancel
+        );
+        assert_eq!(
+            handle_live_key(KeyCode::Esc, true),
+            LiveAction::DismissCancel
+        );
+
+        assert_eq!(
+            handle_live_key(KeyCode::Char('x'), true),
+            LiveAction::DismissCancel
+        );
+        assert_eq!(
+            handle_live_key(KeyCode::Char('q'), true),
+            LiveAction::DismissCancel
+        );
     }
 }
