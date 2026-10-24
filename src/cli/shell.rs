@@ -5,28 +5,42 @@ use std::sync::Arc;
 use colored::Colorize;
 use inquire::{Confirm, Text};
 
-use crate::cli::prompts::{interactive_config, prompt_folder_path, select_format};
-use crate::config::manager::{ConfigManager, DwdrConfig};
+use crate::cli::prompts::{interactive_config, prompt_folder_path, select_format_ext};
+use crate::config::manager::{ConfigManager, DwdrConfig, validate_download_path};
 use crate::engine::downloader::{
     download_media_ext, fetch_video_info_ext, find_existing_media_file, find_format_with_fallback,
     resolve_unique_output_template,
 };
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
-use crate::engine::queue::{EnqueueResult, QueueManager, set_global_queue};
+use crate::engine::queue::{
+    EnqueueResult, QueueManager, flush_notifications, set_global_queue, set_in_interactive_prompt,
+};
 use crate::engine::updater::{check_core_engines_update, ensure_dependencies};
+use crate::ui::UiContext;
+use crate::ui::banner::render_banner;
+use crate::ui::card::{render_completion_card, render_error_card};
+use crate::ui::spinner::Spinner;
+use crate::ui::terminal_title::{clear_taskbar_progress, set_terminal_title, terminal_bell};
+use crate::ui::text::sanitize_display;
 use crate::utils::validator::is_valid_url;
 
 /// Resets terminal raw mode and restores cursor and colors to prevent leaked terminal styling.
 pub fn reset_terminal_state() {
     let _ = crossterm::terminal::disable_raw_mode();
-    let _ = crossterm::execute!(
-        std::io::stdout(),
-        crossterm::style::ResetColor,
-        crossterm::cursor::Show
-    );
-    let _ = crossterm::execute!(std::io::stderr(), crossterm::style::ResetColor);
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
+    if std::io::stdout().is_terminal() {
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::style::ResetColor,
+            crossterm::cursor::Show
+        );
+        clear_taskbar_progress();
+        set_terminal_title("");
+        let _ = std::io::stdout().flush();
+    }
+    if std::io::stderr().is_terminal() {
+        let _ = crossterm::execute!(std::io::stderr(), crossterm::style::ResetColor);
+        let _ = std::io::stderr().flush();
+    }
 }
 
 /// Resolved parameters for launching or queueing a media download.
@@ -56,8 +70,7 @@ pub fn resolve_media_to_download(
         return None;
     }
 
-    println!("{}", "Valid URL detected. Resolving engine paths...".cyan());
-
+    let ctx = UiContext::get();
     let yt_dlp_path = get_ytdlp_path();
     let ffmpeg_path = get_ffmpeg_path();
 
@@ -71,34 +84,49 @@ pub fn resolve_media_to_download(
         return None;
     }
 
-    println!(
-        "{}",
-        "INFO: Fetching media details from the server...".cyan()
-    );
+    let fetch_spinner = if !ctx.quiet {
+        Some(Spinner::new(
+            "Fetching media details from the server...",
+            ctx.theme,
+            ctx.color_level,
+            ctx.animations,
+        ))
+    } else {
+        None
+    };
 
     let info = match fetch_video_info_ext(url, &yt_dlp_path, config.compat_mode) {
         Ok(info) => {
-            println!(
-                "{}",
-                format!("Successfully fetched data for: {}", info.title).green()
-            );
-            println!(
-                "{}",
-                format!("Extracted {} formats.", info.formats.len()).green()
-            );
+            if let Some(ref sp) = fetch_spinner {
+                sp.finish_info(&format!(
+                    "Successfully fetched data for: {}",
+                    sanitize_display(&info.title)
+                ));
+            }
+            if !ctx.quiet {
+                println!(
+                    "{}",
+                    format!("Extracted {} formats.", info.formats.len()).green()
+                );
+            }
             info
         }
         Err(e) => {
-            eprintln!(
-                "{}",
-                format!("\nERROR: Failed to extract video info: {}\n", e).red()
-            );
+            if let Some(ref sp) = fetch_spinner {
+                sp.finish_error(&format!("Failed to extract video info: {}", e));
+            } else {
+                eprintln!(
+                    "{}",
+                    format!("\nERROR: Failed to extract video info: {}\n", e).red()
+                );
+            }
             if let Some(msg) = check_core_engines_update(&yt_dlp_path, &ffmpeg_path) {
                 eprintln!("{}\n", msg.yellow());
             }
             return None;
         }
     };
+    drop(fetch_spinner);
 
     if info.formats.is_empty() {
         eprintln!(
@@ -125,7 +153,7 @@ pub fn resolve_media_to_download(
         (single_fmt.format_id.clone(), single_fmt.is_audio(), desc)
     } else if config.default_quality == "always ask" {
         println!("{}", "INFO: Manual selection requested...".cyan());
-        if let Some(format_id) = select_format(&info.formats) {
+        if let Some(format_id) = select_format_ext(&info.formats, &config.default_quality) {
             let (is_aud, desc) =
                 if let Some(f) = info.formats.iter().find(|f| f.format_id == format_id) {
                     (f.is_audio(), f.summary())
@@ -155,15 +183,17 @@ pub fn resolve_media_to_download(
             (false, format_id.clone())
         };
         if is_fallback {
-            println!(
-                "{}",
-                format!(
-                    "INFO: Requested quality ({}) not available. Smart Fallback selected nearest lower tier: {}. Auto-starting download...",
-                    config.default_quality, desc
-                )
-                .yellow()
-            );
-        } else {
+            if !ctx.quiet {
+                println!(
+                    "{}",
+                    format!(
+                        "INFO: Requested quality ({}) not available. Smart Fallback selected nearest lower tier: {}. Auto-starting download...",
+                        config.default_quality, desc
+                    )
+                    .yellow()
+                );
+            }
+        } else if !ctx.quiet {
             println!(
                 "{}",
                 format!(
@@ -175,8 +205,10 @@ pub fn resolve_media_to_download(
         }
         (format_id, is_aud, desc)
     } else {
-        println!("{}", "INFO: Manual selection requested...".cyan());
-        if let Some(format_id) = select_format(&info.formats) {
+        if !ctx.quiet {
+            println!("{}", "INFO: Manual selection requested...".cyan());
+        }
+        if let Some(format_id) = select_format_ext(&info.formats, &config.default_quality) {
             let (is_aud, desc) =
                 if let Some(f) = info.formats.iter().find(|f| f.format_id == format_id) {
                     (f.is_audio(), f.summary())
@@ -209,11 +241,11 @@ pub fn resolve_media_to_download(
     } else if has_audio {
         format!("direct:{}", chosen_id)
     } else {
-        chosen_id
+        format!("{}+bestaudio", chosen_id)
     };
 
     loop {
-        match crate::config::manager::validate_download_path(&config.download_path, true) {
+        match validate_download_path(&config.download_path, true) {
             Ok(valid_dir) => {
                 config.download_path = valid_dir.to_string_lossy().to_string();
                 break;
@@ -228,10 +260,7 @@ pub fn resolve_media_to_download(
                     .yellow()
                 );
                 if let Some(folder) = prompt_folder_path(&config.download_path) {
-                    match crate::config::manager::validate_download_path(
-                        &folder.to_string_lossy(),
-                        true,
-                    ) {
+                    match validate_download_path(&folder.to_string_lossy(), true) {
                         Ok(valid_dir) => {
                             config.download_path = valid_dir.to_string_lossy().to_string();
                             if let Err(save_err) = ConfigManager::save(config) {
@@ -374,14 +403,17 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<()
         None => return Err("Failed to resolve media".to_string()),
     };
 
-    println!(
-        "{}",
-        format!(
-            "INFO: Starting download for: \"{}\" [{}]",
-            media.title, media.format_desc
-        )
-        .cyan()
-    );
+    let ctx = UiContext::get();
+    if !ctx.quiet {
+        println!(
+            "{}",
+            format!(
+                "INFO: Starting download for: \"{}\" [{}]",
+                media.title, media.format_desc
+            )
+            .cyan()
+        );
+    }
     match download_media_ext(
         url,
         &media.format_id,
@@ -392,26 +424,70 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<()
         media.custom_output_template.as_deref(),
         media.force_overwrite,
     ) {
-        Ok(_) => {
-            println!(
-                "{}",
-                format!(
-                    "SUCCESS: Download completed successfully! File saved: \"{}\" in {}",
-                    media.title, config.download_path
-                )
-                .green()
-                .bold()
-            );
+        Ok(outcome) => {
+            let captured_path = outcome.path;
+            let stats = outcome.stats;
+            let ctx = UiContext::get();
+            if !ctx.is_plain() {
+                let size_bytes = if stats.size_bytes > 0 {
+                    stats.size_bytes
+                } else {
+                    captured_path
+                        .as_ref()
+                        .and_then(|p| std::fs::metadata(p).ok())
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                };
+                let display_path = captured_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| config.download_path.clone());
+                let card = render_completion_card(
+                    &media.title,
+                    size_bytes,
+                    stats.elapsed,
+                    stats.avg_speed,
+                    stats.peak_speed,
+                    &display_path,
+                    &stats.samples,
+                    &ctx.theme,
+                    ctx.color_level,
+                );
+                print!("\r\x1b[K");
+                println!("{}", card);
+            } else {
+                println!(
+                    "{}",
+                    format!(
+                        "SUCCESS: Download completed successfully! File saved: \"{}\" in {}",
+                        media.title, config.download_path
+                    )
+                    .green()
+                    .bold()
+                );
+            }
+            if ctx.bell {
+                terminal_bell();
+            }
+            clear_taskbar_progress();
             Ok(())
         }
         Err(e) => {
-            eprintln!(
-                "{}",
-                format!("\nERROR: Download failed: {}\n", e).red().bold()
-            );
+            let ctx = UiContext::get();
+            if !ctx.is_plain() {
+                print!("\r\x1b[K");
+                let err_card = render_error_card(&media.title, &e, &ctx.theme, ctx.color_level);
+                eprintln!("{}", err_card);
+            } else {
+                eprintln!(
+                    "{}",
+                    format!("\nERROR: Download failed: {}\n", e).red().bold()
+                );
+            }
             if let Some(msg) = check_core_engines_update(&media.yt_dlp_path, &media.ffmpeg_path) {
                 eprintln!("{}\n", msg.yellow());
             }
+            clear_taskbar_progress();
             reset_terminal_state();
             Err(e)
         }
@@ -432,7 +508,7 @@ fn read_line_fallback(prompt: &str) -> Option<String> {
 }
 
 fn read_shell_input(prompt: &str) -> Option<String> {
-    crate::engine::queue::set_in_interactive_prompt(true);
+    set_in_interactive_prompt(true);
     let result = if io::stdin().is_terminal() {
         match Text::new(prompt).prompt() {
             Ok(input) => Some(input),
@@ -454,18 +530,27 @@ fn read_shell_input(prompt: &str) -> Option<String> {
     } else {
         read_line_fallback(prompt)
     };
-    crate::engine::queue::set_in_interactive_prompt(false);
-    crate::engine::queue::flush_notifications();
+    set_in_interactive_prompt(false);
+    flush_notifications();
     result
 }
 
 /// Interactive shell loop managing concurrent background downloads via the FIFO queue.
 pub fn start_repl(config: &mut DwdrConfig) {
-    println!(
-        "{}",
-        "INFO: Welcome to DWDR Interactive Shell. Type a URL to download, 'status' for live progress, 'help' for commands, or 'exit' to quit."
-            .cyan()
-    );
+    let ctx = UiContext::get();
+    let is_tty = io::stdout().is_terminal();
+    if is_tty && !ctx.quiet {
+        let banner = render_banner(&ctx.theme, ctx.color_level, false);
+        if !banner.is_empty() {
+            println!("{}", banner);
+        }
+    } else if !ctx.quiet {
+        println!(
+            "{}",
+            "INFO: Welcome to DWDR Interactive Shell. Type a URL to download, 'status' for live progress, 'help' for commands, or 'exit' to quit."
+                .cyan()
+        );
+    }
 
     let yt_dlp_path = get_ytdlp_path();
     let ffmpeg_path = get_ffmpeg_path();
@@ -632,7 +717,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                         "{}",
                         format!(
                             "\nERROR: Unrecognized command: \"{}\". Type a valid media URL, or 'help' for available commands.\nTip: URLs must begin with http:// or https://\n",
-                            input
+                            sanitize_display(input)
                         )
                         .red()
                         .bold()
@@ -651,7 +736,10 @@ pub fn start_repl(config: &mut DwdrConfig) {
                         media.force_overwrite,
                         Some(media.format_desc.clone()),
                     );
-                    let max_p = queue_manager.lock().unwrap().max_parallel;
+                    let max_p = queue_manager
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .max_parallel;
                     match result {
                         EnqueueResult::Started {
                             active_count,
@@ -682,6 +770,22 @@ pub fn start_repl(config: &mut DwdrConfig) {
                                 .yellow()
                             );
                         }
+                    }
+
+                    let is_first_active = matches!(
+                        result,
+                        EnqueueResult::Started {
+                            active_count: 1,
+                            ..
+                        }
+                    );
+
+                    if config.auto_watch
+                        && is_first_active
+                        && io::stdin().is_terminal()
+                        && io::stdout().is_terminal()
+                    {
+                        QueueManager::print_status_live(&queue_manager);
                     }
                 }
             }

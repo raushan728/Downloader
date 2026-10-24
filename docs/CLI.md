@@ -19,6 +19,8 @@ dwdr [COMMAND]
 | --- | --- |
 | `[URL]` | Directly downloads the provided media URL using Smart Fallback quality matching. |
 | `-f`, `--force` | Force overwrite existing destination media files without prompting. |
+| `--no-animation` | Disables dynamic terminal animations, spinners, and live progress bars (forces plain linear output). |
+| `-q`, `--quiet` | Suppresses the startup banner, non-essential greetings, and informational status chatter. |
 | `-h`, `--help` | Prints help information, commands, and examples. |
 | `-V`, `--version` | Prints compiled binary version information. |
 
@@ -65,14 +67,18 @@ dwdr
 You are greeted with the interactive prompt:
 
 ```text
-INFO: Welcome to DWDR Interactive Shell. Type a URL to download, 'status' for live progress, 'help' for commands, or 'exit' to quit.
+┌───────────────────────────────────────────────────┐
+│  DWDR v0.1.0 — Terminal Media Downloader          │
+│  Type a URL to start, 'help' for commands         │
+└───────────────────────────────────────────────────┘
 dwdr >
 ```
+*(In plain or `--quiet` mode, displays clean single-line guidance instead of the boxed banner).*
 
 - Enter any supported media URL to inspect, resolve format, and enqueue.
 - Downloads run concurrently in the background up to `max_parallel_downloads` without blocking the cursor.
 - Tasks exceeding the parallel limit wait in a FIFO queue and start automatically when slots free up.
-- Type `status` (or `status live` / `status -l`) to launch the live in-place progress monitor of active downloads and queued counts (press Enter or `q` to exit).
+- Type `status` (or `status live` / `status -l`) to launch the live in-place progress monitor of active downloads and queued counts (press Enter, `q`, or `Esc` to detach, or `c` to cancel downloads with confirmation).
 - Type `list` to view a complete session report with active download metrics, completed file locations (verifying physical existence on disk), and failure reasons.
 - Type `queue` to inspect queue limits and waiting tasks in FIFO order.
 - Type `queue live` (or `queue -l`) to launch an in-place real-time visual monitor of queue slots and active task progress.
@@ -116,13 +122,20 @@ dwdr config set quality 720p
 dwdr config set path /path/to/downloads
 dwdr config set parallel 5
 dwdr config set compat true
+dwdr config set animations false
+dwdr config set theme unicode
+dwdr config set bell true
 ```
 
 Validation bounds enforced:
 - `quality` (or `default_quality`): Must be one of `"always ask"`, `"best"`, `"8k"`, `"4k"`, `"2k"`, `"1080p"`, `"720p"`, `"480p"`, `"360p"`, `"240p"`, `"144p"`, `"audio"`.
 - `parallel` (or `max_parallel_downloads`): Integer between `1` and `16`.
 - `path` (or `download_path`): Must point to an existing directory with write permissions.
-- `compat` (or `compat_mode`): Boolean flag (`true`/`false`, `on`/`off`, `1`/`0`) prioritizing AVC/H.264 + AAC codecs for legacy player compatibility.
+- `compat` (or `compat_mode`): Boolean flag (accepts `true`/`false`, `yes`/`no`, `on`/`off`, `1`/`0`) prioritizing AVC/H.264 + AAC codecs for legacy player compatibility.
+- `animations` (or `animation`): Boolean flag toggling UI animations, spinners, and live progress bars.
+- `auto_watch` (or `autowatch`): Boolean flag automatically opening the live download monitor upon enqueuing.
+- `bell`: Boolean flag sounding the terminal bell on download completion.
+- `theme`: Theme mode (`"auto"`, `"unicode"`, `"ascii"`).
 
 If a download is actively running in another DWDR process, configuration changes are blocked by `active_downloads.lock`. To override this concurrency lock, append `--force`:
 

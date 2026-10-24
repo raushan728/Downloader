@@ -11,13 +11,18 @@ use crossterm::{
 };
 use rfd::FileDialog;
 
-use crate::config::manager::{ConfigManager, DwdrConfig};
+use crate::config::manager::{ConfigManager, DwdrConfig, validate_download_path};
 use crate::engine::downloader::MediaFormat;
+use crate::ui::UiContext;
+use crate::ui::format_table::{
+    build_format_table_options, find_recommended_index, format_table_header,
+};
 
 /// Interactive raw-mode terminal selector with clamped index navigation.
 pub struct Select<T: Display> {
     message: String,
     options: Vec<T>,
+    initial_index: usize,
 }
 
 impl<T: Display> Select<T> {
@@ -25,7 +30,13 @@ impl<T: Display> Select<T> {
         Self {
             message: message.to_string(),
             options,
+            initial_index: 0,
         }
+    }
+
+    pub fn with_initial_index(mut self, index: usize) -> Self {
+        self.initial_index = index;
+        self
     }
 
     #[allow(clippy::result_unit_err)]
@@ -39,8 +50,8 @@ impl<T: Display> Select<T> {
             return Err(());
         }
 
-        let mut selected = 0;
         let count = self.options.len();
+        let mut selected = self.initial_index.min(count.saturating_sub(1));
         let mut stdout = stdout();
 
         terminal::enable_raw_mode().map_err(|_| ())?;
@@ -170,11 +181,15 @@ impl<T: Display> Select<T> {
     #[allow(clippy::result_unit_err)]
     pub fn prompt(self) -> Result<T, ()> {
         let idx = self.prompt_index()?;
-        Ok(self.options.into_iter().nth(idx).unwrap())
+        self.options.into_iter().nth(idx).ok_or(())
     }
 }
 
 pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
+    select_format_ext(formats, "best")
+}
+
+pub fn select_format_ext(formats: &[MediaFormat], default_quality: &str) -> Option<String> {
     if formats.is_empty() {
         return None;
     }
@@ -192,26 +207,29 @@ pub fn select_format(formats: &[MediaFormat]) -> Option<String> {
         return Some(first.format_id.clone());
     }
 
-    let mut options = Vec::new();
+    let ctx = UiContext::get();
+    let options = build_format_table_options(
+        formats,
+        default_quality,
+        ctx.term_width,
+        &ctx.theme,
+        ctx.color_level,
+    );
+    let rec_idx = find_recommended_index(formats, default_quality);
 
-    for format in formats {
-        let tag = if format.resolution == "Audio" {
-            "[AUDIO]"
-        } else {
-            "[VIDEO]"
-        };
+    let message = if let Some(header) = format_table_header(ctx.term_width, ctx.color_level) {
+        format!(
+            "Select a format to download (Use arrow keys):\r\n   {}",
+            header
+        )
+    } else {
+        "Select a format to download (Use arrow keys):".to_string()
+    };
 
-        let option_str = format!(
-            "{:<7} | {:<6} | {:<4} | {}",
-            tag,
-            format.resolution,
-            format.ext,
-            format.format_filesize()
-        );
-        options.push(option_str);
-    }
-
-    match Select::new("Select a format to download (Use arrow keys):", options).prompt_index() {
+    match Select::new(&message, options)
+        .with_initial_index(rec_idx)
+        .prompt_index()
+    {
         Ok(index) => Some(formats[index].format_id.clone()),
         Err(_) => None,
     }
@@ -274,18 +292,39 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                     "Disabled (Max Quality)"
                 }
             ),
-            "5. Save & Exit".to_string(),
-            "6. Cancel".to_string(),
+            format!(
+                "5. UI Animations (Current: {})",
+                if working.animations {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                }
+            ),
+            format!(
+                "6. Auto-watch Downloads (Current: {})",
+                if working.auto_watch {
+                    "Enabled"
+                } else {
+                    "Disabled"
+                }
+            ),
+            format!(
+                "7. Terminal Bell (Current: {})",
+                if working.bell { "Enabled" } else { "Disabled" }
+            ),
+            format!("8. UI Theme (Current: {})", working.theme),
+            "9. Save & Exit".to_string(),
+            "10. Cancel".to_string(),
         ];
 
         let choice = Select::new("Configuration Menu (Use arrow keys):", options).prompt();
 
         match choice {
             Ok(ans) => {
-                if ans.starts_with("1") {
+                if ans.starts_with("1.") {
                     if let Some(path) = prompt_folder_path(&working.download_path) {
                         let path_str = path.to_string_lossy();
-                        match crate::config::manager::validate_download_path(&path_str, true) {
+                        match validate_download_path(&path_str, true) {
                             Ok(valid_dir) => {
                                 working.download_path = valid_dir.to_string_lossy().to_string();
                                 println!("{}", "SUCCESS: Valid download path selected.".green());
@@ -298,7 +337,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                             }
                         }
                     }
-                } else if ans.starts_with("2") {
+                } else if ans.starts_with("2.") {
                     let quality_opts = vec![
                         "always ask",
                         "best",
@@ -318,7 +357,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                     {
                         working.default_quality = quality.to_string();
                     }
-                } else if ans.starts_with("3") {
+                } else if ans.starts_with("3.") {
                     let parallel_opts: Vec<String> = (1..=16).map(|n| n.to_string()).collect();
                     if let Ok(Ok(parallel)) =
                         Select::new("Select Max Parallel Downloads:", parallel_opts)
@@ -327,7 +366,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                     {
                         working.max_parallel_downloads = parallel;
                     }
-                } else if ans.starts_with("4") {
+                } else if ans.starts_with("4.") {
                     let mode_opts = vec![
                         "Enabled (AVC/H.264 + AAC for older players/QuickTime)",
                         "Disabled (Default: prioritize AV1/VP9 for highest fidelity)",
@@ -337,7 +376,31 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                     {
                         working.compat_mode = choice.starts_with("Enabled");
                     }
-                } else if ans.starts_with("5") {
+                } else if ans.starts_with("5.") {
+                    let anim_opts = vec!["Enabled", "Disabled"];
+                    if let Ok(choice) = Select::new("Select UI Animations:", anim_opts).prompt() {
+                        working.animations = choice == "Enabled";
+                    }
+                } else if ans.starts_with("6.") {
+                    let watch_opts = vec!["Enabled", "Disabled"];
+                    if let Ok(choice) =
+                        Select::new("Select Auto-watch Downloads:", watch_opts).prompt()
+                    {
+                        working.auto_watch = choice == "Enabled";
+                    }
+                } else if ans.starts_with("7.") {
+                    let bell_opts = vec!["Enabled", "Disabled"];
+                    if let Ok(choice) =
+                        Select::new("Select Terminal Bell on completion:", bell_opts).prompt()
+                    {
+                        working.bell = choice == "Enabled";
+                    }
+                } else if ans.starts_with("8.") {
+                    let theme_opts = vec!["auto", "unicode", "ascii"];
+                    if let Ok(choice) = Select::new("Select UI Theme Mode:", theme_opts).prompt() {
+                        working.theme = choice.to_string();
+                    }
+                } else if ans.starts_with("9.") {
                     *config = working;
                     if let Err(e) = ConfigManager::save(config) {
                         println!(
@@ -348,13 +411,13 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         println!("{}", "SUCCESS: Settings saved successfully!".green());
                     }
                     break;
-                } else if ans.starts_with("6") {
-                    println!("{}", "WARNING: Settings update cancelled.".red());
+                } else if ans.starts_with("10.") {
+                    println!("{}", "WARNING: Settings update cancelled.".yellow());
                     break;
                 }
             }
             Err(_) => {
-                println!("{}", "WARNING: Settings update cancelled.".red());
+                println!("{}", "WARNING: Settings update cancelled.".yellow());
                 break;
             }
         }

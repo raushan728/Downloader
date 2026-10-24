@@ -1,22 +1,43 @@
-use colored::Colorize;
-use crossterm::terminal;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Read, Write, stdout};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
-use crate::engine::queue::kill_process_by_pid;
+use crossterm::terminal;
+use serde::{Deserialize, Serialize};
+
+use crate::config::manager::validate_download_path;
+use crate::engine::queue::{clear_active_download, kill_process_by_pid, record_active_download};
+use crate::ui::UiContext;
+use crate::ui::progress::{
+    DownloadPhase, DownloadStats, ProgressState, format_bytes as format_bytes_u64, format_eta,
+    format_speed, render_foreground_frame,
+};
+use crate::ui::smooth::{EasedProgress, PlainProgressThrottle, SpeedSmoother};
+use crate::ui::terminal_title::{clear_taskbar_progress, set_taskbar_progress, set_terminal_title};
+use crate::ui::text::sanitize_display;
+#[cfg(test)]
+use crate::ui::text::visible_width;
+use crate::ui::theme::{SAMPLE_INTERVAL_MS, STALL_THRESHOLD, TICK_MS};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct VideoInfo {
     pub title: String,
     pub duration: Option<f64>,
     pub formats: Vec<MediaFormat>,
+}
+
+/// Outcome of a foreground media download including file path and summary statistics.
+#[derive(Debug, Clone)]
+pub struct DownloadOutcome {
+    pub path: Option<PathBuf>,
+    pub stats: DownloadStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +48,8 @@ pub struct MediaFormat {
     pub filesize: Option<f64>,
     #[serde(default)]
     pub is_estimated: bool,
+    #[serde(default)]
+    pub is_hdr: bool,
     pub vcodec: String,
     pub acodec: String,
     #[serde(default)]
@@ -79,7 +102,7 @@ impl MediaFormat {
     /// Formats resolution, container extension, and filesize into a clean user-facing description.
     pub fn summary(&self) -> String {
         let size_str = self.format_filesize();
-        if size_str == "Stream Size Pending" {
+        let s = if size_str == "Stream Size Pending" {
             if self.ext.is_empty() {
                 self.resolution.clone()
             } else {
@@ -89,7 +112,8 @@ impl MediaFormat {
             format!("{} [{}]", self.resolution, size_str)
         } else {
             format!("{} ({}, {})", self.resolution, self.ext, size_str)
-        }
+        };
+        sanitize_display(&s)
     }
 }
 
@@ -295,12 +319,19 @@ pub fn extract_engine_error(stderr: &str) -> String {
             .unwrap_or(trimmed)
     };
 
-    if let Some(stripped) = line.strip_prefix("ERROR:") {
-        stripped.trim().to_string()
+    let raw_err = if let Some(stripped) = line.strip_prefix("ERROR:") {
+        stripped.trim()
     } else if let Some(stripped) = line.strip_prefix("error:") {
-        stripped.trim().to_string()
+        stripped.trim()
     } else {
-        line.to_string()
+        line
+    };
+
+    let sanitized = sanitize_display(raw_err);
+    if sanitized.is_empty() {
+        "yt-dlp process exited with an error".to_string()
+    } else {
+        sanitized
     }
 }
 
@@ -370,7 +401,7 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
     let raw: serde_json::Value =
         serde_json::from_str(stdout_str).map_err(|e| format!("Failed to parse JSON: {}", e))?;
 
-    let title = raw["title"].as_str().unwrap_or("Unknown Title").to_string();
+    let title = sanitize_display(raw["title"].as_str().unwrap_or("Unknown Title"));
     let duration = raw["duration"].as_f64();
 
     let empty_formats = Vec::new();
@@ -388,17 +419,15 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
         let has_vcodec = vcodec_opt.is_some_and(|c| c != "none");
         let has_acodec = acodec_opt.is_some_and(|c| c != "none");
 
-        let ext = f["ext"].as_str().unwrap_or("unknown");
+        let ext = sanitize_display(f["ext"].as_str().unwrap_or("unknown"));
         if ext == "mhtml" || ext == "weba" {
             continue;
         }
 
-        if f["format_note"]
-            .as_str()
-            .unwrap_or("")
-            .to_lowercase()
-            .contains("storyboard")
-        {
+        let raw_note = f["format_note"].as_str().map(sanitize_display);
+        let note = raw_note.as_deref();
+
+        if note.unwrap_or("").to_lowercase().contains("storyboard") {
             continue;
         }
 
@@ -450,36 +479,36 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
                         .as_str()
                         .is_some_and(|r| !r.eq_ignore_ascii_case("audio only"))
                     || matches!(
-                        ext,
+                        ext.as_str(),
                         "mp4" | "webm" | "mkv" | "avi" | "flv" | "mov" | "3gp" | "m3u8" | "ts"
                     )));
         let is_audio = (is_vcodec_none && has_acodec)
             || (!is_video
                 && !is_acodec_none
-                && (has_acodec || matches!(ext, "mp3" | "m4a" | "aac" | "wav" | "ogg" | "opus")));
+                && (has_acodec
+                    || matches!(ext.as_str(), "mp3" | "m4a" | "aac" | "wav" | "ogg" | "opus")));
 
         if !is_video && !is_audio {
             continue;
         }
 
-        let format_id = f["format_id"].as_str().unwrap_or("unknown").to_string();
+        let format_id = sanitize_display(f["format_id"].as_str().unwrap_or("unknown"));
         let exact = f["filesize"].as_f64();
         let approx = f["filesize_approx"].as_f64();
         let tbr = f["tbr"].as_f64();
         let vbr = f["vbr"].as_f64();
         let abr = f["abr"].as_f64();
-        let note = f["format_note"].as_str();
         let protocol = f["protocol"].as_str().unwrap_or("https");
         let is_direct = !protocol.contains("m3u8");
         let is_exact = exact.is_some();
 
         if is_video {
             let (resolution, rank) = match resolve_resolution(height, width, note) {
-                Some(r) => (r.0.to_string(), r.1),
+                Some(r) => (sanitize_display(r.0), r.1),
                 None => {
                     // Fall back to note, height label, format ID, or "Default" if resolution cannot be mapped to standard dimensions.
                     let label = match note {
-                        Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+                        Some(n) if !n.trim().is_empty() => sanitize_display(n.trim()),
                         _ if height.is_some() => format!("{}p", height.unwrap()),
                         _ if !format_id.is_empty() && format_id != "unknown" => format_id.clone(),
                         _ => "Default".to_string(),
@@ -498,12 +527,12 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
             let size_ranking = filesize.unwrap_or(0.0);
 
             let vcodec_str = if has_vcodec {
-                vcodec_opt.unwrap().to_string()
+                sanitize_display(vcodec_opt.unwrap())
             } else {
                 "unknown".to_string()
             };
             let acodec_str = if has_acodec {
-                acodec_opt.unwrap().to_string()
+                sanitize_display(acodec_opt.unwrap())
             } else if is_acodec_none {
                 "none".to_string()
             } else {
@@ -512,7 +541,11 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
 
             let is_hdr = f["dynamic_range"]
                 .as_str()
-                .is_some_and(|d| d.eq_ignore_ascii_case("hdr"))
+                .map(|d| {
+                    let clean = sanitize_display(d);
+                    !clean.trim().is_empty() && !clean.eq_ignore_ascii_case("sdr")
+                })
+                .unwrap_or(false)
                 || note.unwrap_or("").to_lowercase().contains("hdr");
             let codec_score = score_vcodec(&vcodec_str, compat_mode);
 
@@ -524,11 +557,12 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
                 is_exact,
                 size_ranking,
                 MediaFormat {
-                    format_id,
-                    ext: ext.to_string(),
+                    format_id: format_id.clone(),
+                    ext: ext.clone(),
                     resolution,
                     filesize,
                     is_estimated,
+                    is_hdr,
                     vcodec: vcodec_str,
                     acodec: acodec_str,
                     height: height.map(|h| h as u32),
@@ -541,7 +575,7 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
             let size_ranking = filesize.unwrap_or(0.0);
 
             let acodec_str = if has_acodec {
-                acodec_opt.unwrap().to_string()
+                sanitize_display(acodec_opt.unwrap())
             } else {
                 "unknown".to_string()
             };
@@ -554,10 +588,11 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
                 size_ranking,
                 MediaFormat {
                     format_id,
-                    ext: ext.to_string(),
+                    ext,
                     resolution: "Audio".to_string(),
                     filesize,
                     is_estimated,
+                    is_hdr: false,
                     vcodec: "none".to_string(),
                     acodec: acodec_str,
                     height: None,
@@ -613,6 +648,7 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
             resolution: "Default".to_string(),
             filesize,
             is_estimated,
+            is_hdr: false,
             vcodec: raw["vcodec"].as_str().unwrap_or("unknown").to_string(),
             acodec: raw["acodec"].as_str().unwrap_or("unknown").to_string(),
             height: raw["height"].as_u64().map(|h| h as u32),
@@ -628,11 +664,13 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
 
 pub fn build_ytdlp_info_cmd(yt_dlp_path: &Path, url: &str) -> Command {
     let mut cmd = Command::new(yt_dlp_path);
-    cmd.arg("-J")
+    cmd.stdin(Stdio::null())
+        .arg("-J")
         .arg("--no-warnings")
         .arg("--no-playlist")
         .arg("--socket-timeout")
         .arg("30")
+        .arg("--")
         .arg(url);
     cmd
 }
@@ -659,6 +697,132 @@ pub fn fetch_video_info_ext(
     parse_video_info_json_ext(&stdout_str, compat_mode)
 }
 
+/// Parsed numeric progress snapshot from yt-dlp stdout.
+#[derive(Debug, Clone, Default)]
+pub struct NumericProgress {
+    pub percent: f64,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub speed_bytes_sec: f64,
+    pub eta_seconds: Option<u64>,
+    pub vcodec: Option<String>,
+    pub format_id: Option<String>,
+}
+
+/// Parses a progress line into raw numeric values, supporting both new numeric and legacy string formats.
+pub fn parse_progress_numeric(line: &str) -> Option<NumericProgress> {
+    let clean = line.strip_prefix("download:").unwrap_or(line);
+    let rest = clean.strip_prefix("PROGRESS|")?;
+    let parts: Vec<&str> = rest.split('|').collect();
+    if parts.len() < 5 {
+        return None;
+    }
+
+    if parts[0].contains('%') || parts[1].chars().any(|c| c.is_alphabetic()) {
+        let percent = parts[0]
+            .trim()
+            .trim_end_matches('%')
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(0.0);
+        let downloaded = parse_size_bytes(parts[1]).unwrap_or(0);
+        let total = parse_size_bytes(parts[2]).unwrap_or(0);
+        let speed = parse_speed_bytes(parts[3]).unwrap_or(0.0);
+        let eta = parse_eta_secs(parts[4]);
+        let vcodec = parts
+            .get(5)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "NA");
+        let format_id = parts
+            .get(6)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "NA");
+
+        return Some(NumericProgress {
+            percent,
+            downloaded_bytes: downloaded,
+            total_bytes: total,
+            speed_bytes_sec: speed,
+            eta_seconds: eta,
+            vcodec,
+            format_id,
+        });
+    }
+
+    let downloaded_bytes = parts[0].trim().parse::<u64>().unwrap_or(0);
+    let total_bytes = parts[1]
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .or_else(|| parts[2].trim().parse::<u64>().ok())
+        .unwrap_or(0);
+    let speed_bytes_sec = parts[3].trim().parse::<f64>().unwrap_or(0.0);
+    let eta_seconds = parts[4].trim().parse::<u64>().ok();
+    let vcodec = parts
+        .get(5)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "NA");
+    let format_id = parts
+        .get(6)
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s != "NA");
+
+    let percent = if total_bytes > 0 {
+        (downloaded_bytes as f64 / total_bytes as f64 * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+
+    Some(NumericProgress {
+        percent,
+        downloaded_bytes,
+        total_bytes,
+        speed_bytes_sec,
+        eta_seconds,
+        vcodec,
+        format_id,
+    })
+}
+
+/// Combines multi-stream or single-stream download progress into unified percentage and byte totals.
+#[allow(clippy::too_many_arguments)]
+pub fn combine_progress(
+    expects_separate_audio: bool,
+    streams_seen: usize,
+    is_audio_stream: bool,
+    stream_percent: f64,
+    video_downloaded: u64,
+    video_total: u64,
+    audio_downloaded: u64,
+    audio_total: u64,
+) -> (f64, u64, u64) {
+    if !expects_separate_audio && streams_seen < 2 {
+        let (tot, dwn) = if is_audio_stream {
+            (audio_total, audio_downloaded)
+        } else {
+            (video_total, video_downloaded)
+        };
+        (stream_percent.clamp(0.0, 100.0), tot, dwn)
+    } else if video_total > 0 && audio_total > 0 {
+        let tot = video_total + audio_total;
+        let dwn = video_downloaded + audio_downloaded;
+        let pct = if tot > 0 {
+            (dwn as f64 / tot as f64 * 100.0).clamp(0.0, 100.0)
+        } else {
+            stream_percent.clamp(0.0, 100.0)
+        };
+        (pct, tot, dwn)
+    } else if is_audio_stream {
+        let tot = video_total.max(video_downloaded) + audio_total;
+        let dwn = video_total.max(video_downloaded) + audio_downloaded;
+        let pct = (85.0 + stream_percent * 0.15).clamp(0.0, 100.0);
+        (pct, tot, dwn)
+    } else {
+        let pct = (stream_percent * 0.85).clamp(0.0, 100.0);
+        (pct, video_total, video_downloaded)
+    }
+}
+
 pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, String)> {
     parse_progress_line_ext(line).map(|(p, d, t, s, e, _)| (p, d, t, s, e))
 }
@@ -666,52 +830,135 @@ pub fn parse_progress_line(line: &str) -> Option<(f64, String, String, String, S
 pub fn parse_progress_line_ext(
     line: &str,
 ) -> Option<(f64, String, String, String, String, Option<String>)> {
-    let rest = line.strip_prefix("PROGRESS|")?;
+    let clean = line.strip_prefix("download:").unwrap_or(line);
+    let rest = clean.strip_prefix("PROGRESS|")?;
     let parts: Vec<&str> = rest.split('|').collect();
     if parts.len() < 5 {
         return None;
     }
 
-    let percent_str = parts[0].trim().trim_end_matches('%').trim();
-    let downloaded_str = parts[1].trim();
-    let total_str = parts[2].trim();
-    let speed_str = parts[3].trim();
-    let eta_str = parts[4].trim();
-    let vcodec = parts
-        .get(5)
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty() && s != "NA");
+    if parts[0].contains('%') || parts[1].chars().any(|c| c.is_alphabetic()) {
+        let percent_str = parts[0].trim().trim_end_matches('%').trim();
+        let downloaded_str = parts[1].trim();
+        let total_str = parts[2].trim();
+        let speed_str = parts[3].trim();
+        let eta_str = parts[4].trim();
+        let vcodec = parts
+            .get(5)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "NA");
 
-    let percent = percent_str.parse::<f64>().unwrap_or(0.0);
-    let downloaded_clean = if downloaded_str.is_empty() || downloaded_str == "NA" {
+        let percent = percent_str.parse::<f64>().unwrap_or(0.0);
+        let downloaded_clean = if downloaded_str.is_empty() || downloaded_str == "NA" {
+            "Unknown".to_string()
+        } else {
+            downloaded_str.to_string()
+        };
+        let total_clean = if total_str.is_empty() || total_str == "NA" {
+            "Unknown".to_string()
+        } else {
+            total_str.to_string()
+        };
+        let speed_clean = if speed_str.is_empty() || speed_str == "NA" {
+            "Unknown".to_string()
+        } else {
+            speed_str.to_string()
+        };
+        let eta_clean = if eta_str.is_empty() || eta_str == "NA" {
+            "--:--".to_string()
+        } else {
+            eta_str.to_string()
+        };
+
+        return Some((
+            percent,
+            downloaded_clean,
+            total_clean,
+            speed_clean,
+            eta_clean,
+            vcodec,
+        ));
+    }
+
+    let num = parse_progress_numeric(line)?;
+    let downloaded_str = if num.downloaded_bytes > 0 {
+        format_bytes_u64(num.downloaded_bytes)
+    } else {
+        "0 B".to_string()
+    };
+    let total_str = if num.total_bytes > 0 {
+        format_bytes_u64(num.total_bytes)
+    } else {
         "Unknown".to_string()
-    } else {
-        downloaded_str.to_string()
     };
-    let total_clean = if total_str.is_empty() || total_str == "NA" {
-        "Unknown".to_string()
-    } else {
-        total_str.to_string()
-    };
-    let speed_clean = if speed_str.is_empty() || speed_str == "NA" {
-        "Unknown".to_string()
-    } else {
-        speed_str.to_string()
-    };
-    let eta_clean = if eta_str.is_empty() || eta_str == "NA" {
-        "--:--".to_string()
-    } else {
-        eta_str.to_string()
-    };
+    let speed_str = format_speed(num.speed_bytes_sec);
+    let eta_str = format_eta(num.eta_seconds);
 
     Some((
-        percent,
-        downloaded_clean,
-        total_clean,
-        speed_clean,
-        eta_clean,
-        vcodec,
+        num.percent,
+        downloaded_str,
+        total_str,
+        speed_str,
+        eta_str,
+        num.vcodec,
     ))
+}
+
+/// Parses a size string with optional binary units (e.g. "50.0MiB", "5M", "52428800") into raw bytes.
+pub fn parse_size_bytes(s: &str) -> Option<u64> {
+    let s = s.trim().trim_start_matches('~').trim();
+    if s.is_empty() || s == "NA" || s == "Unknown" {
+        return None;
+    }
+    if let Ok(bytes) = s.parse::<u64>() {
+        return Some(bytes);
+    }
+    if let Ok(bytes_f) = s.parse::<f64>() {
+        return Some(bytes_f as u64);
+    }
+    let alpha_pos = s.find(|c: char| c.is_alphabetic())?;
+    let (num_part, unit) = s.split_at(alpha_pos);
+    let num_clean: String = num_part.chars().filter(|c| !c.is_whitespace()).collect();
+    let num: f64 = num_clean.parse().ok()?;
+    let mult = match unit.trim().to_lowercase().as_str() {
+        "b" => 1.0,
+        "k" | "kb" | "kib" => 1024.0,
+        "m" | "mb" | "mib" => 1024.0 * 1024.0,
+        "g" | "gb" | "gib" => 1024.0 * 1024.0 * 1024.0,
+        "t" | "tb" | "tib" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+    Some((num * mult) as u64)
+}
+
+/// Parses a speed string (e.g. "2.50MiB/s", "2.5M/s", "2621440") into raw bytes per second.
+pub fn parse_speed_bytes(s: &str) -> Option<f64> {
+    let s = s.trim().trim_end_matches("/s");
+    parse_size_bytes(s).map(|b| b as f64)
+}
+
+/// Parses an ETA string (e.g. "01:23", "00:02:15", "42") into total seconds.
+pub fn parse_eta_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() || s == "NA" || s == "--:--" {
+        return None;
+    }
+    if let Ok(secs) = s.parse::<u64>() {
+        return Some(secs);
+    }
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() == 2 {
+        let m: u64 = parts[0].trim().parse().ok()?;
+        let sec: u64 = parts[1].trim().parse().ok()?;
+        Some(m * 60 + sec)
+    } else if parts.len() == 3 {
+        let h: u64 = parts[0].trim().parse().ok()?;
+        let m: u64 = parts[1].trim().parse().ok()?;
+        let sec: u64 = parts[2].trim().parse().ok()?;
+        Some(h * 3600 + m * 60 + sec)
+    } else {
+        None
+    }
 }
 
 pub fn get_terminal_width() -> usize {
@@ -741,16 +988,16 @@ pub fn render_progress_bar_with_width(
         let bar = format!("[{}{}{}]", "=".repeat(filled), arrow, " ".repeat(empty));
 
         format!(
-            "\r[download] {} {:>5.1}% [{:>9} / {:>9}] at {:>10} ETA {:>5}",
+            "[download] {} {:>5.1}% [{:>9} / {:>9}] at {:>10} ETA {:>5}",
             bar, percent, downloaded, total, speed, eta
         )
     } else if terminal_width >= 55 {
         format!(
-            "\r[download] {:>5.1}% [{} / {}] at {} ETA {}",
+            "[download] {:>5.1}% [{} / {}] at {} ETA {}",
             percent, downloaded, total, speed, eta
         )
     } else {
-        format!("\r[download] {:>5.1}% {} ETA {}", percent, speed, eta)
+        format!("[download] {:>5.1}% {} ETA {}", percent, speed, eta)
     }
 }
 
@@ -1043,7 +1290,7 @@ pub fn register_direct_download_ext(
 }
 
 pub fn register_direct_download_full(pid: u32, temp_dir: PathBuf) {
-    crate::engine::queue::record_active_download();
+    record_active_download();
     let mut guard = match DIRECT_TRACKER.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
@@ -1061,7 +1308,7 @@ pub fn unregister_direct_download() {
     };
     *guard = None;
     drop(guard);
-    crate::engine::queue::clear_active_download();
+    clear_active_download();
 }
 
 pub fn cancel_direct_download() {
@@ -1076,7 +1323,7 @@ pub fn cancel_direct_download() {
         let _ = std::fs::remove_dir_all(&tracker.temp_dir);
     }
     drop(guard);
-    crate::engine::queue::clear_active_download();
+    clear_active_download();
 }
 
 pub fn build_ytdlp_download_cmd(
@@ -1133,6 +1380,8 @@ pub fn build_ytdlp_download_cmd_ext(
         clean_format_id.to_string()
     } else if clean_format_id == "best" {
         "bestvideo+bestaudio/best".to_string()
+    } else if clean_format_id.contains('+') {
+        clean_format_id.to_string()
     } else {
         format!("{}+bestaudio/{}/best", clean_format_id, clean_format_id)
     };
@@ -1179,7 +1428,7 @@ pub fn build_ytdlp_download_cmd_ext(
         .arg("--encoding")
         .arg("utf-8")
         .arg("--progress-template")
-        .arg("download:PROGRESS|%(progress._percent_str)s|%(progress._downloaded_bytes_str,progress._total_bytes_str)s|%(progress._total_bytes_str,progress._total_bytes_estimate_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(info.vcodec)s")
+        .arg("download:PROGRESS|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s|%(progress.eta)s|%(info.vcodec)s|%(info.format_id)s")
         .arg("--progress-template")
         .arg("postprocess:POSTPROCESS|%(progress.status)s")
         .arg("--no-warnings")
@@ -1191,7 +1440,7 @@ pub fn build_ytdlp_download_cmd_ext(
         cmd.arg("--ffmpeg-location").arg(ffmpeg_path);
     }
 
-    cmd.arg(url);
+    cmd.arg("--").arg(url);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1230,6 +1479,20 @@ pub fn download_media(
         None,
         false,
     )
+    .map(|outcome| outcome.path)
+}
+
+#[derive(Debug)]
+struct SharedForegroundProgress {
+    target_percent: f64,
+    downloaded_bytes: u64,
+    total_bytes: u64,
+    raw_speed: f64,
+    raw_eta: Option<u64>,
+    phase: DownloadPhase,
+    is_finalizing: bool,
+    finalizing_msg: Option<String>,
+    last_speed_update: Instant,
 }
 
 /// Downloads media with custom output filename templates and overwrite options.
@@ -1243,8 +1506,9 @@ pub fn download_media_ext(
     _title: Option<&str>,
     custom_output_template: Option<&str>,
     force_overwrites: bool,
-) -> Result<Option<PathBuf>, String> {
-    let validated_dir = crate::config::manager::validate_download_path(download_dir, true)
+) -> Result<DownloadOutcome, String> {
+    let download_start = Instant::now();
+    let validated_dir = validate_download_path(download_dir, true)
         .map_err(|e| format!("Invalid download directory: {}", e))?;
     let clean_download_dir = validated_dir.to_string_lossy();
     let temp_dir = validated_dir.join(".dwdr_direct");
@@ -1286,90 +1550,254 @@ pub fn download_media_ext(
         || format_id.eq_ignore_ascii_case("audio")
         || format_id.eq_ignore_ascii_case("bestaudio");
 
-    let mut postprocess_started = false;
-    let mut primary_download_finished = false;
-    let mut max_observed_percent: f64 = 0.0;
+    let ctx = UiContext::get();
+    let is_rich = ctx.animations && !ctx.is_plain();
+
+    let shared = Arc::new(Mutex::new(SharedForegroundProgress {
+        target_percent: 0.0,
+        downloaded_bytes: 0,
+        total_bytes: 0,
+        raw_speed: 0.0,
+        raw_eta: None,
+        phase: if is_audio_only {
+            DownloadPhase::Audio
+        } else {
+            DownloadPhase::Video
+        },
+        is_finalizing: false,
+        finalizing_msg: None,
+        last_speed_update: Instant::now(),
+    }));
+    let running = Arc::new(AtomicBool::new(true));
+
+    let render_handle = if is_rich {
+        let shared_render = Arc::clone(&shared);
+        let running_render = Arc::clone(&running);
+        let theme = ctx.theme;
+        let color = ctx.color_level;
+        let title_opt = _title.map(|t| t.to_string());
+
+        Some(thread::spawn(move || {
+            let mut smoother = SpeedSmoother::new();
+            let mut eased = EasedProgress::new();
+            let mut tick: u64 = 0;
+            let mut last_frame = String::new();
+            let mut last_sample_time = Instant::now();
+
+            while running_render.load(Ordering::Relaxed) {
+                let (state, target_pct, is_fin) = {
+                    let guard = shared_render.lock().unwrap_or_else(|p| p.into_inner());
+                    let now = Instant::now();
+
+                    if now.duration_since(last_sample_time)
+                        >= Duration::from_millis(SAMPLE_INTERVAL_MS)
+                    {
+                        let is_stalled =
+                            now.duration_since(guard.last_speed_update) > STALL_THRESHOLD;
+                        let spd = if is_stalled { 0.0 } else { guard.raw_speed };
+                        smoother.feed(spd, now);
+                        last_sample_time = now;
+                    }
+
+                    eased.set_target(guard.target_percent);
+                    let current_pct = eased.tick();
+
+                    let remaining = guard.total_bytes.saturating_sub(guard.downloaded_bytes);
+                    let eta = smoother.eta_seconds(remaining).or(guard.raw_eta);
+
+                    let state = ProgressState {
+                        percent: current_pct,
+                        downloaded_bytes: guard.downloaded_bytes,
+                        total_bytes: guard.total_bytes,
+                        speed_bytes_sec: smoother.ema,
+                        eta_seconds: eta,
+                        sparkline_samples: smoother.sparkline_samples(),
+                        phase: guard.phase,
+                        is_finalizing: guard.is_finalizing,
+                        finalizing_msg: guard.finalizing_msg.clone(),
+                    };
+                    (state, guard.target_percent, guard.is_finalizing)
+                };
+
+                set_taskbar_progress(target_pct as u8);
+                if let Some(ref t) = title_opt {
+                    set_terminal_title(&format!("DWDR - {:.0}% - {}", target_pct, t));
+                }
+
+                let term_w = crossterm::terminal::size()
+                    .map(|(w, _)| w as usize)
+                    .unwrap_or(80);
+                let show_stepper = !is_audio_only && !is_fin;
+                let frame =
+                    render_foreground_frame(&state, term_w, &theme, color, tick, show_stepper);
+
+                if frame != last_frame {
+                    print!("\r\x1b[K{}", frame);
+                    let _ = stdout().flush();
+                    last_frame = frame;
+                }
+
+                tick = tick.wrapping_add(1);
+                thread::sleep(Duration::from_millis(TICK_MS));
+            }
+
+            (smoother.peak, smoother.sparkline_samples())
+        }))
+    } else {
+        None
+    };
+
     let mut captured_filepath: Option<PathBuf> = None;
-    let bar_display = "=".repeat(25);
+    let expects_separate_audio = format_id.contains('+');
+    let mut streams_seen: usize = 0;
+    let mut current_stream_key: Option<String> = None;
+    let mut video_downloaded: u64 = 0;
+    let mut video_total: u64 = 0;
+    let mut audio_downloaded: u64 = 0;
+    let mut audio_total: u64 = 0;
+    let mut plain_throttle = PlainProgressThrottle::default();
+    let mut peak_speed_plain: f64 = 0.0;
+    let mut last_plain_bytes: u64 = 0;
 
     if let Some(stdout_pipe) = child.stdout.take() {
         let reader = BufReader::new(stdout_pipe);
 
         read_lossy_lines(reader, |line| {
             let trimmed = line.trim();
-            if let Some((percent, downloaded, total, speed, eta, vcodec)) =
-                parse_progress_line_ext(line)
-            {
-                let is_secondary_audio = !is_audio_only
-                    && (vcodec
+            if let Some(num) = parse_progress_numeric(line) {
+                let is_audio_stream = is_audio_only
+                    || num
+                        .vcodec
                         .as_deref()
                         .map(|v| v.eq_ignore_ascii_case("none"))
-                        .unwrap_or(false)
-                        || (max_observed_percent >= 80.0 && percent < 30.0));
+                        .unwrap_or(false);
 
-                let combined_percent = if is_audio_only {
-                    percent
-                } else if is_secondary_audio {
-                    85.0 + (percent * 0.15)
+                let stream_key = num.format_id.clone().unwrap_or_else(|| {
+                    if is_audio_stream {
+                        "audio".to_string()
+                    } else {
+                        "video".to_string()
+                    }
+                });
+
+                if current_stream_key.as_ref() != Some(&stream_key) {
+                    current_stream_key = Some(stream_key);
+                    streams_seen += 1;
+                }
+
+                let phase = if is_audio_stream {
+                    audio_downloaded = num.downloaded_bytes;
+                    if num.total_bytes > 0 {
+                        audio_total = num.total_bytes;
+                    }
+                    DownloadPhase::Audio
                 } else {
-                    percent * 0.85
+                    video_downloaded = num.downloaded_bytes;
+                    if num.total_bytes > 0 {
+                        video_total = num.total_bytes;
+                    }
+                    DownloadPhase::Video
                 };
 
-                max_observed_percent = max_observed_percent.max(combined_percent).clamp(0.0, 100.0);
-                if max_observed_percent >= 100.0 {
-                    primary_download_finished = true;
+                let (combined_pct, total_bytes, downloaded_bytes) = combine_progress(
+                    expects_separate_audio,
+                    streams_seen,
+                    is_audio_stream,
+                    num.percent,
+                    video_downloaded,
+                    video_total,
+                    audio_downloaded,
+                    audio_total,
+                );
+
+                last_plain_bytes = downloaded_bytes;
+                if num.speed_bytes_sec > peak_speed_plain {
+                    peak_speed_plain = num.speed_bytes_sec;
                 }
 
-                if is_secondary_audio || primary_download_finished {
-                    if !postprocess_started {
-                        postprocess_started = true;
-                        print!(
-                            "\r[download] [{}] 100.0% [Finalizing: Merging video and audio tracks...]       ",
-                            bar_display
-                        );
-                        let _ = stdout().flush();
-                    }
-                } else {
-                    print!(
+                if is_rich {
+                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.target_percent = combined_pct;
+                    guard.downloaded_bytes = downloaded_bytes;
+                    guard.total_bytes = total_bytes;
+                    guard.raw_speed = num.speed_bytes_sec;
+                    guard.raw_eta = num.eta_seconds;
+                    guard.phase = phase;
+                    guard.last_speed_update = Instant::now();
+                } else if plain_throttle.should_print(combined_pct, Instant::now()) {
+                    let d_str = format_bytes_u64(downloaded_bytes);
+                    let t_str = if total_bytes > 0 {
+                        format_bytes_u64(total_bytes)
+                    } else {
+                        "Unknown".to_string()
+                    };
+                    let s_str = format_speed(num.speed_bytes_sec);
+                    let e_str = format_eta(num.eta_seconds);
+                    println!(
                         "{}",
-                        render_progress_bar(
-                            max_observed_percent,
-                            &downloaded,
-                            &total,
-                            &speed,
-                            &eta
-                        )
+                        render_progress_bar(combined_pct, &d_str, &t_str, &s_str, &e_str)
                     );
-                    let _ = stdout().flush();
                 }
             } else if line.starts_with("[Merger]") || line.contains("Merging formats") {
-                postprocess_started = true;
-                print!(
-                    "\r[download] [{}] 100.0% [Finalizing: Merging video and audio tracks...]       ",
-                    bar_display
-                );
-                let _ = stdout().flush();
+                let msg = "Merging video and audio tracks...";
+                if is_rich {
+                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.target_percent = 100.0;
+                    guard.phase = DownloadPhase::Finalize;
+                    guard.is_finalizing = true;
+                    guard.finalizing_msg = Some(msg.to_string());
+                } else {
+                    println!(
+                        "[download] [{}] 100.0% [Finalizing: {}]",
+                        "=".repeat(25),
+                        msg
+                    );
+                }
             } else if line.starts_with("[ExtractAudio]") {
-                postprocess_started = true;
-                print!(
-                    "\r[download] [{}] 100.0% [Finalizing: Extracting audio stream...]            ",
-                    bar_display
-                );
-                let _ = stdout().flush();
+                let msg = "Extracting audio stream...";
+                if is_rich {
+                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.target_percent = 100.0;
+                    guard.phase = DownloadPhase::Extract;
+                    guard.is_finalizing = true;
+                    guard.finalizing_msg = Some(msg.to_string());
+                } else {
+                    println!(
+                        "[download] [{}] 100.0% [Finalizing: {}]",
+                        "=".repeat(25),
+                        msg
+                    );
+                }
             } else if line.starts_with("[Fixup") {
-                postprocess_started = true;
-                print!(
-                    "\r[download] [{}] 100.0% [Finalizing: Correcting media container...]         ",
-                    bar_display
-                );
-                let _ = stdout().flush();
-            } else if line.starts_with("POSTPROCESS|") && !postprocess_started {
-                postprocess_started = true;
-                print!(
-                    "\r[download] [{}] 100.0% [Finalizing: Packaging final media...]              ",
-                    bar_display
-                );
-                let _ = stdout().flush();
+                let msg = "Correcting media container...";
+                if is_rich {
+                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.target_percent = 100.0;
+                    guard.phase = DownloadPhase::Finalize;
+                    guard.is_finalizing = true;
+                    guard.finalizing_msg = Some(msg.to_string());
+                } else {
+                    println!(
+                        "[download] [{}] 100.0% [Finalizing: {}]",
+                        "=".repeat(25),
+                        msg
+                    );
+                }
+            } else if line.starts_with("POSTPROCESS|") {
+                let msg = "Packaging final media...";
+                if is_rich {
+                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                    guard.target_percent = 100.0;
+                    guard.phase = DownloadPhase::Finalize;
+                    guard.is_finalizing = true;
+                    guard.finalizing_msg = Some(msg.to_string());
+                } else {
+                    println!(
+                        "[download] [{}] 100.0% [Finalizing: {}]",
+                        "=".repeat(25),
+                        msg
+                    );
+                }
             } else if !trimmed.is_empty()
                 && !trimmed.starts_with("PROGRESS|")
                 && !trimmed.starts_with("POSTPROCESS|")
@@ -1394,16 +1822,43 @@ pub fn download_media_ext(
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 
-    if status.success() {
-        println!(
-            "\r[download] [{}] 100.0% Complete! Finalized successfully!                       ",
-            bar_display
-        );
-        let _ = stdout().flush();
-        println!("{}", "SUCCESS: Media finalization complete!".green());
-        Ok(captured_filepath)
+    running.store(false, Ordering::Relaxed);
+    let (peak_speed, samples) = if let Some(handle) = render_handle {
+        handle.join().unwrap_or((0.0, Vec::new()))
     } else {
-        println!();
+        (peak_speed_plain, Vec::new())
+    };
+
+    let elapsed = download_start.elapsed();
+    let size_bytes = captured_filepath
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .unwrap_or(last_plain_bytes);
+    let avg_speed = if elapsed.as_secs_f64() > 0.0 {
+        size_bytes as f64 / elapsed.as_secs_f64()
+    } else {
+        0.0
+    };
+
+    let stats = DownloadStats {
+        size_bytes,
+        avg_speed,
+        peak_speed,
+        samples,
+        elapsed,
+    };
+
+    if status.success() {
+        clear_taskbar_progress();
+        set_terminal_title("DWDR - Complete");
+        Ok(DownloadOutcome {
+            path: captured_filepath,
+            stats,
+        })
+    } else {
+        clear_taskbar_progress();
+        set_terminal_title("DWDR - Error");
         Err(extract_engine_error(&stderr_output))
     }
 }
@@ -1432,7 +1887,17 @@ where
         false,
         None,
         on_spawn,
-        on_progress,
+        move |pct, dwn, tot, spd, eta, _phase, fin| {
+            let d_str = format_bytes_u64(dwn);
+            let t_str = if tot > 0 {
+                format_bytes_u64(tot)
+            } else {
+                "Unknown".to_string()
+            };
+            let s_str = format_speed(spd);
+            let e_str = format_eta(eta);
+            on_progress(pct, &d_str, &t_str, &s_str, &e_str, fin);
+        },
     )
 }
 
@@ -1452,9 +1917,9 @@ pub fn download_media_background_ext<F, G>(
 ) -> Result<Option<PathBuf>, String>
 where
     F: FnOnce(&mut Child),
-    G: Fn(f64, &str, &str, &str, &str, bool),
+    G: Fn(f64, u64, u64, f64, Option<u64>, DownloadPhase, bool),
 {
-    let validated_dir = crate::config::manager::validate_download_path(download_dir, true)
+    let validated_dir = validate_download_path(download_dir, true)
         .map_err(|e| format!("Invalid download directory: {}", e))?;
     let clean_download_dir = validated_dir.to_string_lossy();
 
@@ -1494,9 +1959,14 @@ where
         || format_id.eq_ignore_ascii_case("audio")
         || format_id.eq_ignore_ascii_case("bestaudio");
 
+    let expects_separate_audio = format_id.contains('+');
+    let mut streams_seen: usize = 0;
+    let mut current_stream_key: Option<String> = None;
     let mut postprocess_started = false;
-    let mut primary_download_finished = false;
-    let mut max_observed_percent: f64 = 0.0;
+    let mut video_downloaded: u64 = 0;
+    let mut video_total: u64 = 0;
+    let mut audio_downloaded: u64 = 0;
+    let mut audio_total: u64 = 0;
     let mut captured_filepath: Option<PathBuf> = None;
 
     if let Some(stdout_pipe) = child.stdout.take() {
@@ -1504,44 +1974,61 @@ where
 
         read_lossy_lines(reader, |line| {
             let trimmed = line.trim();
-            if let Some((percent, downloaded, total, speed, eta, vcodec)) =
-                parse_progress_line_ext(line)
-            {
-                let is_secondary_audio = !is_audio_only
-                    && (vcodec
+            if let Some(num) = parse_progress_numeric(line) {
+                let is_audio_stream = is_audio_only
+                    || num
+                        .vcodec
                         .as_deref()
                         .map(|v| v.eq_ignore_ascii_case("none"))
-                        .unwrap_or(false)
-                        || (max_observed_percent >= 80.0 && percent < 30.0));
+                        .unwrap_or(false);
 
-                let combined_percent = if is_audio_only {
-                    percent
-                } else if is_secondary_audio {
-                    85.0 + (percent * 0.15)
+                let stream_key = num.format_id.clone().unwrap_or_else(|| {
+                    if is_audio_stream {
+                        "audio".to_string()
+                    } else {
+                        "video".to_string()
+                    }
+                });
+
+                if current_stream_key.as_ref() != Some(&stream_key) {
+                    current_stream_key = Some(stream_key);
+                    streams_seen += 1;
+                }
+
+                let phase = if is_audio_stream {
+                    audio_downloaded = num.downloaded_bytes;
+                    if num.total_bytes > 0 {
+                        audio_total = num.total_bytes;
+                    }
+                    DownloadPhase::Audio
                 } else {
-                    percent * 0.85
+                    video_downloaded = num.downloaded_bytes;
+                    if num.total_bytes > 0 {
+                        video_total = num.total_bytes;
+                    }
+                    DownloadPhase::Video
                 };
 
-                max_observed_percent = max_observed_percent.max(combined_percent).clamp(0.0, 100.0);
-                if max_observed_percent >= 100.0 {
-                    primary_download_finished = true;
-                }
+                let (combined_pct, total_bytes, downloaded_bytes) = combine_progress(
+                    expects_separate_audio,
+                    streams_seen,
+                    is_audio_stream,
+                    num.percent,
+                    video_downloaded,
+                    video_total,
+                    audio_downloaded,
+                    audio_total,
+                );
 
-                if is_secondary_audio || primary_download_finished {
-                    if !postprocess_started {
-                        postprocess_started = true;
-                        on_progress(100.0, "", "", "", "", true);
-                    }
-                } else {
-                    on_progress(
-                        max_observed_percent,
-                        &downloaded,
-                        &total,
-                        &speed,
-                        &eta,
-                        false,
-                    );
-                }
+                on_progress(
+                    combined_pct,
+                    downloaded_bytes,
+                    total_bytes,
+                    num.speed_bytes_sec,
+                    num.eta_seconds,
+                    phase,
+                    false,
+                );
             } else if (line.starts_with("POSTPROCESS|")
                 || line.starts_with("[Merger]")
                 || line.starts_with("[ExtractAudio]")
@@ -1549,7 +2036,12 @@ where
                 && !postprocess_started
             {
                 postprocess_started = true;
-                on_progress(100.0, "", "", "", "", true);
+                let phase = if line.starts_with("[ExtractAudio]") {
+                    DownloadPhase::Extract
+                } else {
+                    DownloadPhase::Finalize
+                };
+                on_progress(100.0, 0, 0, 0.0, None, phase, true);
             } else if !trimmed.is_empty()
                 && !trimmed.starts_with("PROGRESS|")
                 && !trimmed.starts_with("POSTPROCESS|")
@@ -1685,6 +2177,9 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
+    use crate::ui::format_table::build_format_table_options;
+    use crate::ui::theme::{ColorLevel, ThemeMode};
+
     #[test]
     fn test_find_format_by_quality() {
         let formats = vec![
@@ -1694,6 +2189,7 @@ mod tests {
                 resolution: "4320p".to_string(),
                 filesize: Some(200_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "av01".to_string(),
                 acodec: "none".to_string(),
                 height: Some(4320),
@@ -1704,6 +2200,7 @@ mod tests {
                 resolution: "4K".to_string(),
                 filesize: Some(100_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "vp9".to_string(),
                 acodec: "none".to_string(),
                 height: Some(2160),
@@ -1714,6 +2211,7 @@ mod tests {
                 resolution: "2K".to_string(),
                 filesize: Some(50_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "vp9".to_string(),
                 acodec: "none".to_string(),
                 height: Some(1440),
@@ -1724,6 +2222,7 @@ mod tests {
                 resolution: "720p".to_string(),
                 filesize: Some(25_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
                 height: Some(720),
@@ -1734,6 +2233,7 @@ mod tests {
                 resolution: "360p".to_string(),
                 filesize: Some(10_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
                 height: Some(360),
@@ -1772,6 +2272,7 @@ mod tests {
             resolution: "720p".to_string(),
             filesize: Some(10_485_760.0),
             is_estimated: false,
+            is_hdr: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -1785,6 +2286,7 @@ mod tests {
             resolution: "720p".to_string(),
             filesize: Some(500.0),
             is_estimated: false,
+            is_hdr: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -1797,6 +2299,7 @@ mod tests {
             resolution: "720p".to_string(),
             filesize: Some(1_500_000.0),
             is_estimated: false,
+            is_hdr: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -1809,6 +2312,7 @@ mod tests {
             resolution: "720p".to_string(),
             filesize: Some(2_500_000_000.0),
             is_estimated: false,
+            is_hdr: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -1821,6 +2325,7 @@ mod tests {
             resolution: "Audio".to_string(),
             filesize: None,
             is_estimated: false,
+            is_hdr: false,
             vcodec: "none".to_string(),
             acodec: "opus".to_string(),
             height: None,
@@ -1834,6 +2339,7 @@ mod tests {
             resolution: "1080p".to_string(),
             filesize: Some(44_040_192.0),
             is_estimated: true,
+            is_hdr: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(1080),
@@ -1892,6 +2398,28 @@ mod tests {
         assert_eq!(total, "78.20MiB");
         assert_eq!(speed, "2.10MiB/s");
         assert_eq!(eta, "00:20");
+    }
+
+    #[test]
+    fn test_parse_size_speed_eta_helpers() {
+        assert_eq!(parse_size_bytes("50.0MiB"), Some(50 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("~10.00MiB"), Some(10 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("~ 10.00MiB"), Some(10 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("10.00 MiB"), Some(10 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("5M"), Some(5 * 1024 * 1024));
+        assert_eq!(parse_size_bytes("1024"), Some(1024));
+        assert_eq!(parse_size_bytes("NA"), None);
+        assert_eq!(parse_size_bytes("Unknown"), None);
+        assert_eq!(parse_size_bytes(""), None);
+
+        assert_eq!(parse_speed_bytes("2.50MiB/s"), Some(2.5 * 1024.0 * 1024.0));
+        assert_eq!(parse_speed_bytes("1000/s"), Some(1000.0));
+
+        assert_eq!(parse_eta_secs("00:20"), Some(20));
+        assert_eq!(parse_eta_secs("01:30"), Some(90));
+        assert_eq!(parse_eta_secs("01:00:00"), Some(3600));
+        assert_eq!(parse_eta_secs("42"), Some(42));
+        assert_eq!(parse_eta_secs("--:--"), None);
 
         let fallback_line = "PROGRESS|100.0%|NA|NA|NA|NA";
         let (p, d, t, s, e) = parse_progress_line(fallback_line).unwrap();
@@ -2031,6 +2559,7 @@ mod tests {
                 resolution: "1080p".to_string(),
                 filesize: Some(50_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "avc1".to_string(),
                 acodec: "none".to_string(),
                 height: Some(1080),
@@ -2041,6 +2570,7 @@ mod tests {
                 resolution: "Audio".to_string(),
                 filesize: Some(5_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "none".to_string(),
                 acodec: "mp4a".to_string(),
                 height: None,
@@ -2120,22 +2650,24 @@ mod tests {
         let full = render_progress_bar_with_width(50.0, "50MB", "100MB", "5MB/s", "00:10", 120);
         assert!(full.contains("[download] [="));
         assert!(full.contains("50.0%"));
+        assert!(!full.contains('\r'));
+        assert!(visible_width(&full) <= 120);
 
         // Standard terminal (80 cols) should fit within 80 characters without visual wrapping
         let std_term = render_progress_bar_with_width(50.0, "50MB", "100MB", "5MB/s", "00:10", 80);
         assert!(std_term.contains("50.0%"));
-        let display_width = std_term.trim_start_matches('\r').chars().count();
-        assert!(display_width <= 80);
+        assert!(!std_term.contains('\r'));
+        assert!(visible_width(&std_term) <= 80);
 
         // Compact mode for 60 cols
         let compact = render_progress_bar_with_width(50.0, "50MB", "100MB", "5MB/s", "00:10", 60);
-        let display_width_compact = compact.trim_start_matches('\r').chars().count();
-        assert!(display_width_compact <= 60);
+        assert!(!compact.contains('\r'));
+        assert!(visible_width(&compact) <= 60);
 
         // Ultra-compact mode for 40 cols
         let ultra = render_progress_bar_with_width(50.0, "50MB", "100MB", "5MB/s", "00:10", 40);
-        let display_width_ultra = ultra.trim_start_matches('\r').chars().count();
-        assert!(display_width_ultra <= 40);
+        assert!(!ultra.contains('\r'));
+        assert!(visible_width(&ultra) <= 40);
     }
 
     #[test]
@@ -2650,6 +3182,158 @@ mod tests {
         // Must select the AV1 HDR format over the AVC SDR format despite smaller filesize
         assert_eq!(parsed.formats[0].format_id, "4k_av1_hdr");
         assert_eq!(parsed.formats[0].resolution, "4K");
+        assert!(parsed.formats[0].is_hdr);
+    }
+
+    #[test]
+    fn test_parse_video_info_hdr10_dynamic_range() {
+        let json_payload = r#"{
+            "title": "HDR10 Test Video",
+            "duration": 60.0,
+            "formats": [
+                {
+                    "format_id": "hdr10_fmt",
+                    "ext": "mp4",
+                    "width": 1920,
+                    "height": 1080,
+                    "vcodec": "av01.0.08M.10",
+                    "acodec": "none",
+                    "dynamic_range": "HDR10",
+                    "filesize": 50000000.0,
+                    "protocol": "https"
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.formats.len(), 1);
+        assert!(parsed.formats[0].is_hdr);
+
+        let options = build_format_table_options(
+            &parsed.formats,
+            "1080p",
+            90,
+            &ThemeMode::Ascii,
+            ColorLevel::None,
+        );
+        assert_eq!(options.len(), 1);
+        assert!(options[0].contains("[HDR]"));
+    }
+
+    #[test]
+    fn test_parse_video_info_sanitizes_title_injection() {
+        let json_payload = r#"{
+            "title": "Pwned\u001b[2J\u001b]0;pwned\u0007 Title",
+            "duration": 60.0,
+            "formats": []
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.title, "Pwned Title");
+    }
+
+    #[test]
+    fn test_parse_video_info_sanitizes_format_metadata() {
+        let json_payload = r#"{
+            "title": "Escape Sequence Test",
+            "duration": 60.0,
+            "formats": [
+                {
+                    "format_id": "22\u001b[0m",
+                    "ext": "mp4\u001b[31m",
+                    "format_note": "1080p\u001b[2J\u001b]0;pwned\u0007",
+                    "vcodec": "avc1\u001b[32m",
+                    "acodec": "none",
+                    "height": 1080,
+                    "width": 1920,
+                    "filesize": 50000000.0,
+                    "protocol": "https"
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.formats.len(), 1);
+        let f = &parsed.formats[0];
+
+        assert!(!f.format_id.contains('\u{1b}') && !f.format_id.contains('\u{7}'));
+        assert!(!f.ext.contains('\u{1b}') && !f.ext.contains('\u{7}'));
+        assert!(!f.resolution.contains('\u{1b}') && !f.resolution.contains('\u{7}'));
+        assert!(!f.vcodec.contains('\u{1b}') && !f.vcodec.contains('\u{7}'));
+        assert!(!f.acodec.contains('\u{1b}') && !f.acodec.contains('\u{7}'));
+
+        let summary = f.summary();
+        assert!(!summary.contains('\u{1b}') && !summary.contains('\u{7}'));
+
+        let picker_rows = build_format_table_options(
+            &parsed.formats,
+            "1080p",
+            90,
+            &ThemeMode::Ascii,
+            ColorLevel::None,
+        );
+        assert_eq!(picker_rows.len(), 1);
+        assert!(!picker_rows[0].contains('\u{1b}') && !picker_rows[0].contains('\u{7}'));
+    }
+
+    #[test]
+    fn test_combine_progress() {
+        // 1. Single video (expects_separate_audio = false, streams_seen = 1)
+        let (pct, tot, dwn) = combine_progress(false, 1, false, 50.0, 50_000, 100_000, 0, 0);
+        assert!((pct - 50.0).abs() < f64::EPSILON);
+        assert_eq!(tot, 100_000);
+        assert_eq!(dwn, 50_000);
+
+        let (pct, tot, dwn) = combine_progress(false, 1, false, 100.0, 100_000, 100_000, 0, 0);
+        assert!((pct - 100.0).abs() < f64::EPSILON);
+        assert_eq!(tot, 100_000);
+        assert_eq!(dwn, 100_000);
+
+        // 2. Single audio (expects_separate_audio = false, streams_seen = 1)
+        let (pct, tot, dwn) = combine_progress(false, 1, true, 75.0, 0, 0, 7_500, 10_000);
+        assert!((pct - 75.0).abs() < f64::EPSILON);
+        assert_eq!(tot, 10_000);
+        assert_eq!(dwn, 7_500);
+
+        // 3. Separate video (expects_separate_audio = true, streams_seen = 1)
+        let (pct, tot, dwn) = combine_progress(true, 1, false, 50.0, 50_000, 100_000, 0, 0);
+        assert!((pct - 42.5).abs() < f64::EPSILON);
+        assert_eq!(tot, 100_000);
+        assert_eq!(dwn, 50_000);
+
+        let (pct, tot, dwn) = combine_progress(true, 1, false, 100.0, 100_000, 100_000, 0, 0);
+        assert!((pct - 85.0).abs() < f64::EPSILON);
+        assert_eq!(tot, 100_000);
+        assert_eq!(dwn, 100_000);
+
+        // 4. Separate audio (expects_separate_audio = true, streams_seen = 2)
+        let (pct, tot, dwn) =
+            combine_progress(true, 2, true, 50.0, 100_000, 100_000, 10_000, 20_000);
+        assert!((pct - (110_000.0 / 120_000.0 * 100.0)).abs() < 1e-4);
+        assert_eq!(tot, 120_000);
+        assert_eq!(dwn, 110_000);
+
+        let (pct, tot, dwn) = combine_progress(true, 2, true, 50.0, 100_000, 100_000, 5_000, 0);
+        assert!((pct - 92.5).abs() < f64::EPSILON);
+        assert_eq!(tot, 100_000);
+        assert_eq!(dwn, 105_000);
+
+        // 5. Dynamic fallback: expects_separate_audio = false, but streams_seen = 2 triggers audio weights
+        let (pct, tot, dwn) =
+            combine_progress(false, 2, true, 50.0, 100_000, 100_000, 10_000, 20_000);
+        assert!((pct - (110_000.0 / 120_000.0 * 100.0)).abs() < 1e-4);
+        assert_eq!(tot, 120_000);
+        assert_eq!(dwn, 110_000);
+    }
+
+    #[test]
+    fn test_extract_engine_error_sanitizes_escapes() {
+        let stderr =
+            "ERROR: \u{001b}[31;1mFatal\u{001b}[0m \u{001b}]0;pwned\u{0007}engine crash\r\n";
+        let clean = extract_engine_error(stderr);
+        assert_eq!(clean, "Fatal engine crash");
+        assert!(!clean.contains('\u{001b}'));
+        assert!(!clean.contains('\u{0007}'));
     }
 
     #[test]
@@ -2674,6 +3358,7 @@ mod tests {
         assert!(args.contains(&"--no-playlist".to_string()));
         assert!(args.contains(&"--socket-timeout".to_string()));
         assert!(args.contains(&"30".to_string()));
+        assert!(args.contains(&"--".to_string()));
         assert!(args.contains(&"https://youtube.com/watch?v=abc".to_string()));
     }
 
@@ -2686,6 +3371,7 @@ mod tests {
                 resolution: "720p".to_string(),
                 filesize: Some(25_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
                 height: Some(720),
@@ -2696,6 +3382,7 @@ mod tests {
                 resolution: "480p".to_string(),
                 filesize: Some(15_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "avc1".to_string(),
                 acodec: "mp4a".to_string(),
                 height: Some(480),
@@ -2706,6 +3393,7 @@ mod tests {
                 resolution: "Audio".to_string(),
                 filesize: Some(5_000_000.0),
                 is_estimated: false,
+                is_hdr: false,
                 vcodec: "none".to_string(),
                 acodec: "mp4a".to_string(),
                 height: None,
@@ -2844,6 +3532,7 @@ mod tests {
         assert!(args.contains(&"utf-8".to_string()));
         assert!(args.contains(&"--postprocessor-args".to_string()));
         assert!(args.contains(&"Merger:-y".to_string()));
+        assert!(args.contains(&"--".to_string()));
     }
 
     #[test]
@@ -2995,6 +3684,7 @@ mod tests {
             resolution: "1080p".to_string(),
             filesize: Some(273.55 * 1024.0 * 1024.0),
             is_estimated: false,
+            is_hdr: false,
             vcodec: "avc1".to_string(),
             acodec: "none".to_string(),
             height: Some(1080),
@@ -3007,6 +3697,7 @@ mod tests {
             resolution: "1080p".to_string(),
             filesize: Some(273.55 * 1024.0 * 1024.0),
             is_estimated: true,
+            is_hdr: false,
             vcodec: "avc1".to_string(),
             acodec: "none".to_string(),
             height: Some(1080),
@@ -3019,6 +3710,7 @@ mod tests {
             resolution: "720p".to_string(),
             filesize: None,
             is_estimated: false,
+            is_hdr: false,
             vcodec: "avc1".to_string(),
             acodec: "mp4a".to_string(),
             height: Some(720),
@@ -3031,6 +3723,7 @@ mod tests {
             resolution: "Audio".to_string(),
             filesize: Some(15.2 * 1024.0 * 1024.0),
             is_estimated: false,
+            is_hdr: false,
             vcodec: "none".to_string(),
             acodec: "mp4a".to_string(),
             height: None,

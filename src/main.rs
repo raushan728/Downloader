@@ -8,6 +8,8 @@ use dwdr::config::manager::ConfigManager;
 use dwdr::engine::downloader::cancel_direct_download;
 use dwdr::engine::queue::cancel_global_downloads;
 use dwdr::engine::updater::{update_core_engines, update_self};
+use dwdr::ui::UiContext;
+use dwdr::ui::terminal_title::{clear_taskbar_progress, set_terminal_title};
 
 fn main() {
     #[cfg(target_os = "windows")]
@@ -47,6 +49,8 @@ fn main() {
         let _ = crossterm::execute!(std::io::stderr(), crossterm::style::ResetColor);
         cancel_direct_download();
         cancel_global_downloads();
+        clear_taskbar_progress();
+        set_terminal_title("");
         eprintln!(
             "{}",
             "\nINFO: Interrupted by user. Cleaned up partial and downloaded files.".yellow()
@@ -64,6 +68,7 @@ fn main() {
 
     let cli = Cli::parse();
     let mut config = ConfigManager::load();
+    UiContext::init(&config, cli.no_animation, cli.quiet);
 
     if let Some(url) = cli.url {
         let result = process_url(&url, &mut config, cli.force);

@@ -10,6 +10,24 @@ use tempfile::NamedTempFile;
 
 use crate::cli::prompts::interactive_config;
 use crate::engine::queue::{is_download_active, is_pid_alive};
+use crate::ui::UiContext;
+
+/// Parses a boolean configuration string ("true", "false", "1", "0", "yes", "no", "on", "off").
+pub fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_lowercase().as_str() {
+        "true" | "on" | "1" | "yes" => Some(true),
+        "false" | "off" | "0" | "no" => Some(false),
+        _ => None,
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_theme() -> String {
+    "auto".to_string()
+}
 
 /// Global runtime configuration serialized in `~/.dwdr/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +37,14 @@ pub struct DwdrConfig {
     pub max_parallel_downloads: u8,
     pub default_quality: String,
     pub compat_mode: bool,
+    #[serde(default = "default_true")]
+    pub animations: bool,
+    #[serde(default = "default_true")]
+    pub auto_watch: bool,
+    #[serde(default)]
+    pub bell: bool,
+    #[serde(default = "default_theme")]
+    pub theme: String,
 }
 
 impl Default for DwdrConfig {
@@ -45,6 +71,10 @@ impl Default for DwdrConfig {
             max_parallel_downloads: 3,
             default_quality: "1080p".to_string(),
             compat_mode: false,
+            animations: true,
+            auto_watch: true,
+            bell: false,
+            theme: "auto".to_string(),
         }
     }
 }
@@ -244,10 +274,14 @@ impl ConfigManager {
     }
 
     pub fn save(config: &DwdrConfig) -> Result<(), String> {
-        match Self::config_path() {
+        let res = match Self::config_path() {
             Some(path) => Self::save_config(&path, config),
             None => Err("Failed to determine home directory for configuration.".to_string()),
+        };
+        if res.is_ok() {
+            UiContext::refresh(config);
         }
+        res
     }
 
     pub fn save_config(path: &std::path::Path, config: &DwdrConfig) -> Result<(), String> {
@@ -337,6 +371,18 @@ impl ConfigManager {
                         "compat_mode".cyan(),
                         config.compat_mode.to_string().yellow()
                     );
+                    println!(
+                        "{}: {}",
+                        "animations".cyan(),
+                        config.animations.to_string().yellow()
+                    );
+                    println!(
+                        "{}: {}",
+                        "auto_watch".cyan(),
+                        config.auto_watch.to_string().yellow()
+                    );
+                    println!("{}: {}", "bell".cyan(), config.bell.to_string().yellow());
+                    println!("{}: {}", "theme".cyan(), config.theme.yellow());
                 }
                 "reset" => {
                     if is_download_active() && !force {
@@ -443,13 +489,62 @@ impl ConfigManager {
                                 return;
                             }
                         },
-                        "compat_mode" | "compat" => match value.trim().to_lowercase().as_str() {
-                            "true" | "on" | "1" | "yes" => new_config.compat_mode = true,
-                            "false" | "off" | "0" | "no" => new_config.compat_mode = false,
-                            _ => {
+                        "compat_mode" | "compat" => {
+                            if let Some(b) = parse_bool(&value) {
+                                new_config.compat_mode = b;
+                            } else {
                                 println!(
                                     "{}",
                                     "\nERROR: Invalid compat_mode value. Must be 'true' or 'false'.\n"
+                                        .red()
+                                );
+                                return;
+                            }
+                        }
+                        "animations" | "animation" => {
+                            if let Some(b) = parse_bool(&value) {
+                                new_config.animations = b;
+                            } else {
+                                println!(
+                                    "{}",
+                                    "\nERROR: Invalid animations value. Must be 'true' or 'false'.\n"
+                                        .red()
+                                );
+                                return;
+                            }
+                        }
+                        "auto_watch" | "autowatch" => {
+                            if let Some(b) = parse_bool(&value) {
+                                new_config.auto_watch = b;
+                            } else {
+                                println!(
+                                    "{}",
+                                    "\nERROR: Invalid auto_watch value. Must be 'true' or 'false'.\n"
+                                        .red()
+                                );
+                                return;
+                            }
+                        }
+                        "bell" => {
+                            if let Some(b) = parse_bool(&value) {
+                                new_config.bell = b;
+                            } else {
+                                println!(
+                                    "{}",
+                                    "\nERROR: Invalid bell value. Must be 'true' or 'false'.\n"
+                                        .red()
+                                );
+                                return;
+                            }
+                        }
+                        "theme" => match value.trim().to_lowercase().as_str() {
+                            "auto" | "unicode" | "ascii" => {
+                                new_config.theme = value.trim().to_lowercase()
+                            }
+                            _ => {
+                                println!(
+                                    "{}",
+                                    "\nERROR: Invalid theme value. Valid options: auto, unicode, ascii.\n"
                                         .red()
                                 );
                                 return;
@@ -700,6 +795,10 @@ download_path = "/custom/downloads"
         assert_eq!(config.max_parallel_downloads, 3);
         assert_eq!(config.default_quality, "1080p");
         assert!(!config.compat_mode);
+        assert!(config.animations);
+        assert!(config.auto_watch);
+        assert!(!config.bell);
+        assert_eq!(config.theme, "auto");
     }
 
     #[test]
@@ -714,6 +813,10 @@ download_path = "/custom/downloads"
         assert_eq!(loaded.max_parallel_downloads, 3);
         assert_eq!(loaded.default_quality, "1080p");
         assert!(!loaded.compat_mode);
+        assert!(loaded.animations);
+        assert!(loaded.auto_watch);
+        assert!(!loaded.bell);
+        assert_eq!(loaded.theme, "auto");
     }
 
     #[test]
@@ -881,6 +984,42 @@ download_path = "/custom/downloads"
             true,
         );
         assert!(config.compat_mode);
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("animations".to_string()),
+            Some("false".to_string()),
+            true,
+        );
+        assert!(!config.animations);
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("auto_watch".to_string()),
+            Some("false".to_string()),
+            true,
+        );
+        assert!(!config.auto_watch);
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("bell".to_string()),
+            Some("true".to_string()),
+            true,
+        );
+        assert!(config.bell);
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("theme".to_string()),
+            Some("unicode".to_string()),
+            true,
+        );
+        assert_eq!(config.theme, "unicode");
     }
 
     #[test]
@@ -897,5 +1036,24 @@ download_path = "/custom/downloads"
         assert!(res.is_ok());
         // Verify orphan probe file was purged
         assert!(!stale_probe.exists());
+    }
+
+    #[test]
+    fn test_parse_bool() {
+        assert_eq!(parse_bool("true"), Some(true));
+        assert_eq!(parse_bool("1"), Some(true));
+        assert_eq!(parse_bool("yes"), Some(true));
+        assert_eq!(parse_bool("on"), Some(true));
+        assert_eq!(parse_bool("TRUE"), Some(true));
+        assert_eq!(parse_bool("  yes  "), Some(true));
+
+        assert_eq!(parse_bool("false"), Some(false));
+        assert_eq!(parse_bool("0"), Some(false));
+        assert_eq!(parse_bool("no"), Some(false));
+        assert_eq!(parse_bool("off"), Some(false));
+        assert_eq!(parse_bool("FALSE"), Some(false));
+
+        assert_eq!(parse_bool("invalid"), None);
+        assert_eq!(parse_bool(""), None);
     }
 }
