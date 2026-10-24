@@ -13,7 +13,12 @@ fn is_taskbar_progress_supported() -> bool {
         || std::env::var("ConEmuPID").is_ok()
 }
 
-/// Sets the window/tab title using OSC 0, deduplicating identical writes.
+/// Sets the terminal window/tab title using OSC 0 (`\x1b]0;{title}\x07`).
+///
+/// Preconditions:
+/// - Suppressed when stdout is not a TTY or when animations are disabled in `UiContext`.
+/// - Sanitizes the title against escape injection.
+/// - Deduplicates identical consecutive writes to prevent redundant I/O.
 pub fn set_terminal_title(title: &str) {
     let ctx = UiContext::get();
     if !ctx.is_tty || !ctx.animations {

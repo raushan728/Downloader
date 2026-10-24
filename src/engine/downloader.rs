@@ -709,7 +709,11 @@ pub struct NumericProgress {
     pub format_id: Option<String>,
 }
 
-/// Parses a progress line into raw numeric values, supporting both new numeric and legacy string formats.
+/// Parses a yt-dlp stdout progress line into raw numeric metrics.
+///
+/// Supports the numeric template emitted by `--progress-template`:
+/// `download:PROGRESS|downloaded_bytes|total_bytes|total_bytes_estimate|speed|eta|vcodec|format_id`
+/// as well as legacy string-formatted lines (`PROGRESS| 45.2%|...`) for backward compatibility.
 pub fn parse_progress_numeric(line: &str) -> Option<NumericProgress> {
     let clean = line.strip_prefix("download:").unwrap_or(line);
     let rest = clean.strip_prefix("PROGRESS|")?;
@@ -784,7 +788,17 @@ pub fn parse_progress_numeric(line: &str) -> Option<NumericProgress> {
     })
 }
 
-/// Combines multi-stream or single-stream download progress into unified percentage and byte totals.
+/// Combines separate video and audio stream progress into unified percentage and byte totals.
+///
+/// Returns `(combined_percent, combined_total_bytes, combined_downloaded_bytes)`.
+///
+/// Multi-stream weighting strategy:
+/// 1. Single progressive stream: Returns the stream's percent and bytes directly.
+/// 2. Dual streams with known totals: Computes exact combined byte percentage:
+///    `(video_downloaded + audio_downloaded) / (video_total + audio_total) * 100.0`.
+/// 3. Indeterminate totals (chunked/live): Video represents [0%..85%] of overall progress,
+///    and audio represents the remaining [85%..100%] (`85.0 + stream_percent * 0.15`),
+///    preventing the progress bar from resetting back to 0% when the audio stream begins.
 #[allow(clippy::too_many_arguments)]
 pub fn combine_progress(
     expects_separate_audio: bool,
@@ -1016,6 +1030,17 @@ pub const MEDIA_EXTENSIONS_AUDIO: &[&str] =
 pub const MEDIA_EXTENSIONS_VIDEO: &[&str] = &["mp4", "mkv", "webm", "avi", "mov"];
 
 /// Sanitizes a media title to match filesystem-safe characters produced by yt-dlp.
+///
+/// Replaces colons with hyphens, path separators and pipes with underscores, and strips
+/// Windows/POSIX reserved filesystem characters (`*`, `?`, `"`, `<`, `>`).
+///
+/// # Examples
+///
+/// ```
+/// use dwdr::engine::downloader::sanitize_media_title;
+///
+/// assert_eq!(sanitize_media_title("What: If? (Part 1/2)"), "What - If (Part 1_2)");
+/// ```
 pub fn sanitize_media_title(title: &str) -> String {
     let replaced = title
         .replace(": ", " - ")
@@ -1076,7 +1101,7 @@ pub fn find_existing_media_file(
         };
         let name_lower = name.to_lowercase();
 
-        // Skip partial and incomplete temporary files
+        // Exclude in-flight chunk files from prior aborted downloads.
         if name_lower.ends_with(".part")
             || name_lower.ends_with(".ytdl")
             || name_lower.ends_with(".temp")
@@ -1503,7 +1528,7 @@ pub fn download_media_ext(
     yt_dlp_path: &Path,
     ffmpeg_path: &Path,
     download_dir: &str,
-    _title: Option<&str>,
+    title: Option<&str>,
     custom_output_template: Option<&str>,
     force_overwrites: bool,
 ) -> Result<DownloadOutcome, String> {
@@ -1526,6 +1551,9 @@ pub fn download_media_ext(
 
     #[cfg(unix)]
     {
+        // Spawns yt-dlp in an isolated process group (PGID = child PID) so that terminating
+        // DWDR broadcasts signals to all descendants (including ffmpeg mergers spawned by yt-dlp),
+        // preventing orphaned processes from surviving and locking partial files.
         cmd.process_group(0);
     }
 
@@ -1575,7 +1603,7 @@ pub fn download_media_ext(
         let running_render = Arc::clone(&running);
         let theme = ctx.theme;
         let color = ctx.color_level;
-        let title_opt = _title.map(|t| t.to_string());
+        let title_opt = title.map(|t| t.to_string());
 
         Some(thread::spawn(move || {
             let mut smoother = SpeedSmoother::new();
@@ -1936,6 +1964,7 @@ where
 
     #[cfg(unix)]
     {
+        // Spawns worker in an isolated process group to enable tree-wide signal termination.
         cmd.process_group(0);
     }
 
@@ -2142,7 +2171,7 @@ pub fn find_format_with_fallback(
         return formats.first().map(|f| (f.format_id.clone(), true));
     }
 
-    // Find the candidate format whose rank is highest among those <= target_rank
+    // Prefer closest lower resolution to respect user bandwidth constraints.
     let mut lower_candidates: Vec<(&MediaFormat, u64)> = formats
         .iter()
         .filter(|f| !f.is_audio())
@@ -2156,7 +2185,7 @@ pub fn find_format_with_fallback(
         return Some((best_lower.format_id.clone(), true));
     }
 
-    // If no lower video format, take highest video format
+    // Scale up only when no lower resolution tier exists.
     let mut all_video: Vec<(&MediaFormat, u64)> = formats
         .iter()
         .filter(|f| !f.is_audio())

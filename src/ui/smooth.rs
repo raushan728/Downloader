@@ -6,7 +6,25 @@ use crate::ui::theme::SPARKLINE_SAMPLES;
 pub const DEFAULT_TAU_SECS: f64 = 3.0;
 pub const DEFAULT_EASE_FACTOR: f64 = 0.15;
 
-/// Exponential Moving Average (EMA) speed smoother with sparkline sample history.
+/// Exponential Moving Average (EMA) speed smoother with time-delta invariance and sparkline history.
+///
+/// Traditional discrete EMA (`alpha = const`) assumes uniform time intervals. In CLI downloaders,
+/// progress stdout lines arrive irregularly (bursts on small chunks vs multi-second pauses on handshakes).
+/// This implementation computes `alpha = 1 - exp(-dt / tau)`, making the smoothing mathematically
+/// invariant to update arrival frequency.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::{Duration, Instant};
+/// use dwdr::ui::smooth::SpeedSmoother;
+///
+/// let mut s = SpeedSmoother::new();
+/// let t0 = Instant::now();
+/// s.feed(1_000_000.0, t0);
+/// s.feed(2_000_000.0, t0 + Duration::from_millis(500));
+/// assert!(s.eta_seconds(10_000_000).is_some());
+/// ```
 #[derive(Debug, Clone)]
 pub struct SpeedSmoother {
     pub ema: f64,
@@ -89,7 +107,7 @@ impl SpeedSmoother {
     }
 }
 
-/// Smooth interpolator for progress bar movement to prevent jumping.
+/// Asymptotic progress interpolator that eases visual movement to prevent jarring jumps on chunk arrivals.
 #[derive(Debug, Clone)]
 pub struct EasedProgress {
     pub displayed: f64,
@@ -114,7 +132,7 @@ impl EasedProgress {
         self.target = target.clamp(0.0, 100.0);
     }
 
-    /// Advances the displayed percentage smoothly towards target.
+    /// Advances the displayed percentage smoothly towards target using exponential decay.
     pub fn tick(&mut self) -> f64 {
         let diff = self.target - self.displayed;
         if diff.abs() < 0.05 {
@@ -127,7 +145,11 @@ impl EasedProgress {
     }
 }
 
-/// Throttle for plain / non-TTY progress output to prevent log spam.
+/// Rate-limiting throttle for plain (non-TTY / CI) progress output.
+///
+/// Prevents stdout log flooding by requiring either a significant progress advance
+/// (`step_percent`, default 5.0%) or an elapsed time interval (`step_duration`, default 10s)
+/// before emitting the next linear log line.
 #[derive(Debug, Clone)]
 pub struct PlainProgressThrottle {
     pub last_percent: f64,
