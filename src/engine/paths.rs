@@ -1,6 +1,11 @@
 use directories::BaseDirs;
 use std::path::PathBuf;
 
+/// Resolves the filesystem path to the isolated `yt-dlp` executable.
+///
+/// Adheres to Core Invariant 1 (Zero System Pollution): internal dependencies are stored
+/// exclusively in `~/.dwdr/deps/` (or `%USERPROFILE%\.dwdr\deps\` on Windows) without modifying
+/// system directories. Supports `DWDR_YTDLP_PATH` for offline integration tests.
 pub fn get_ytdlp_path() -> PathBuf {
     if let Ok(override_path) = std::env::var("DWDR_YTDLP_PATH") {
         let trimmed = override_path.trim();
@@ -24,6 +29,11 @@ pub fn get_ytdlp_path() -> PathBuf {
     path
 }
 
+/// Resolves the filesystem path to the isolated `ffmpeg` executable.
+///
+/// Adheres to Core Invariant 1 (Zero System Pollution): internal dependencies are stored
+/// exclusively in `~/.dwdr/deps/` (or `%USERPROFILE%\.dwdr\deps\` on Windows) without modifying
+/// system directories. Supports `DWDR_FFMPEG_PATH` for offline integration tests.
 pub fn get_ffmpeg_path() -> PathBuf {
     if let Ok(override_path) = std::env::var("DWDR_FFMPEG_PATH") {
         let trimmed = override_path.trim();

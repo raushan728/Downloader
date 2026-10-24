@@ -12,7 +12,21 @@ use crate::cli::prompts::interactive_config;
 use crate::engine::queue::{is_download_active, is_pid_alive};
 use crate::ui::UiContext;
 
-/// Parses a boolean configuration string ("true", "false", "1", "0", "yes", "no", "on", "off").
+/// Parses lenient boolean strings into a `bool`.
+///
+/// Recognizes `"true"`, `"on"`, `"1"`, `"yes"` as `true`, and `"false"`, `"off"`, `"0"`, `"no"` as `false`
+/// (case-insensitively). Returns `None` for unrecognized strings.
+///
+/// # Examples
+///
+/// ```
+/// use dwdr::config::manager::parse_bool;
+///
+/// assert_eq!(parse_bool("true"), Some(true));
+/// assert_eq!(parse_bool("on"), Some(true));
+/// assert_eq!(parse_bool("0"), Some(false));
+/// assert_eq!(parse_bool("invalid"), None);
+/// ```
 pub fn parse_bool(value: &str) -> Option<bool> {
     match value.trim().to_lowercase().as_str() {
         "true" | "on" | "1" | "yes" => Some(true),

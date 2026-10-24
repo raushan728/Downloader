@@ -1,7 +1,26 @@
+//! Terminal text sanitization, ANSI escape handling, and display-width measurement.
+//!
+//! Provides a security boundary against untrusted external strings (video titles,
+//! format descriptions, filenames, and engine error streams) to protect terminal emulators
+//! against escape-sequence injection, cursor hijacking, and line-wrapping desynchronization.
+
 use unicode_width::UnicodeWidthStr;
 
-/// Strips ANSI CSI, OSC, DCS, APC, PM, and standard 2-character terminal escape sequences,
-/// as well as C1 control characters (0x80..=0x9F).
+/// Strips ANSI escape sequences and C1 control characters from terminal strings.
+///
+/// Handles CSI (`\x1b[`), OSC (`\x1b]`), DCS (`\x1bP`), APC (`\x1b_`), PM (`\x1b^`),
+/// standard 2-character escapes, and raw C1 control codes (`\u{0080}`..=`\u{009F}`).
+/// Sequences are consumed until standard terminators: BEL (`\x07`), 8-bit ST (`\u{009c}`),
+/// or 7-bit ST (`\x1b\\`).
+///
+/// # Examples
+///
+/// ```
+/// use dwdr::ui::text::strip_ansi;
+///
+/// let styled = "\x1b[31;1mError:\x1b[0m \x1b]0;Title\x07message\x1b[2K";
+/// assert_eq!(strip_ansi(styled), "Error: message");
+/// ```
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -11,7 +30,7 @@ pub fn strip_ansi(s: &str) -> String {
             match chars.peek() {
                 Some('[') => {
                     chars.next();
-                    // CSI sequence: terminates at ASCII byte 0x40..=0x7E (@..=~)
+                    // CSI terminates at 0x40..=0x7E (@..=~) per ECMA-48.
                     for c in chars.by_ref() {
                         if ('@'..='~').contains(&c) {
                             break;
@@ -20,7 +39,7 @@ pub fn strip_ansi(s: &str) -> String {
                 }
                 Some(']') | Some('P') | Some('_') | Some('^') => {
                     chars.next();
-                    // OSC/DCS/APC/PM sequence: terminates at BEL (\x07), 8-bit ST (\u{009c}), or 7-bit ST (\x1b\\)
+                    // OSC/DCS/APC/PM terminate at BEL (\x07), 8-bit ST (\u{009c}), or 7-bit ST (\x1b\\).
                     while let Some(c) = chars.next() {
                         if c == '\x07' || c == '\u{009c}' {
                             break;
@@ -41,7 +60,6 @@ pub fn strip_ansi(s: &str) -> String {
                 _ => {}
             }
         } else if ('\u{0080}'..='\u{009F}').contains(&ch) {
-            // Drop raw C1 control characters in Unicode
             continue;
         } else {
             out.push(ch);
@@ -52,14 +70,44 @@ pub fn strip_ansi(s: &str) -> String {
 }
 
 /// Measures the display column width of a string after stripping ANSI escape sequences.
+///
+/// Uses `unicode-width` rules to account for double-width characters (e.g. CJK ideographs)
+/// and zero-width non-spacing glyphs, returning the physical columns consumed on a terminal grid.
+///
+/// # Examples
+///
+/// ```
+/// use dwdr::ui::text::visible_width;
+///
+/// assert_eq!(visible_width("\x1b[32mHello\x1b[0m"), 5);
+/// assert_eq!(visible_width("こんにちは"), 10);
+/// ```
 pub fn visible_width(s: &str) -> usize {
+    if !s.as_bytes().contains(&0x1b) {
+        return UnicodeWidthStr::width(s);
+    }
     let clean = strip_ansi(s);
     UnicodeWidthStr::width(clean.as_str())
 }
 
-/// Truncates a string to fit within max_w display columns, appending '...' if truncated.
-/// Preserves ANSI escape sequences without counting them toward display columns,
-/// and closes any opened styles with a reset if truncated.
+/// Truncates a string to fit within `max_w` display columns, appending `...` if truncated.
+///
+/// Preserves intact ANSI styling sequences without charging them against visible display
+/// columns, and emits a trailing `\x1b[0m` reset when truncating styled strings to prevent
+/// color bleeding across subsequent terminal lines.
+///
+/// For edge widths:
+/// - `max_w == 0` returns an empty string.
+/// - `max_w <= 3` returns `.` repeated `max_w` times without underflowing.
+///
+/// # Examples
+///
+/// ```
+/// use dwdr::ui::text::truncate_display;
+///
+/// assert_eq!(truncate_display("Hello Beautiful World", 10), "Hello B...");
+/// assert_eq!(truncate_display("Tiny", 2), "..");
+/// ```
 pub fn truncate_display(s: &str, max_w: usize) -> String {
     if visible_width(s) <= max_w {
         return s.to_string();
@@ -134,6 +182,18 @@ pub fn truncate_display(s: &str, max_w: usize) -> String {
 }
 
 /// Sanitizes display text by stripping escape sequences, control characters, and collapsing whitespace.
+///
+/// Used at ingest boundaries for untrusted strings (video titles from JSON, format notes,
+/// and child process stderr lines) before putting them in terminal titles, summaries, or pickers.
+///
+/// # Examples
+///
+/// ```
+/// use dwdr::ui::text::sanitize_display;
+///
+/// let injection = "My Video\x1b[2J\x1b]0;pwned\x07  (1080p)\r\n";
+/// assert_eq!(sanitize_display(injection), "My Video (1080p)");
+/// ```
 pub fn sanitize_display(s: &str) -> String {
     let stripped = strip_ansi(s);
     let mut result = String::with_capacity(stripped.len());
@@ -146,7 +206,6 @@ pub fn sanitize_display(s: &str) -> String {
                 in_whitespace = true;
             }
         } else if ch.is_control() || ('\u{0080}'..='\u{009F}').contains(&ch) {
-            // Drop non-whitespace control characters (e.g. ESC, BEL, DEL, C1 control codes)
             continue;
         } else {
             result.push(ch);

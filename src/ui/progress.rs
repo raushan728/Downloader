@@ -142,7 +142,7 @@ pub fn render_sparkline(samples: &[f64], theme: &ThemeMode) -> String {
     };
     let num_levels = chars.len();
 
-    let mut result = String::with_capacity(samples.len());
+    let mut result = String::with_capacity(samples.len() * 4);
     for &sample in samples {
         let level = if max <= 0.001 {
             0
@@ -360,7 +360,7 @@ fn render_sub_character_bar(
         ThemeMode::Ascii => ('#', BLOCK_CHARS_ASCII),
     };
 
-    let mut out = String::with_capacity(width * 4);
+    let mut out = String::with_capacity(width * 32);
 
     for i in 0..full_blocks.min(width) {
         let block_ratio = (i as f64) / (width as f64);

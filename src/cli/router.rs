@@ -16,8 +16,8 @@ INTERACTIVE SHELL COMMANDS:\n\
     <URL>             Start downloading media stream (managed via queue)\n\
     status            Real-time live progress monitor of active downloads\n\
     list              Summary status report of all downloads in session\n\
-    queue             Inspect queued tasks and concurrency limits\n\
-    active            Inspect currently downloading tasks snapshot\n\
+    queue             Inspect queued tasks and concurrency limits (use 'queue live' for real-time monitor)\n\
+    wait              Wait for all active and queued downloads to finish\n\
     cancel            Cancel active downloads and clear queue\n\
     config / settings Configure download directory, default quality, and limits\n\
     cls / clear       Clear terminal screen\n\
@@ -25,7 +25,7 @@ INTERACTIVE SHELL COMMANDS:\n\
     exit / quit       Cancel pending tasks and exit shell"
 )]
 pub struct Cli {
-    /// Bypasses the UI and immediately starts downloading the provided resource.
+    /// Starts downloading the specified media URL directly without launching the interactive shell.
     pub url: Option<String>,
 
     /// Force overwrite existing media files without interactive confirmation.

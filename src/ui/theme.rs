@@ -82,14 +82,33 @@ pub const BOX_BR_ASCII: &str = "+";
 pub const BOX_H_ASCII: &str = "-";
 pub const BOX_V_ASCII: &str = "|";
 
+/// Terminal rendering tick rate: 80ms interval (12.5 FPS) provides smooth progress without saturating stdout.
 pub const TICK_MS: u64 = 80;
+
+/// Silence duration (2 seconds) after which an active stream is deemed stalled and speed is decayed toward zero.
 pub const STALL_THRESHOLD: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Speed sample ingestion interval (250ms = 4 Hz).
+/// Decoupled from the 80ms render tick so the 20-sample sparkline window spans ~5 seconds of download history.
 pub const SAMPLE_INTERVAL_MS: u64 = 250;
+
+/// Maximum horizontal column width allocated to the progress bar glyphs.
 pub const BAR_WIDTH_MAX: usize = 30;
+
+/// Breakpoint (>= 85 columns): Enables phase stepper, sub-character bar, and speed sparkline buffer.
 pub const BREAKPOINT_WIDE: usize = 85;
+
+/// Breakpoint (>= 75 columns): Column width threshold for full format table layout without aggressive truncation.
 pub const BREAKPOINT_TABLE: usize = 75;
+
+/// Breakpoint (>= 65 columns): Drops the sparkline buffer and shortens bar width.
 pub const BREAKPOINT_COMPACT: usize = 65;
+
+/// Breakpoint (>= 45 columns): Drops the visual progress bar, displaying numeric stats only.
+/// Terminals below 45 columns switch to micro mode (percent and speed only).
 pub const BREAKPOINT_NARROW: usize = 45;
+
+/// Capacity of the recent speed history ring buffer for sparkline rendering.
 pub const SPARKLINE_SAMPLES: usize = 20;
 
 /// Returns symbol for checkmark.
