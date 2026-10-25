@@ -1,11 +1,11 @@
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Read, Write, stdout};
+use std::io::{BufRead, BufReader, Write, stdout};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1449,6 +1449,7 @@ pub fn build_ytdlp_download_cmd_ext(
         .arg("10M")
         .arg("--print")
         .arg("after_move:filepath")
+        .arg("--progress")
         .arg("--newline")
         .arg("--encoding")
         .arg("utf-8")
@@ -1465,6 +1466,7 @@ pub fn build_ytdlp_download_cmd_ext(
         cmd.arg("--ffmpeg-location").arg(ffmpeg_path);
     }
 
+    cmd.env("PYTHONUNBUFFERED", "1");
     cmd.arg("--").arg(url);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -1564,12 +1566,28 @@ pub fn download_media_ext(
     let pid = child.id();
     register_direct_download_full(pid, temp_dir.clone());
 
-    let mut stderr_handle = child.stderr.take();
-    // Drain stderr asynchronously so unread process error buffers do not deadlock stdout pipe reading.
+    let (tx, rx) = mpsc::channel();
+    let tx_err = tx.clone();
+
+    let stderr_handle = child.stderr.take();
     let stderr_thread = thread::spawn(move || {
         let mut err_output = Vec::new();
-        if let Some(err_pipe) = stderr_handle.as_mut() {
-            let _ = err_pipe.read_to_end(&mut err_output);
+        if let Some(err_pipe) = stderr_handle {
+            let reader = BufReader::new(err_pipe);
+            read_lossy_lines(reader, |line| {
+                if parse_progress_numeric(line).is_some()
+                    || line.starts_with("POSTPROCESS|")
+                    || line.starts_with("[Merger]")
+                    || line.starts_with("[ExtractAudio]")
+                    || line.starts_with("[Fixup")
+                    || line.contains("Merging formats")
+                {
+                    let _ = tx_err.send((false, line.to_string()));
+                } else {
+                    err_output.extend_from_slice(line.as_bytes());
+                    err_output.push(b'\n');
+                }
+            });
         }
         String::from_utf8_lossy(&err_output).to_string()
     });
@@ -1687,164 +1705,170 @@ pub fn download_media_ext(
     let mut peak_speed_plain: f64 = 0.0;
     let mut last_plain_bytes: u64 = 0;
 
-    if let Some(stdout_pipe) = child.stdout.take() {
-        let reader = BufReader::new(stdout_pipe);
+    let stdout_handle = child.stdout.take();
+    let tx_out = tx;
+    let stdout_thread = thread::spawn(move || {
+        if let Some(stdout_pipe) = stdout_handle {
+            let reader = BufReader::new(stdout_pipe);
+            read_lossy_lines(reader, |line| {
+                let _ = tx_out.send((true, line.to_string()));
+            });
+        }
+    });
 
-        read_lossy_lines(reader, |line| {
-            let trimmed = line.trim();
-            if let Some(num) = parse_progress_numeric(line) {
-                let is_audio_stream = is_audio_only
-                    || num
-                        .vcodec
-                        .as_deref()
-                        .map(|v| v.eq_ignore_ascii_case("none"))
-                        .unwrap_or(false);
+    while let Ok((is_stdout, line)) = rx.recv() {
+        let trimmed = line.trim();
+        if let Some(num) = parse_progress_numeric(&line) {
+            let is_audio_stream = is_audio_only
+                || num
+                    .vcodec
+                    .as_deref()
+                    .map(|v| v.eq_ignore_ascii_case("none"))
+                    .unwrap_or(false);
 
-                let stream_key = num.format_id.clone().unwrap_or_else(|| {
-                    if is_audio_stream {
-                        "audio".to_string()
-                    } else {
-                        "video".to_string()
-                    }
-                });
-
-                if current_stream_key.as_ref() != Some(&stream_key) {
-                    current_stream_key = Some(stream_key);
-                    streams_seen += 1;
-                }
-
-                let phase = if is_audio_stream {
-                    audio_downloaded = num.downloaded_bytes;
-                    if num.total_bytes > 0 {
-                        audio_total = num.total_bytes;
-                    }
-                    DownloadPhase::Audio
+            let stream_key = num.format_id.clone().unwrap_or_else(|| {
+                if is_audio_stream {
+                    "audio".to_string()
                 } else {
-                    video_downloaded = num.downloaded_bytes;
-                    if num.total_bytes > 0 {
-                        video_total = num.total_bytes;
-                    }
-                    DownloadPhase::Video
-                };
+                    "video".to_string()
+                }
+            });
 
-                let (combined_pct, total_bytes, downloaded_bytes) = combine_progress(
-                    expects_separate_audio,
-                    streams_seen,
-                    is_audio_stream,
-                    num.percent,
-                    video_downloaded,
-                    video_total,
-                    audio_downloaded,
-                    audio_total,
-                );
-
-                last_plain_bytes = downloaded_bytes;
-                if num.speed_bytes_sec > peak_speed_plain {
-                    peak_speed_plain = num.speed_bytes_sec;
-                }
-
-                if is_rich {
-                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
-                    guard.target_percent = combined_pct;
-                    guard.downloaded_bytes = downloaded_bytes;
-                    guard.total_bytes = total_bytes;
-                    guard.raw_speed = num.speed_bytes_sec;
-                    guard.raw_eta = num.eta_seconds;
-                    guard.phase = phase;
-                    guard.last_speed_update = Instant::now();
-                } else if plain_throttle.should_print(combined_pct, Instant::now()) {
-                    let d_str = format_bytes_u64(downloaded_bytes);
-                    let t_str = if total_bytes > 0 {
-                        format_bytes_u64(total_bytes)
-                    } else {
-                        "Unknown".to_string()
-                    };
-                    let s_str = format_speed(num.speed_bytes_sec);
-                    let e_str = format_eta(num.eta_seconds);
-                    println!(
-                        "{}",
-                        render_progress_bar(combined_pct, &d_str, &t_str, &s_str, &e_str)
-                    );
-                }
-            } else if line.starts_with("[Merger]") || line.contains("Merging formats") {
-                let msg = "Merging video and audio tracks...";
-                if is_rich {
-                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
-                    guard.target_percent = 100.0;
-                    guard.phase = DownloadPhase::Finalize;
-                    guard.is_finalizing = true;
-                    guard.finalizing_msg = Some(msg.to_string());
-                } else {
-                    println!(
-                        "[download] [{}] 100.0% [Finalizing: {}]",
-                        "=".repeat(25),
-                        msg
-                    );
-                }
-            } else if line.starts_with("[ExtractAudio]") {
-                let msg = "Extracting audio stream...";
-                if is_rich {
-                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
-                    guard.target_percent = 100.0;
-                    guard.phase = DownloadPhase::Extract;
-                    guard.is_finalizing = true;
-                    guard.finalizing_msg = Some(msg.to_string());
-                } else {
-                    println!(
-                        "[download] [{}] 100.0% [Finalizing: {}]",
-                        "=".repeat(25),
-                        msg
-                    );
-                }
-            } else if line.starts_with("[Fixup") {
-                let msg = "Correcting media container...";
-                if is_rich {
-                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
-                    guard.target_percent = 100.0;
-                    guard.phase = DownloadPhase::Finalize;
-                    guard.is_finalizing = true;
-                    guard.finalizing_msg = Some(msg.to_string());
-                } else {
-                    println!(
-                        "[download] [{}] 100.0% [Finalizing: {}]",
-                        "=".repeat(25),
-                        msg
-                    );
-                }
-            } else if line.starts_with("POSTPROCESS|") {
-                let msg = "Packaging final media...";
-                if is_rich {
-                    let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
-                    guard.target_percent = 100.0;
-                    guard.phase = DownloadPhase::Finalize;
-                    guard.is_finalizing = true;
-                    guard.finalizing_msg = Some(msg.to_string());
-                } else {
-                    println!(
-                        "[download] [{}] 100.0% [Finalizing: {}]",
-                        "=".repeat(25),
-                        msg
-                    );
-                }
-            } else if !trimmed.is_empty()
-                && !trimmed.starts_with("PROGRESS|")
-                && !trimmed.starts_with("POSTPROCESS|")
-                && !trimmed.starts_with('[')
-                && !trimmed.starts_with("download:")
-                && !trimmed.starts_with("postprocess:")
-            {
-                let p = PathBuf::from(trimmed);
-                if p.is_file() || p.is_absolute() {
-                    captured_filepath = Some(p);
-                }
+            if current_stream_key.as_ref() != Some(&stream_key) {
+                current_stream_key = Some(stream_key);
+                streams_seen += 1;
             }
-        });
+
+            let phase = if is_audio_stream {
+                audio_downloaded = num.downloaded_bytes;
+                if num.total_bytes > 0 {
+                    audio_total = num.total_bytes;
+                }
+                DownloadPhase::Audio
+            } else {
+                video_downloaded = num.downloaded_bytes;
+                if num.total_bytes > 0 {
+                    video_total = num.total_bytes;
+                }
+                DownloadPhase::Video
+            };
+
+            let (combined_pct, total_bytes, downloaded_bytes) = combine_progress(
+                expects_separate_audio,
+                streams_seen,
+                is_audio_stream,
+                num.percent,
+                video_downloaded,
+                video_total,
+                audio_downloaded,
+                audio_total,
+            );
+
+            last_plain_bytes = downloaded_bytes;
+            if num.speed_bytes_sec > peak_speed_plain {
+                peak_speed_plain = num.speed_bytes_sec;
+            }
+
+            if is_rich {
+                let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                guard.target_percent = combined_pct;
+                guard.downloaded_bytes = downloaded_bytes;
+                guard.total_bytes = total_bytes;
+                guard.raw_speed = num.speed_bytes_sec;
+                guard.raw_eta = num.eta_seconds;
+                guard.phase = phase;
+                guard.last_speed_update = Instant::now();
+            } else if plain_throttle.should_print(combined_pct, Instant::now()) {
+                let d_str = format_bytes_u64(downloaded_bytes);
+                let t_str = if total_bytes > 0 {
+                    format_bytes_u64(total_bytes)
+                } else {
+                    "Unknown".to_string()
+                };
+                let s_str = format_speed(num.speed_bytes_sec);
+                let e_str = format_eta(num.eta_seconds);
+                println!(
+                    "{}",
+                    render_progress_bar(combined_pct, &d_str, &t_str, &s_str, &e_str)
+                );
+            }
+        } else if line.starts_with("[Merger]") || line.contains("Merging formats") {
+            let msg = "Merging video and audio tracks...";
+            if is_rich {
+                let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                guard.target_percent = 100.0;
+                guard.phase = DownloadPhase::Finalize;
+                guard.is_finalizing = true;
+                guard.finalizing_msg = Some(msg.to_string());
+            } else {
+                println!(
+                    "[download] [{}] 100.0% [Finalizing: {}]",
+                    "=".repeat(25),
+                    msg
+                );
+            }
+        } else if line.starts_with("[ExtractAudio]") {
+            let msg = "Extracting audio stream...";
+            if is_rich {
+                let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                guard.target_percent = 100.0;
+                guard.phase = DownloadPhase::Extract;
+                guard.is_finalizing = true;
+                guard.finalizing_msg = Some(msg.to_string());
+            } else {
+                println!(
+                    "[download] [{}] 100.0% [Finalizing: {}]",
+                    "=".repeat(25),
+                    msg
+                );
+            }
+        } else if line.starts_with("[Fixup") {
+            let msg = "Correcting media container...";
+            if is_rich {
+                let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                guard.target_percent = 100.0;
+                guard.phase = DownloadPhase::Finalize;
+                guard.is_finalizing = true;
+                guard.finalizing_msg = Some(msg.to_string());
+            } else {
+                println!(
+                    "[download] [{}] 100.0% [Finalizing: {}]",
+                    "=".repeat(25),
+                    msg
+                );
+            }
+        } else if line.starts_with("POSTPROCESS|") {
+            let msg = "Packaging final media...";
+            if is_rich {
+                let mut guard = shared.lock().unwrap_or_else(|p| p.into_inner());
+                guard.target_percent = 100.0;
+                guard.phase = DownloadPhase::Finalize;
+                guard.is_finalizing = true;
+                guard.finalizing_msg = Some(msg.to_string());
+            } else {
+                println!(
+                    "[download] [{}] 100.0% [Finalizing: {}]",
+                    "=".repeat(25),
+                    msg
+                );
+            }
+        } else if is_stdout
+            && !trimmed.is_empty()
+            && !trimmed.starts_with("PROGRESS|")
+            && !trimmed.starts_with("POSTPROCESS|")
+            && !trimmed.starts_with('[')
+            && !trimmed.starts_with("download:")
+            && !trimmed.starts_with("postprocess:")
+        {
+            let p = PathBuf::from(trimmed);
+            if p.is_file() || p.is_absolute() {
+                captured_filepath = Some(p);
+            }
+        }
     }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
-
+    let _ = stdout_thread.join();
+    let wait_res = child.wait();
     let stderr_output = stderr_thread.join().unwrap_or_default();
     unregister_direct_download();
 
@@ -1856,6 +1880,8 @@ pub fn download_media_ext(
     } else {
         (peak_speed_plain, Vec::new())
     };
+
+    let status = wait_res.map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
 
     let elapsed = download_start.elapsed();
     let size_bytes = captured_filepath
@@ -1974,12 +2000,28 @@ where
 
     on_spawn(&mut child);
 
-    let mut stderr_handle = child.stderr.take();
-    // Drain stderr asynchronously so unread process error buffers do not deadlock stdout pipe reading.
+    let (tx, rx) = mpsc::channel();
+    let tx_err = tx.clone();
+
+    let stderr_handle = child.stderr.take();
     let stderr_thread = thread::spawn(move || {
         let mut err_output = Vec::new();
-        if let Some(err_pipe) = stderr_handle.as_mut() {
-            let _ = err_pipe.read_to_end(&mut err_output);
+        if let Some(pipe) = stderr_handle {
+            let reader = BufReader::new(pipe);
+            read_lossy_lines(reader, |line| {
+                if parse_progress_numeric(line).is_some()
+                    || line.starts_with("POSTPROCESS|")
+                    || line.starts_with("[Merger]")
+                    || line.starts_with("[ExtractAudio]")
+                    || line.starts_with("[Fixup")
+                    || line.contains("Merging formats")
+                {
+                    let _ = tx_err.send((false, line.to_string()));
+                } else {
+                    err_output.extend_from_slice(line.as_bytes());
+                    err_output.push(b'\n');
+                }
+            });
         }
         String::from_utf8_lossy(&err_output).to_string()
     });
@@ -1998,99 +2040,107 @@ where
     let mut audio_total: u64 = 0;
     let mut captured_filepath: Option<PathBuf> = None;
 
-    if let Some(stdout_pipe) = child.stdout.take() {
-        let reader = BufReader::new(stdout_pipe);
+    let stdout_handle = child.stdout.take();
+    let tx_out = tx;
+    let stdout_thread = thread::spawn(move || {
+        if let Some(stdout_pipe) = stdout_handle {
+            let reader = BufReader::new(stdout_pipe);
+            read_lossy_lines(reader, |line| {
+                let _ = tx_out.send((true, line.to_string()));
+            });
+        }
+    });
 
-        read_lossy_lines(reader, |line| {
-            let trimmed = line.trim();
-            if let Some(num) = parse_progress_numeric(line) {
-                let is_audio_stream = is_audio_only
-                    || num
-                        .vcodec
-                        .as_deref()
-                        .map(|v| v.eq_ignore_ascii_case("none"))
-                        .unwrap_or(false);
+    while let Ok((is_stdout, line)) = rx.recv() {
+        let trimmed = line.trim();
+        if let Some(num) = parse_progress_numeric(&line) {
+            let is_audio_stream = is_audio_only
+                || num
+                    .vcodec
+                    .as_deref()
+                    .map(|v| v.eq_ignore_ascii_case("none"))
+                    .unwrap_or(false);
 
-                let stream_key = num.format_id.clone().unwrap_or_else(|| {
-                    if is_audio_stream {
-                        "audio".to_string()
-                    } else {
-                        "video".to_string()
-                    }
-                });
-
-                if current_stream_key.as_ref() != Some(&stream_key) {
-                    current_stream_key = Some(stream_key);
-                    streams_seen += 1;
-                }
-
-                let phase = if is_audio_stream {
-                    audio_downloaded = num.downloaded_bytes;
-                    if num.total_bytes > 0 {
-                        audio_total = num.total_bytes;
-                    }
-                    DownloadPhase::Audio
+            let stream_key = num.format_id.clone().unwrap_or_else(|| {
+                if is_audio_stream {
+                    "audio".to_string()
                 } else {
-                    video_downloaded = num.downloaded_bytes;
-                    if num.total_bytes > 0 {
-                        video_total = num.total_bytes;
-                    }
-                    DownloadPhase::Video
-                };
-
-                let (combined_pct, total_bytes, downloaded_bytes) = combine_progress(
-                    expects_separate_audio,
-                    streams_seen,
-                    is_audio_stream,
-                    num.percent,
-                    video_downloaded,
-                    video_total,
-                    audio_downloaded,
-                    audio_total,
-                );
-
-                on_progress(
-                    combined_pct,
-                    downloaded_bytes,
-                    total_bytes,
-                    num.speed_bytes_sec,
-                    num.eta_seconds,
-                    phase,
-                    false,
-                );
-            } else if (line.starts_with("POSTPROCESS|")
-                || line.starts_with("[Merger]")
-                || line.starts_with("[ExtractAudio]")
-                || line.contains("Merging formats"))
-                && !postprocess_started
-            {
-                postprocess_started = true;
-                let phase = if line.starts_with("[ExtractAudio]") {
-                    DownloadPhase::Extract
-                } else {
-                    DownloadPhase::Finalize
-                };
-                on_progress(100.0, 0, 0, 0.0, None, phase, true);
-            } else if !trimmed.is_empty()
-                && !trimmed.starts_with("PROGRESS|")
-                && !trimmed.starts_with("POSTPROCESS|")
-                && !trimmed.starts_with('[')
-                && !trimmed.starts_with("download:")
-                && !trimmed.starts_with("postprocess:")
-            {
-                let p = PathBuf::from(trimmed);
-                if p.is_file() || p.is_absolute() {
-                    captured_filepath = Some(p);
+                    "video".to_string()
                 }
+            });
+
+            if current_stream_key.as_ref() != Some(&stream_key) {
+                current_stream_key = Some(stream_key);
+                streams_seen += 1;
             }
-        });
+
+            let phase = if is_audio_stream {
+                audio_downloaded = num.downloaded_bytes;
+                if num.total_bytes > 0 {
+                    audio_total = num.total_bytes;
+                }
+                DownloadPhase::Audio
+            } else {
+                video_downloaded = num.downloaded_bytes;
+                if num.total_bytes > 0 {
+                    video_total = num.total_bytes;
+                }
+                DownloadPhase::Video
+            };
+
+            let (combined_pct, total_bytes, downloaded_bytes) = combine_progress(
+                expects_separate_audio,
+                streams_seen,
+                is_audio_stream,
+                num.percent,
+                video_downloaded,
+                video_total,
+                audio_downloaded,
+                audio_total,
+            );
+
+            on_progress(
+                combined_pct,
+                downloaded_bytes,
+                total_bytes,
+                num.speed_bytes_sec,
+                num.eta_seconds,
+                phase,
+                false,
+            );
+        } else if (line.starts_with("POSTPROCESS|")
+            || line.starts_with("[Merger]")
+            || line.starts_with("[ExtractAudio]")
+            || line.starts_with("[Fixup")
+            || line.contains("Merging formats"))
+            && !postprocess_started
+        {
+            postprocess_started = true;
+            let phase = if line.starts_with("[ExtractAudio]") {
+                DownloadPhase::Extract
+            } else {
+                DownloadPhase::Finalize
+            };
+            on_progress(100.0, 0, 0, 0.0, None, phase, true);
+        } else if is_stdout
+            && !trimmed.is_empty()
+            && !trimmed.starts_with("PROGRESS|")
+            && !trimmed.starts_with("POSTPROCESS|")
+            && !trimmed.starts_with('[')
+            && !trimmed.starts_with("download:")
+            && !trimmed.starts_with("postprocess:")
+        {
+            let p = PathBuf::from(trimmed);
+            if p.is_file() || p.is_absolute() {
+                captured_filepath = Some(p);
+            }
+        }
     }
 
-    let status = child
-        .wait()
-        .map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
-
+    let _ = stdout_thread.join();
+    let wait_res = child.wait();
     let stderr_output = stderr_thread.join().unwrap_or_default();
+    let status = wait_res.map_err(|e| format!("Failed to wait for yt-dlp: {}", e))?;
 
     if status.success() {
         Ok(captured_filepath)
@@ -3561,6 +3611,7 @@ mod tests {
         assert!(args.contains(&"utf-8".to_string()));
         assert!(args.contains(&"--postprocessor-args".to_string()));
         assert!(args.contains(&"Merger:-y".to_string()));
+        assert!(args.contains(&"--progress".to_string()));
         assert!(args.contains(&"--".to_string()));
     }
 
