@@ -23,6 +23,7 @@ animations = true
 auto_watch = true
 bell = false
 theme = "auto"
+# cookies = "brave" # Optional: brave, chrome, edge, firefox, opera, vivaldi, chromium, safari, auto, or /path/to/cookies.txt
 ```
 
 ---
@@ -39,6 +40,7 @@ theme = "auto"
 | `auto_watch` | boolean | `true` | When enqueuing downloads in the REPL shell, automatically launches the live download monitor. | `true`, `false` (also accepts `"1"`/`"0"`, `"yes"`/`"no"`, `"on"`/`"off"`) |
 | `bell` | boolean | `false` | Rings the terminal bell character (`\x07`) upon download completion. | `true`, `false` (also accepts `"1"`/`"0"`, `"yes"`/`"no"`, `"on"`/`"off"`) |
 | `theme` | string | `"auto"` | Terminal character set mode: auto-detected, Unicode (box-drawing, Braille, block glyphs), or ASCII fallback. | `"auto"`, `"unicode"`, `"ascii"` |
+| `cookies` | string (optional) | `None` | Browser preset or path to `cookies.txt` for Smart Cookie Fallback authentication and anti-bot verification (YouTube, Instagram, Facebook, TikTok, Twitter/X). | `"brave"`, `"chrome"`, `"edge"`, `"firefox"`, `"opera"`, `"vivaldi"`, `"chromium"`, `"safari"`, `"auto"`, cookies file path, or `"none"`/`"off"`/`"clear"`/`"disabled"` |
 
 ---
 
@@ -93,6 +95,10 @@ dwdr config set compat true
 dwdr config set animations false
 dwdr config set theme unicode
 dwdr config set bell true
+dwdr config set cookies brave # or chrome, edge, firefox, opera, vivaldi, chromium, safari, auto, or /path/to/cookies.txt
+
+# Disable cookies
+dwdr config set cookies none
 
 # Force update bypassing active download concurrency locks
 dwdr config set parallel 16 --force

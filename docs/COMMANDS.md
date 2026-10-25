@@ -8,13 +8,13 @@ DWDR provides a total of **21 primary commands and subcommands** across three ex
 
 | Command | Execution Context | Arguments / Flags | Purpose | Example |
 | :--- | :--- | :--- | :--- | :--- |
-| `dwdr <URL>` | Direct CLI | `<URL>` (string) `[-f, --force]` `[--no-animation]` `[-q, --quiet]` | Downloads media immediately using Smart Quality Fallback; `--force` overwrites existing destination files. | `dwdr "https://youtu.be/VIDEO_ID" --force` |
+| `dwdr <URL>` | Direct CLI | `<URL>` (string) `[-f, --force]` `[--no-animation]` `[-q, --quiet]` `[--cookies <BROWSER_OR_FILE>]` | Downloads media immediately using Smart Quality Fallback; `--force` overwrites existing destination files; `--cookies` authenticates with platform session. | `dwdr "https://youtu.be/VIDEO_ID" --cookies brave` |
 | `dwdr` | Direct CLI | None | Launches the interactive terminal REPL shell for continuous URL inspection and downloading. | `dwdr` |
 | `dwdr -h`, `--help` | Direct CLI | None | Prints command syntax, global flags, usage examples, and interactive shell commands. | `dwdr --help` |
 | `dwdr -V`, `--version` | Direct CLI | None | Prints the compiled DWDR binary version string. | `dwdr --version` |
 | `dwdr config` | Subcommand | None | Launches the guided terminal menu to configure download folders, resolutions, and parallel limits. | `dwdr config` |
 | `dwdr config show` | Subcommand | None | Displays current persistent configuration values from `~/.dwdr/config.toml`. | `dwdr config show` |
-| `dwdr config set` | Subcommand | `<key>` `<value>` `[--force]` | Programmatically updates a configuration key (`path`, `quality`, `parallel`, `compat`, `animations`, `auto_watch`, `bell`, `theme`). | `dwdr config set quality 720p` |
+| `dwdr config set` | Subcommand | `<key>` `<value>` `[--force]` | Programmatically updates a configuration key (`path`, `quality`, `parallel`, `compat`, `animations`, `auto_watch`, `bell`, `theme`, `cookies`). | `dwdr config set quality 720p` |
 | `dwdr config reset` | Subcommand | `[--force]` | Restores `~/.dwdr/config.toml` to clean factory defaults (prompts confirmation unless `--force`). | `dwdr config reset` |
 | `dwdr update` | Subcommand | None | Forces an immediate redownload and verification of internal `yt-dlp` and `ffmpeg` engine binaries. | `dwdr update` |
 | `dwdr self-update` | Subcommand | None | Downloads and atomically replaces the running DWDR CLI executable with the latest GitHub release. | `dwdr self-update` |
@@ -67,12 +67,17 @@ DWDR provides a total of **21 primary commands and subcommands** across three ex
   - Option 2: Selects default resolution (`always ask`, `best`, `8k`, `4k`, `2k`, `1080p`, `720p`, `480p`, `360p`, `240p`, `144p`, `audio`).
   - Option 3: Selects max parallel download threads (`1` to `16`).
   - Option 4: Toggles compatibility mode (prioritizes AVC/H.264 + AAC codecs).
-  - Option 5: Saves to `~/.dwdr/config.toml` and exits.
-  - Option 6: Cancels without saving.
+  - Option 5: Toggles UI animations, spinners, and live progress bars.
+  - Option 6: Toggles auto-watch downloads upon enqueue.
+  - Option 7: Toggles terminal bell on download completion.
+  - Option 8: Selects UI theme mode (`auto`, `unicode`, `ascii`).
+  - Option 9: Configures browser session cookies (`brave`, `chrome`, `edge`, `firefox`, `opera`, `vivaldi`, `chromium`, `safari`, `auto`, custom file, or disabled).
+  - Option 10: Saves to `~/.dwdr/config.toml` and exits.
+  - Option 11: Cancels without saving.
   - In non-TTY environments, exits cleanly with an informative error rather than looping.
 - **Programmatic Set** (`dwdr config set <key> <value>`):
-  - Supported keys: `path`, `quality`, `parallel`, `compat`, `animations`, `auto_watch`, `bell`, `theme` (along with aliases `download_path`, `default_quality`, `max_parallel_downloads`, `compat_mode`, `animation`, `autowatch`).
-  - Validation bounds: `parallel` (`1..=16`), valid quality tiers, write-permission directory check, boolean strings (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`), theme modes (`auto`, `unicode`, `ascii`).
+  - Supported keys: `path`, `quality`, `parallel`, `compat`, `animations`, `auto_watch`, `bell`, `theme`, `cookies` (along with aliases `download_path`, `default_quality`, `max_parallel_downloads`, `compat_mode`, `animation`, `autowatch`, `cookie`).
+  - Validation bounds: `parallel` (`1..=16`), valid quality tiers, write-permission directory check, boolean strings (`true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off`), theme modes (`auto`, `unicode`, `ascii`), and cookie browser presets (`brave`, `chrome`, `edge`, `firefox`, `opera`, `vivaldi`, `chromium`, `safari`, `auto`) with typo correction (`breve` -> `brave`).
   - Concurrency safety: Rejects mutations when downloads are running in another process (`active_downloads.lock`).
   - Flags: `--force` overrides active download concurrency locks.
 - **Reset Configuration** (`dwdr config reset`):

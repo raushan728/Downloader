@@ -1,6 +1,7 @@
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use colored::Colorize;
 use inquire::{Confirm, Text};
@@ -8,7 +9,8 @@ use inquire::{Confirm, Text};
 use crate::cli::prompts::{interactive_config, prompt_folder_path, select_format_ext};
 use crate::config::manager::{ConfigManager, DwdrConfig, validate_download_path};
 use crate::engine::downloader::{
-    download_media_ext, fetch_video_info_ext, find_existing_media_file, find_format_with_fallback,
+    detect_available_browser, download_media_full, fetch_video_info_full, find_existing_media_file,
+    find_format_with_fallback, is_auth_or_bot_error, is_rate_limit_error,
     resolve_unique_output_template,
 };
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
@@ -52,9 +54,28 @@ pub struct ResolvedMedia {
     pub ffmpeg_path: PathBuf,
     pub custom_output_template: Option<String>,
     pub force_overwrite: bool,
+    pub cookies: Option<String>,
 }
 
-/// Validates the URL, fetches available formats, and resolves the target format and destination directory.
+const AUTH_BOT_COOKIE_TIP: &str = "\
+Tip: Platform authentication, bot verification, or private/follower-only access required (Instagram, YouTube, X/Twitter, Facebook, etc.).
+     If you have access or follow this account in your browser, connect cookies in DWDR:
+       dwdr config set cookies brave    (or chrome, edge, firefox, opera, vivaldi, auto)
+     Or in interactive shell:    type 'config' -> '9. Cookies / Browser Auth'
+     Or use a cookies file:      dwdr config set cookies /path/to/cookies.txt
+     Note: For private media, your logged-in browser account must follow the creator and not be blocked.
+     Ensure you are logged in, then retry.";
+
+fn print_engine_failure_hints(err: &str, yt_dlp_path: &Path, ffmpeg_path: &Path) {
+    if is_auth_or_bot_error(err) {
+        eprintln!("{}", AUTH_BOT_COOKIE_TIP.yellow());
+    }
+    if let Some(msg) = check_core_engines_update(yt_dlp_path, ffmpeg_path) {
+        eprintln!("{}\n", msg.yellow());
+    }
+}
+
+/// Resolves format, destination directory, and media metadata for a URL.
 pub fn resolve_media_to_download(
     url: &str,
     config: &mut DwdrConfig,
@@ -95,7 +116,12 @@ pub fn resolve_media_to_download(
         None
     };
 
-    let info = match fetch_video_info_ext(url, &yt_dlp_path, config.compat_mode) {
+    let (info, used_cookies) = match fetch_video_info_full(
+        url,
+        &yt_dlp_path,
+        config.compat_mode,
+        None,
+    ) {
         Ok(info) => {
             if let Some(ref sp) = fetch_spinner {
                 sp.finish_info(&format!(
@@ -109,24 +135,140 @@ pub fn resolve_media_to_download(
                     format!("Extracted {} formats.", info.formats.len()).green()
                 );
             }
-            info
+            (info, None)
         }
         Err(e) => {
-            if let Some(ref sp) = fetch_spinner {
-                sp.finish_error(&format!("Failed to extract video info: {}", e));
+            let is_rate_limit = is_rate_limit_error(&e);
+            let has_effective_cookies = match config.cookies.as_deref() {
+                Some(c) if c.eq_ignore_ascii_case("auto") => detect_available_browser().is_some(),
+                Some(_) => true,
+                None => false,
+            };
+            let should_cookie_retry =
+                (is_auth_or_bot_error(&e) || is_rate_limit) && has_effective_cookies;
+
+            if should_cookie_retry {
+                if let Some(ref sp) = fetch_spinner {
+                    sp.finish_info(if is_rate_limit {
+                        "Rate limit encountered on anonymous stream"
+                    } else {
+                        "Authentication required for this media stream"
+                    });
+                }
+                drop(fetch_spinner);
+
+                let cookie_source = config.cookies.as_deref().unwrap_or("configured browser");
+                if is_rate_limit {
+                    eprintln!(
+                        "{}",
+                        format!(
+                            "WARNING: Platform rate limit reached ({}).\n         Backing off briefly and retrying with session cookies ('{}')...",
+                            sanitize_display(&e),
+                            cookie_source
+                        )
+                        .yellow()
+                    );
+                    std::thread::sleep(Duration::from_millis(1500));
+                } else {
+                    println!(
+                        "{}",
+                        format!(
+                            "INFO: Protected media or bot challenge detected ({}).\n      Retrying with session cookies ('{}')...",
+                            sanitize_display(&e),
+                            cookie_source
+                        )
+                        .cyan()
+                    );
+                }
+
+                let retry_spinner = if !ctx.quiet {
+                    Some(Spinner::new(
+                        "Fetching media details using session cookies...",
+                        ctx.theme,
+                        ctx.color_level,
+                        ctx.animations,
+                    ))
+                } else {
+                    None
+                };
+
+                match fetch_video_info_full(
+                    url,
+                    &yt_dlp_path,
+                    config.compat_mode,
+                    config.cookies.as_deref(),
+                ) {
+                    Ok(retry_info) => {
+                        if let Some(ref sp) = retry_spinner {
+                            sp.finish_info(&format!(
+                                "Successfully authenticated and fetched data for: {}",
+                                sanitize_display(&retry_info.title)
+                            ));
+                        }
+                        if !ctx.quiet {
+                            println!(
+                                "{}",
+                                format!(
+                                    "Extracted {} formats with session cookies.",
+                                    retry_info.formats.len()
+                                )
+                                .green()
+                            );
+                        }
+                        (retry_info, config.cookies.clone())
+                    }
+                    Err(retry_e) => {
+                        if let Some(ref sp) = retry_spinner {
+                            sp.finish_error(&format!("Authentication retry failed: {}", retry_e));
+                        } else {
+                            eprintln!(
+                                "{}",
+                                format!(
+                                    "\nERROR: Failed to extract video info with cookies: {}\n",
+                                    retry_e
+                                )
+                                .red()
+                            );
+                        }
+                        print_engine_failure_hints(&retry_e, &yt_dlp_path, &ffmpeg_path);
+                        return None;
+                    }
+                }
             } else {
-                eprintln!(
-                    "{}",
-                    format!("\nERROR: Failed to extract video info: {}\n", e).red()
-                );
+                if let Some(ref sp) = fetch_spinner {
+                    let err_msg = format!("Failed to extract video info: {}", e);
+                    sp.finish_error(if is_rate_limit {
+                        "Rate limit encountered"
+                    } else {
+                        &err_msg
+                    });
+                } else if is_rate_limit {
+                    eprintln!(
+                        "{}",
+                        "\nWARNING: Platform rate limit reached (HTTP 429 / Too Many Requests).\nTip: Wait before retrying, or configure a browser session to access authenticated limits.\n"
+                            .yellow()
+                            .bold()
+                    );
+                } else {
+                    eprintln!(
+                        "{}",
+                        format!("\nERROR: Failed to extract video info: {}\n", e).red()
+                    );
+                }
+                drop(fetch_spinner);
+                if config.cookies.as_deref() == Some("auto") && detect_available_browser().is_none()
+                {
+                    eprintln!(
+                        "{}",
+                        "INFO: Cookies is set to 'auto', but no supported browser installation was found.\n      Configure a specific browser or cookies file via 'dwdr config set cookies <browser>'."
+                            .yellow()
+                    );
+                }
+                print_engine_failure_hints(&e, &yt_dlp_path, &ffmpeg_path);
+                return None;
             }
-            if let Some(msg) = check_core_engines_update(&yt_dlp_path, &ffmpeg_path) {
-                eprintln!("{}\n", msg.yellow());
-            }
-            return None;
         }
     };
-    drop(fetch_spinner);
 
     if info.formats.is_empty() {
         eprintln!(
@@ -139,7 +281,6 @@ pub fn resolve_media_to_download(
     }
 
     let (chosen_id, is_audio, format_desc) = if info.formats.len() == 1 {
-        // Skip manual prompts when only a single format exists to avoid unnecessary confirmation.
         let single_fmt = &info.formats[0];
         let desc = single_fmt.summary();
         println!(
@@ -393,6 +534,7 @@ pub fn resolve_media_to_download(
         ffmpeg_path,
         custom_output_template,
         force_overwrite,
+        cookies: used_cookies,
     })
 }
 
@@ -414,7 +556,7 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<()
             .cyan()
         );
     }
-    match download_media_ext(
+    let download_res = download_media_full(
         url,
         &media.format_id,
         &media.yt_dlp_path,
@@ -423,7 +565,50 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<()
         Some(&media.title),
         media.custom_output_template.as_deref(),
         media.force_overwrite,
-    ) {
+        media.cookies.as_deref(),
+    );
+
+    let download_res = match download_res {
+        Err(e)
+            if (is_auth_or_bot_error(&e) || is_rate_limit_error(&e))
+                && media.cookies.is_none()
+                && config.cookies.is_some() =>
+        {
+            let cookie_source = config.cookies.as_deref().unwrap_or("configured browser");
+            let reason = if is_rate_limit_error(&e) {
+                "Rate limit encountered on download stream"
+            } else {
+                "Media download stream requires authentication"
+            };
+            println!(
+                "{}",
+                format!(
+                    "INFO: {} ({}).\n      Retrying download with session cookies ('{}')...",
+                    reason,
+                    sanitize_display(&e),
+                    cookie_source
+                )
+                .cyan()
+            );
+            if is_rate_limit_error(&e) {
+                std::thread::sleep(Duration::from_millis(1500));
+            }
+            download_media_full(
+                url,
+                &media.format_id,
+                &media.yt_dlp_path,
+                &media.ffmpeg_path,
+                &config.download_path,
+                Some(&media.title),
+                media.custom_output_template.as_deref(),
+                media.force_overwrite,
+                config.cookies.as_deref(),
+            )
+        }
+        other => other,
+    };
+
+    match download_res {
         Ok(outcome) => {
             let captured_path = outcome.path;
             let stats = outcome.stats;
@@ -478,14 +663,16 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<()
                 print!("\r\x1b[K");
                 let err_card = render_error_card(&media.title, &e, &ctx.theme, ctx.color_level);
                 eprintln!("{}", err_card);
+                if let Some(msg) = check_core_engines_update(&media.yt_dlp_path, &media.ffmpeg_path)
+                {
+                    eprintln!("{}\n", msg.yellow());
+                }
             } else {
                 eprintln!(
                     "{}",
                     format!("\nERROR: Download failed: {}\n", e).red().bold()
                 );
-            }
-            if let Some(msg) = check_core_engines_update(&media.yt_dlp_path, &media.ffmpeg_path) {
-                eprintln!("{}\n", msg.yellow());
+                print_engine_failure_hints(&e, &media.yt_dlp_path, &media.ffmpeg_path);
             }
             clear_taskbar_progress();
             reset_terminal_state();
@@ -518,7 +705,6 @@ fn read_shell_input(prompt: &str) -> Option<String> {
                 Some(String::new())
             }
             Err(inquire::InquireError::OperationInterrupted) => {
-                // Ctrl+C pressed
                 reset_terminal_state();
                 None
             }
@@ -533,6 +719,29 @@ fn read_shell_input(prompt: &str) -> Option<String> {
     set_in_interactive_prompt(false);
     flush_notifications();
     result
+}
+
+fn sync_queue_with_config(queue_mgr: &Arc<Mutex<QueueManager>>, config: &DwdrConfig) {
+    QueueManager::set_max_parallel(queue_mgr, config.max_parallel_downloads as usize);
+    queue_mgr
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .set_cookies(config.cookies.clone());
+}
+
+fn warn_if_downloads_active(queue_mgr: &Arc<Mutex<QueueManager>>) -> bool {
+    let is_active = queue_mgr
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .is_active();
+    if is_active {
+        println!(
+            "{}",
+            "\nWARNING: Configuration changes are disabled while downloads are actively in progress. Please wait for downloads to complete or use 'cancel' first.\n"
+                .yellow()
+        );
+    }
+    is_active
 }
 
 /// Interactive shell loop managing concurrent background downloads via the FIFO queue.
@@ -559,6 +768,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
         yt_dlp_path,
         ffmpeg_path,
     );
+    sync_queue_with_config(&queue_manager, config);
     set_global_queue(Arc::clone(&queue_manager));
 
     loop {
@@ -648,16 +858,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     continue;
                 }
                 if input.eq_ignore_ascii_case("config") || input.eq_ignore_ascii_case("settings") {
-                    if queue_manager
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner())
-                        .is_active()
-                    {
-                        println!(
-                            "{}",
-                            "\nWARNING: Configuration changes are disabled while downloads are actively in progress. Please wait for downloads to complete or use 'cancel' first.\n"
-                                .yellow()
-                        );
+                    if warn_if_downloads_active(&queue_manager) {
                         continue;
                     }
                     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -670,10 +871,30 @@ pub fn start_repl(config: &mut DwdrConfig) {
                     }
                     interactive_config(config);
                     reset_terminal_state();
-                    QueueManager::set_max_parallel(
-                        &queue_manager,
-                        config.max_parallel_downloads as usize,
-                    );
+                    sync_queue_with_config(&queue_manager, config);
+                    continue;
+                }
+                let is_config_cmd = input.to_ascii_lowercase().starts_with("config ")
+                    || input.to_ascii_lowercase().starts_with("settings ");
+                if is_config_cmd {
+                    if warn_if_downloads_active(&queue_manager) {
+                        continue;
+                    }
+                    let parts: Vec<&str> = input.split_whitespace().collect();
+                    let action = parts.get(1).map(|s| s.to_ascii_lowercase());
+                    let key = parts.get(2).map(|s| s.to_ascii_lowercase());
+                    let value = if parts.len() > 3 {
+                        Some(
+                            parts[3..]
+                                .join(" ")
+                                .trim_matches(|c| c == '"' || c == '\'')
+                                .to_string(),
+                        )
+                    } else {
+                        None
+                    };
+                    ConfigManager::handle_cli(config, action, key, value, false);
+                    sync_queue_with_config(&queue_manager, config);
                     continue;
                 }
                 if input.eq_ignore_ascii_case("cls") || input.eq_ignore_ascii_case("clear") {
@@ -735,6 +956,7 @@ pub fn start_repl(config: &mut DwdrConfig) {
                         media.custom_output_template,
                         media.force_overwrite,
                         Some(media.format_desc.clone()),
+                        media.cookies,
                     );
                     let max_p = queue_manager
                         .lock()

@@ -40,6 +40,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub quiet: bool,
 
+    /// Browser name (e.g. brave, chrome, edge, firefox, auto) or path to cookies.txt for platform authentication.
+    #[arg(long)]
+    pub cookies: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }

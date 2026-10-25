@@ -43,6 +43,74 @@ fn default_theme() -> String {
     "auto".to_string()
 }
 
+pub const VALID_COOKIE_BROWSERS: &[&str] = &[
+    "brave", "chrome", "edge", "firefox", "opera", "vivaldi", "chromium", "safari", "auto",
+];
+
+pub const COOKIE_CANDIDATE_MATCHES: &[&str] = &[
+    "brave", "chrome", "edge", "firefox", "opera", "vivaldi", "chromium", "safari", "auto", "none",
+];
+
+pub fn normalize_cookie_value(value: &str) -> Result<Option<String>, Option<String>> {
+    let trimmed = value.trim();
+    const DISABLED_WORDS: &[&str] = &["none", "off", "clear", "disabled"];
+
+    if trimmed.is_empty()
+        || DISABLED_WORDS
+            .iter()
+            .any(|w| trimmed.eq_ignore_ascii_case(w))
+    {
+        return Ok(None);
+    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let browser_name = lower.split_once(':').map(|(b, _)| b).unwrap_or(&lower);
+    let is_known_browser = VALID_COOKIE_BROWSERS.contains(&browser_name);
+    let is_prefixed = lower.starts_with("file:") || lower.starts_with("browser:");
+    let is_file_path = lower.ends_with(".txt")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || std::path::Path::new(trimmed).is_file();
+
+    if is_known_browser || is_prefixed || is_file_path {
+        Ok(Some(trimmed.to_string()))
+    } else {
+        let suggestion =
+            find_closest_match(trimmed, COOKIE_CANDIDATE_MATCHES).map(|s| s.to_string());
+        Err(suggestion)
+    }
+}
+
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    if (a.len() as isize - b.len() as isize).abs() > 2 {
+        return usize::MAX;
+    }
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();
+    let mut curr = vec![0; b_chars.len() + 1];
+
+    for (i, &ca) in a_chars.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, &cb) in b_chars.iter().enumerate() {
+            let cost = if ca == cb { 0 } else { 1 };
+            curr[j + 1] = (curr[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
+        }
+        prev.copy_from_slice(&curr);
+    }
+    prev[b_chars.len()]
+}
+
+pub fn find_closest_match<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
+    let lower = input.to_ascii_lowercase();
+    candidates
+        .iter()
+        .map(|&c| (c, levenshtein_distance(&lower, c)))
+        .filter(|&(_, dist)| dist <= 2)
+        .min_by_key(|&(_, dist)| dist)
+        .map(|(c, _)| c)
+}
+
 /// Global runtime configuration serialized in `~/.dwdr/config.toml`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -59,6 +127,8 @@ pub struct DwdrConfig {
     pub bell: bool,
     #[serde(default = "default_theme")]
     pub theme: String,
+    #[serde(default)]
+    pub cookies: Option<String>,
 }
 
 impl Default for DwdrConfig {
@@ -89,6 +159,7 @@ impl Default for DwdrConfig {
             auto_watch: true,
             bell: false,
             theme: "auto".to_string(),
+            cookies: None,
         }
     }
 }
@@ -219,11 +290,10 @@ fn resolve_config_file_path(path: &std::path::Path) -> PathBuf {
     }
 }
 
-/// Thread-safe configuration manager enforcing filesystem isolation and recovery.
+/// Configuration persistence and CLI handler.
 pub struct ConfigManager;
 
 impl ConfigManager {
-    // DWDR strictly isolates its data from system paths by using a dedicated hidden directory.
     pub fn config_path() -> Option<PathBuf> {
         if let Ok(env_path) = std::env::var("DWDR_CONFIG_PATH") {
             let trimmed = env_path.trim();
@@ -242,7 +312,6 @@ impl ConfigManager {
         BaseDirs::new().map(|dirs| dirs.home_dir().join(".dwdr").join("config.toml"))
     }
 
-    // Prefer self-healing over crashing so the user's workflow isn't interrupted by a corrupted config.
     pub fn load() -> DwdrConfig {
         let path = match Self::config_path() {
             Some(p) => p,
@@ -397,6 +466,11 @@ impl ConfigManager {
                     );
                     println!("{}: {}", "bell".cyan(), config.bell.to_string().yellow());
                     println!("{}: {}", "theme".cyan(), config.theme.yellow());
+                    println!(
+                        "{}: {}",
+                        "cookies".cyan(),
+                        config.cookies.as_deref().unwrap_or("none").yellow()
+                    );
                 }
                 "reset" => {
                     if is_download_active() && !force {
@@ -561,6 +635,31 @@ impl ConfigManager {
                                     "\nERROR: Invalid theme value. Valid options: auto, unicode, ascii.\n"
                                         .red()
                                 );
+                                return;
+                            }
+                        },
+                        "cookies" | "cookie" => match normalize_cookie_value(&value) {
+                            Ok(normalized) => new_config.cookies = normalized,
+                            Err(suggestion) => {
+                                println!(
+                                    "{}",
+                                    format!(
+                                        "\nERROR: Unknown browser or cookie source '{}'.",
+                                        value.trim()
+                                    )
+                                    .red()
+                                );
+                                if let Some(closest) = suggestion {
+                                    println!(
+                                        "{}",
+                                        format!("Tip: Did you mean '{}'?", closest).yellow()
+                                    );
+                                }
+                                println!(
+                                        "{}",
+                                        "     Supported browsers: brave, chrome, edge, firefox, opera, vivaldi, chromium, safari, auto\n     Or provide a file path: /path/to/cookies.txt\n     To disable cookies: none\n"
+                                            .yellow()
+                                    );
                                 return;
                             }
                         },
@@ -1034,6 +1133,24 @@ download_path = "/custom/downloads"
             true,
         );
         assert_eq!(config.theme, "unicode");
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("cookies".to_string()),
+            Some("brave".to_string()),
+            true,
+        );
+        assert_eq!(config.cookies.as_deref(), Some("brave"));
+
+        ConfigManager::handle_cli(
+            &mut config,
+            Some("set".to_string()),
+            Some("cookie".to_string()),
+            Some("none".to_string()),
+            true,
+        );
+        assert_eq!(config.cookies, None);
     }
 
     #[test]
@@ -1069,5 +1186,21 @@ download_path = "/custom/downloads"
 
         assert_eq!(parse_bool("invalid"), None);
         assert_eq!(parse_bool(""), None);
+    }
+
+    #[test]
+    fn test_levenshtein_distance_and_closest_match() {
+        assert_eq!(levenshtein_distance("brave", "brave"), 0);
+        assert_eq!(levenshtein_distance("breve", "brave"), 1);
+        assert_eq!(levenshtein_distance("chrme", "chrome"), 1);
+
+        let candidates = &[
+            "brave", "chrome", "edge", "firefox", "opera", "vivaldi", "chromium", "safari", "auto",
+            "none",
+        ];
+        assert_eq!(find_closest_match("breve", candidates), Some("brave"));
+        assert_eq!(find_closest_match("chrme", candidates), Some("chrome"));
+        assert_eq!(find_closest_match("edg", candidates), Some("edge"));
+        assert_eq!(find_closest_match("xyz12345", candidates), None);
     }
 }

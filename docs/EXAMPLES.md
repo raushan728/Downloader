@@ -137,9 +137,14 @@ dwdr config show
 ```text
 Current Configuration:
 download_path: /media/external/downloads
-max_parallel_downloads: 5
 default_quality: 720p
+max_parallel_downloads: 5
 compat_mode: false
+animations: true
+auto_watch: true
+bell: false
+theme: auto
+cookies: none
 ```
 
 ---
@@ -198,3 +203,49 @@ INFO: Manual selection requested...
 ```
 
 Formats with server-verified filesizes (e.g. YouTube) display clean exact sizes (e.g. `42.1 MB`), while platforms without explicit size metadata clearly show estimated totals (`~X.X MB (Est.)`) or `Stream Size Pending` for live broadcasts.
+
+---
+
+## Scenario 9: Platform Authentication & Smart Cookie Fallback (YouTube, Instagram, Facebook, X)
+
+DWDR uses Smart Cookie Fallback: requests are always attempted anonymously first. If a platform challenges the request with bot verification ("confirm you're not a bot", captcha), a login wall, private or follower-restricted media, or HTTP 429 rate limits, DWDR automatically retries using your configured browser session cookies. On rate limits, it applies an automatic 1.5-second backoff delay before retrying.
+
+Note: For private or follower-restricted media (such as private Instagram posts, protected tweets on X, or YouTube members-only content), your account must follow the creator and not be blocked.
+
+### Option A: Configure Persistent Browser Cookies
+```bash
+# Extract cookies from Brave (or chrome, edge, firefox, opera, vivaldi, chromium, safari, auto)
+dwdr config set cookies brave
+
+# Or point to an exported cookies.txt file
+dwdr config set cookies /path/to/cookies.txt
+
+# Misspelled browser names automatically suggest corrections
+dwdr config set cookies breve
+# ERROR: Unknown browser or cookie source 'breve'.
+# Tip: Did you mean 'brave'?
+#      Supported browsers: brave, chrome, edge, firefox, opera, vivaldi, chromium, safari, auto
+```
+
+### Option B: One-Shot Download with CLI Flag
+```bash
+dwdr --cookies brave "https://www.youtube.com/watch?v=VIDEO_ID"
+```
+
+### Option C: From the Interactive Shell Menu
+```text
+dwdr > config
+? Configuration Menu (Use arrow keys):
+  9. Cookies / Browser Auth (Current: None (Disabled))
+? Select Browser for Cookies & Anti-Bot Authentication:
+ > Brave
+   Chrome
+   Edge
+   Firefox
+   Opera
+   Vivaldi
+   Chromium
+   Safari
+   Auto-detect installed browser
+   Custom cookies file or profile path...
+```
