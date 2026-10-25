@@ -15,8 +15,9 @@ use fs2::FileExt;
 
 use crate::config::manager::ConfigManager;
 use crate::engine::downloader::{
-    download_media_background_ext, get_terminal_width, is_direct_download_active,
-    render_progress_bar_with_width, sanitize_media_title,
+    download_media_background_full, get_terminal_width, is_auth_or_bot_error,
+    is_direct_download_active, is_rate_limit_error, render_progress_bar_with_width,
+    sanitize_media_title,
 };
 use crate::engine::updater::check_core_engines_update;
 #[cfg(not(test))]
@@ -118,6 +119,7 @@ pub struct DownloadTask {
     pub progress: TaskProgress,
     pub custom_output_template: Option<String>,
     pub force_overwrite: bool,
+    pub cookies: Option<String>,
     pub final_filepath: Option<PathBuf>,
     pub smoother: SpeedSmoother,
     pub last_sample_time: Option<Instant>,
@@ -170,6 +172,7 @@ pub struct QueueManager {
     cancelled: Arc<AtomicBool>,
     yt_dlp_path: PathBuf,
     ffmpeg_path: PathBuf,
+    pub cookies: Option<String>,
 }
 
 static GLOBAL_QUEUE: Mutex<Option<Arc<Mutex<QueueManager>>>> = Mutex::new(None);
@@ -241,7 +244,7 @@ pub fn clear_active_download() {
 }
 
 #[cfg(unix)]
-/// Checks whether a process with the given PID is currently running via `/proc` or `kill -0`.
+/// Returns true if a process with the given PID is running.
 pub fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -256,7 +259,7 @@ pub fn is_pid_alive(pid: u32) -> bool {
 }
 
 #[cfg(windows)]
-/// Checks whether a process with the given PID is currently running via `tasklist`.
+/// Returns true if a process with the given PID is running.
 pub fn is_pid_alive(pid: u32) -> bool {
     if pid == 0 {
         return false;
@@ -271,7 +274,7 @@ pub fn is_pid_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
-/// Evaluates three-tier download activity: in-process queue, direct tracker, and cross-process file lock.
+/// Returns true if downloads are active in this process or another running instance.
 ///
 /// If `active_downloads.lock` exists on disk but can be exclusively locked by this process,
 /// the previous holder exited or crashed; the recorded PID is verified via `is_pid_alive`
@@ -486,7 +489,62 @@ impl QueueManager {
             cancelled: Arc::new(AtomicBool::new(false)),
             yt_dlp_path,
             ffmpeg_path,
+            cookies: None,
         }))
+    }
+
+    pub fn set_cookies(&mut self, cookies: Option<String>) {
+        self.cookies = cookies;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn update_task_progress(
+        task: &Arc<Mutex<DownloadTask>>,
+        percent: f64,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+        speed_bytes_sec: f64,
+        eta_seconds: Option<u64>,
+        phase: DownloadPhase,
+        is_finalizing: bool,
+    ) {
+        let mut t = task.lock().unwrap_or_else(|p| p.into_inner());
+        if is_finalizing {
+            t.status = TaskStatus::Finalizing;
+            t.progress.percent = 100.0;
+            t.progress.phase = phase;
+            t.progress.speed_bytes_sec = 0.0;
+            t.progress.speed_str = format_speed(0.0);
+            t.progress.eta_seconds = None;
+            t.progress.eta_str = "00:00".to_string();
+        } else {
+            t.progress.percent = percent;
+            t.progress.downloaded_bytes = downloaded_bytes;
+            t.progress.total_bytes = total_bytes;
+            t.progress.speed_bytes_sec = speed_bytes_sec;
+            t.progress.phase = phase;
+            let now = Instant::now();
+            let smoothed_speed = if t.last_sample_time.is_none_or(|prev| {
+                now.duration_since(prev) >= Duration::from_millis(SAMPLE_INTERVAL_MS)
+            }) {
+                t.last_sample_time = Some(now);
+                t.smoother.feed(speed_bytes_sec, now)
+            } else {
+                t.smoother.ema
+            };
+            t.progress.sparkline_samples = t.smoother.samples.iter().copied().collect();
+            let rem = total_bytes.saturating_sub(downloaded_bytes);
+            let eff_eta = t.smoother.eta_seconds(rem).or(eta_seconds);
+            t.progress.eta_seconds = eff_eta;
+            t.progress.downloaded_str = format_bytes(downloaded_bytes);
+            t.progress.total_str = if total_bytes > 0 {
+                format_bytes(total_bytes)
+            } else {
+                "Unknown".to_string()
+            };
+            t.progress.speed_str = format_speed(smoothed_speed);
+            t.progress.eta_str = format_eta(eff_eta);
+        }
     }
 
     pub fn enqueue(
@@ -505,6 +563,7 @@ impl QueueManager {
             None,
             false,
             None,
+            None,
         )
     }
 
@@ -518,6 +577,7 @@ impl QueueManager {
         custom_output_template: Option<String>,
         force_overwrite: bool,
         format_desc: Option<String>,
+        cookies: Option<String>,
     ) -> EnqueueResult {
         let mut mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
         if mgr.cancelled.load(Ordering::SeqCst) && mgr.active_count == 0 && mgr.queue.is_empty() {
@@ -538,6 +598,7 @@ impl QueueManager {
             progress: TaskProgress::default(),
             custom_output_template,
             force_overwrite,
+            cookies,
             final_filepath: None,
             smoother: SpeedSmoother::default(),
             last_sample_time: None,
@@ -622,6 +683,8 @@ impl QueueManager {
                 custom_output_template,
                 force_overwrite,
                 cancelled,
+                task_cookies,
+                mgr_cookies,
             ) = {
                 let mgr = mgr_clone.lock().unwrap_or_else(|p| p.into_inner());
                 let t = task_clone.lock().unwrap_or_else(|p| p.into_inner());
@@ -635,10 +698,11 @@ impl QueueManager {
                     t.custom_output_template.clone(),
                     t.force_overwrite,
                     Arc::clone(&mgr.cancelled),
+                    t.cookies.clone(),
+                    mgr.cookies.clone(),
                 )
             };
 
-            // Immediate cancellation check prior to starting engine process
             if cancelled.load(Ordering::SeqCst) {
                 let mut t = task_clone.lock().unwrap_or_else(|p| p.into_inner());
                 t.status = TaskStatus::Cancelled;
@@ -646,84 +710,105 @@ impl QueueManager {
                 return;
             }
 
-            let task_for_progress = Arc::clone(&task_clone);
-            let mgr_for_spawn = Arc::clone(&mgr_clone);
-            let mut spawned_pid: Option<u32> = None;
             let task_id_str = task_id.to_string();
 
-            let result = download_media_background_ext(
-                &url,
-                &format_id,
-                &yt_dlp_path,
-                &ffmpeg_path,
-                &download_dir,
-                custom_output_template.as_deref(),
-                force_overwrite,
-                Some(&task_id_str),
-                |child| {
-                    let pid = child.id();
-                    if cancelled.load(Ordering::SeqCst) {
-                        kill_process_by_pid(pid);
-                        return;
-                    }
-                    spawned_pid = Some(pid);
-                    let mut mgr = mgr_for_spawn.lock().unwrap_or_else(|p| p.into_inner());
-                    if mgr.cancelled.load(Ordering::SeqCst) {
-                        kill_process_by_pid(pid);
-                    } else {
-                        mgr.active_pids.push(pid);
-                    }
-                },
-                move |percent,
-                      downloaded_bytes,
-                      total_bytes,
-                      speed_bytes_sec,
-                      eta_seconds,
-                      phase,
-                      is_finalizing| {
-                    let mut t = task_for_progress.lock().unwrap_or_else(|p| p.into_inner());
-                    if is_finalizing {
-                        t.status = TaskStatus::Finalizing;
-                        t.progress.percent = 100.0;
-                        t.progress.phase = phase;
-                        t.progress.speed_bytes_sec = 0.0;
-                        t.progress.speed_str = format_speed(0.0);
-                        t.progress.eta_seconds = None;
-                        t.progress.eta_str = "00:00".to_string();
-                    } else {
-                        t.progress.percent = percent;
-                        t.progress.downloaded_bytes = downloaded_bytes;
-                        t.progress.total_bytes = total_bytes;
-                        t.progress.speed_bytes_sec = speed_bytes_sec;
-                        t.progress.phase = phase;
-                        let now = Instant::now();
-                        let smoothed_speed = if t.last_sample_time.is_none_or(|prev| {
-                            now.duration_since(prev) >= Duration::from_millis(SAMPLE_INTERVAL_MS)
-                        }) {
-                            t.last_sample_time = Some(now);
-                            t.smoother.feed(speed_bytes_sec, now)
+            let run_download_attempt = |cookies: Option<&str>| {
+                let mut spawned_pid: Option<u32> = None;
+                let res = download_media_background_full(
+                    &url,
+                    &format_id,
+                    &yt_dlp_path,
+                    &ffmpeg_path,
+                    &download_dir,
+                    custom_output_template.as_deref(),
+                    force_overwrite,
+                    Some(&task_id_str),
+                    cookies,
+                    |child| {
+                        let pid = child.id();
+                        if cancelled.load(Ordering::SeqCst) {
+                            kill_process_by_pid(pid);
+                            return;
+                        }
+                        spawned_pid = Some(pid);
+                        let mut mgr = mgr_clone.lock().unwrap_or_else(|p| p.into_inner());
+                        if mgr.cancelled.load(Ordering::SeqCst) {
+                            kill_process_by_pid(pid);
                         } else {
-                            t.smoother.ema
-                        };
-                        t.progress.sparkline_samples = t.smoother.samples.iter().copied().collect();
-                        let rem = total_bytes.saturating_sub(downloaded_bytes);
-                        let eff_eta = t.smoother.eta_seconds(rem).or(eta_seconds);
-                        t.progress.eta_seconds = eff_eta;
-                        t.progress.downloaded_str = format_bytes(downloaded_bytes);
-                        t.progress.total_str = if total_bytes > 0 {
-                            format_bytes(total_bytes)
-                        } else {
-                            "Unknown".to_string()
-                        };
-                        t.progress.speed_str = format_speed(smoothed_speed);
-                        t.progress.eta_str = format_eta(eff_eta);
-                    }
-                },
-            );
+                            mgr.active_pids.push(pid);
+                        }
+                    },
+                    |percent,
+                     downloaded_bytes,
+                     total_bytes,
+                     speed_bytes_sec,
+                     eta_seconds,
+                     phase,
+                     is_finalizing| {
+                        Self::update_task_progress(
+                            &task_clone,
+                            percent,
+                            downloaded_bytes,
+                            total_bytes,
+                            speed_bytes_sec,
+                            eta_seconds,
+                            phase,
+                            is_finalizing,
+                        );
+                    },
+                );
 
-            if let Some(pid) = spawned_pid {
-                let mut mgr = mgr_clone.lock().unwrap_or_else(|p| p.into_inner());
-                mgr.active_pids.retain(|&p| p != pid);
+                if let Some(pid) = spawned_pid {
+                    let mut mgr = mgr_clone.lock().unwrap_or_else(|p| p.into_inner());
+                    mgr.active_pids.retain(|&p| p != pid);
+                }
+
+                res
+            };
+
+            let mut result = run_download_attempt(task_cookies.as_deref());
+
+            if !cancelled.load(Ordering::SeqCst)
+                && task_cookies.is_none()
+                && mgr_cookies.is_some()
+                && matches!(&result, Err(e) if is_auth_or_bot_error(e) || is_rate_limit_error(e))
+            {
+                if let Err(ref e) = result {
+                    if is_rate_limit_error(e) {
+                        push_notification(
+                            format!(
+                                "WARNING: Task #{}: Rate limited by platform (HTTP 429). Waiting 1.5s before retrying with cookies...",
+                                task_id
+                            )
+                            .yellow()
+                            .to_string(),
+                        );
+                        for _ in 0..15 {
+                            if cancelled.load(Ordering::SeqCst) {
+                                break;
+                            }
+                            std::thread::sleep(Duration::from_millis(100));
+                        }
+                    } else {
+                        push_notification(
+                            format!(
+                                "INFO: Task #{}: Stream requires authentication. Retrying with session cookies...",
+                                task_id
+                            )
+                            .cyan()
+                            .to_string(),
+                        );
+                    }
+                }
+
+                if !cancelled.load(Ordering::SeqCst) {
+                    result = run_download_attempt(mgr_cookies.as_deref());
+
+                    if result.is_ok() {
+                        let mut t = task_clone.lock().unwrap_or_else(|p| p.into_inner());
+                        t.cookies = mgr_cookies.clone();
+                    }
+                }
             }
 
             let is_cancelled = cancelled.load(Ordering::SeqCst);
@@ -787,7 +872,6 @@ impl QueueManager {
         mgr.worker_handles.push(handle);
     }
 
-    // Automatically promotes and spawns the next pending task in FIFO order.
     fn on_task_finished(manager_arc: &Arc<Mutex<Self>>) {
         let (next_task, auto_spawn) = {
             let mut mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
@@ -1693,7 +1777,6 @@ pub fn find_completed_file(download_dir: &str, title: &str) -> Option<PathBuf> {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             let norm_stem = normalize_parens(stem).to_lowercase();
 
-            // Strict stem match, numbered copy stem match, or normalized parens match.
             // Eliminates fuzzy word subset matching to prevent false positives like 'Lecture 1' matching 'Lecture 10.mp4'.
             if stem.eq_ignore_ascii_case(&sanitized_title)
                 || stem.eq_ignore_ascii_case(&legacy_sanitized)
@@ -1936,6 +2019,7 @@ mod tests {
             },
             custom_output_template: None,
             force_overwrite: false,
+            cookies: None,
             final_filepath: None,
             smoother: SpeedSmoother::default(),
             last_sample_time: None,
@@ -1952,6 +2036,7 @@ mod tests {
             progress: TaskProgress::default(),
             custom_output_template: None,
             force_overwrite: false,
+            cookies: None,
             final_filepath: None,
             smoother: SpeedSmoother::default(),
             last_sample_time: None,
@@ -1968,6 +2053,7 @@ mod tests {
             progress: TaskProgress::default(),
             custom_output_template: None,
             force_overwrite: false,
+            cookies: None,
             final_filepath: None,
             smoother: SpeedSmoother::default(),
             last_sample_time: None,
@@ -1991,6 +2077,7 @@ mod tests {
             },
             custom_output_template: None,
             force_overwrite: false,
+            cookies: None,
             final_filepath: None,
             smoother: SpeedSmoother::default(),
             last_sample_time: None,
@@ -2007,6 +2094,7 @@ mod tests {
             progress: TaskProgress::default(),
             custom_output_template: None,
             force_overwrite: false,
+            cookies: None,
             final_filepath: None,
             smoother: SpeedSmoother::default(),
             last_sample_time: None,
@@ -2023,6 +2111,7 @@ mod tests {
             progress: TaskProgress::default(),
             custom_output_template: None,
             force_overwrite: false,
+            cookies: None,
             final_filepath: None,
             smoother: SpeedSmoother::default(),
             last_sample_time: None,
@@ -2052,6 +2141,7 @@ mod tests {
                 progress: TaskProgress::default(),
                 custom_output_template: None,
                 force_overwrite: false,
+                cookies: None,
                 final_filepath: None,
                 smoother: SpeedSmoother::default(),
                 last_sample_time: None,
@@ -2067,6 +2157,7 @@ mod tests {
                 progress: TaskProgress::default(),
                 custom_output_template: None,
                 force_overwrite: false,
+                cookies: None,
                 final_filepath: None,
                 smoother: SpeedSmoother::default(),
                 last_sample_time: None,
@@ -2097,6 +2188,7 @@ mod tests {
                 progress: TaskProgress::default(),
                 custom_output_template: None,
                 force_overwrite: false,
+                cookies: None,
                 final_filepath: None,
                 smoother: SpeedSmoother::default(),
                 last_sample_time: None,
@@ -2226,6 +2318,7 @@ mod tests {
                 progress: TaskProgress::default(),
                 custom_output_template: None,
                 force_overwrite: false,
+                cookies: None,
                 final_filepath: None,
                 smoother: SpeedSmoother::default(),
                 last_sample_time: None,

@@ -136,6 +136,57 @@ fn test_config_set_valid() {
 
 #[test]
 #[serial]
+fn test_config_set_cookies() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "cookies", "brave"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Successfully updated cookies to brave",
+        ));
+
+    let mut cmd2 = Command::cargo_bin("dwdr").unwrap();
+    cmd2.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("brave"));
+}
+
+#[test]
+#[serial]
+fn test_config_set_cookies_typo_suggestion() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["config", "set", "cookies", "breve"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Did you mean 'brave'?"));
+}
+
+#[test]
+#[serial]
+fn test_cli_flag_cookies_typo_suggestion() {
+    let temp_dir = tempdir().unwrap();
+    let config_file = temp_dir.path().join("config.toml");
+
+    let mut cmd = Command::cargo_bin("dwdr").unwrap();
+    cmd.env("DWDR_CONFIG_PATH", config_file.to_str().unwrap())
+        .args(["--cookies", "breve", "https://youtube.com/watch?v=123"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Did you mean 'brave'?"));
+}
+
+#[test]
+#[serial]
 fn test_config_set_invalid_parallel() {
     let temp_dir = tempdir().unwrap();
     let config_file = temp_dir.path().join("config.toml");

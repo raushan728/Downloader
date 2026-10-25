@@ -4,7 +4,7 @@ use clap::Parser;
 use colored::Colorize;
 use dwdr::cli::router::{Cli, Commands};
 use dwdr::cli::shell::{process_url, reset_terminal_state, start_repl};
-use dwdr::config::manager::ConfigManager;
+use dwdr::config::manager::{ConfigManager, normalize_cookie_value};
 use dwdr::engine::downloader::cancel_direct_download;
 use dwdr::engine::queue::cancel_global_downloads;
 use dwdr::engine::updater::{update_core_engines, update_self};
@@ -33,7 +33,7 @@ fn main() {
         }
     }
 
-    // Trap SIGINT/Ctrl+C to terminate child process trees and sweep orphaned partial download artifacts.
+    // Terminate child processes and purge partial files on interrupt.
     static SIGNAL_RECEIVED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     let _ = ctrlc::set_handler(move || {
@@ -68,6 +68,30 @@ fn main() {
 
     let cli = Cli::parse();
     let mut config = ConfigManager::load();
+    if let Some(ref cookies_override) = cli.cookies {
+        match normalize_cookie_value(cookies_override) {
+            Ok(normalized) => config.cookies = normalized,
+            Err(suggestion) => {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "\nERROR: Unknown browser or cookie source '{}'.",
+                        cookies_override.trim()
+                    )
+                    .red()
+                );
+                if let Some(closest) = suggestion {
+                    eprintln!("{}", format!("Tip: Did you mean '{}'?", closest).yellow());
+                }
+                eprintln!(
+                    "{}",
+                    "     Supported browsers: brave, chrome, edge, firefox, opera, vivaldi, chromium, safari, auto\n     Or provide a file path: /path/to/cookies.txt\n     To disable cookies: none\n"
+                        .yellow()
+                );
+                std::process::exit(1);
+            }
+        }
+    }
     UiContext::init(&config, cli.no_animation, cli.quiet);
 
     if let Some(url) = cli.url {

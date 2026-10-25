@@ -5,11 +5,12 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crossterm::terminal;
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 
 use crate::config::manager::validate_download_path;
@@ -230,7 +231,6 @@ pub fn resolve_resolution(
         return Some((res, rank));
     }
 
-    // Square videos (1:1 aspect ratio, e.g. Instagram/VR SBS): height equals width.
     if let (Some(w), Some(h)) = (width, height)
         && w == h
         && let Some(res) = map_height_to_resolution(h)
@@ -250,7 +250,6 @@ pub fn resolve_resolution(
         return Some((res, rank));
     }
 
-    // Evaluate width and height candidates and take the higher resolution tier.
     let width_candidate = width.and_then(|w| {
         if w >= 7680 {
             Some(("8K", 4320))
@@ -354,19 +353,19 @@ fn score_vcodec(vcodec: &str, compat_mode: bool) -> u8 {
             0
         }
     } else if lower.starts_with("av01") || lower.starts_with("av1") {
-        4 // AV1: state-of-the-art compression & fidelity
+        4
     } else if lower.starts_with("vp09") || lower.starts_with("vp9") {
-        3 // VP9
+        3
     } else if lower.starts_with("hev1")
         || lower.starts_with("hvc1")
         || lower.starts_with("hevc")
         || lower.starts_with("h265")
     {
-        2 // HEVC / H.265
+        2
     } else if lower.starts_with("avc1") || lower.starts_with("avc") || lower.starts_with("h264") {
-        1 // AVC / H.264
+        1
     } else {
-        0 // Legacy / unknown
+        0
     }
 }
 
@@ -383,11 +382,11 @@ fn score_acodec(acodec: &str, compat_mode: bool) -> u8 {
             0
         }
     } else if lower.contains("opus") {
-        3 // Opus
+        3
     } else if lower.contains("mp4a") || lower.contains("aac") {
-        2 // AAC
+        2
     } else if lower.contains("mp3") {
-        1 // MP3
+        1
     } else {
         0
     }
@@ -434,7 +433,6 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
         let mut height = f["height"].as_u64();
         let mut width = f["width"].as_u64();
 
-        // Parse resolution string when integer width/height fields are null or unpopulated.
         if (height.is_none() || width.is_none())
             && let Some(res_str) = f["resolution"].as_str()
         {
@@ -466,11 +464,6 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
             }
         }
 
-        // Categorize into video vs audio:
-        // 1. Explicit video codec -> Video
-        // 2. Unprobed codec (not explicitly 'none'), with video dimensions or container -> Video
-        // 3. Explicit audio codec with vcodec == 'none' -> Audio
-        // 4. Not video and audio indicator present -> Audio
         let is_video = has_vcodec
             || (!is_vcodec_none
                 && (height.is_some()
@@ -506,7 +499,6 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
             let (resolution, rank) = match resolve_resolution(height, width, note) {
                 Some(r) => (sanitize_display(r.0), r.1),
                 None => {
-                    // Fall back to note, height label, format ID, or "Default" if resolution cannot be mapped to standard dimensions.
                     let label = match note {
                         Some(n) if !n.trim().is_empty() => sanitize_display(n.trim()),
                         _ if height.is_some() => format!("{}p", height.unwrap()),
@@ -662,21 +654,228 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
     })
 }
 
+/// Returns the first detected installed browser for session cookie extraction.
+pub fn detect_available_browser() -> Option<&'static str> {
+    static DETECTED_BROWSER: OnceLock<Option<&'static str>> = OnceLock::new();
+    *DETECTED_BROWSER.get_or_init(|| {
+        let dirs = BaseDirs::new()?;
+        #[cfg(target_os = "macos")]
+        {
+            let home = dirs.home_dir();
+            let app_support = home.join("Library/Application Support");
+            if app_support.exists() {
+                const MACOS_PROFILES: &[(&str, &str)] = &[
+                    ("BraveSoftware/Brave-Browser", "brave"),
+                    ("Google/Chrome", "chrome"),
+                    ("Microsoft Edge", "edge"),
+                    ("Firefox", "firefox"),
+                ];
+                for &(rel, browser) in MACOS_PROFILES {
+                    if app_support.join(rel).exists() {
+                        return Some(browser);
+                    }
+                }
+            }
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let home = dirs.home_dir();
+            const LINUX_PROFILES: &[(&str, &str)] = &[
+                (".config/BraveSoftware/Brave-Browser", "brave"),
+                (".config/google-chrome", "chrome"),
+                (".config/chromium", "chromium"),
+                (".config/microsoft-edge", "edge"),
+                (".mozilla/firefox", "firefox"),
+                (".config/opera", "opera"),
+                (".config/vivaldi", "vivaldi"),
+            ];
+            for &(rel, browser) in LINUX_PROFILES {
+                if home.join(rel).exists() {
+                    return Some(browser);
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            let local_app_data = dirs.data_local_dir();
+            const WIN_LOCAL_PROFILES: &[(&str, &str)] = &[
+                ("BraveSoftware/Brave-Browser", "brave"),
+                ("Google/Chrome", "chrome"),
+                ("Microsoft/Edge", "edge"),
+                ("Opera Software", "opera"),
+                ("Vivaldi", "vivaldi"),
+            ];
+            for &(rel, browser) in WIN_LOCAL_PROFILES {
+                if local_app_data.join(rel).exists() {
+                    return Some(browser);
+                }
+            }
+            if dirs.config_dir().join("Mozilla/Firefox").exists() {
+                return Some("firefox");
+            }
+        }
+        None
+    })
+}
+
+const KNOWN_COOKIE_BROWSERS: &[&str] = &[
+    "brave", "chrome", "edge", "firefox", "opera", "vivaldi", "chromium", "safari",
+];
+
+const BOT_ERROR_PATTERNS: &[&str] = &[
+    "not a bot",
+    "sign in to confirm",
+    "bot verification",
+    "captcha",
+    "checkpoint_required",
+    "challenge_required",
+];
+
+const AUTH_ERROR_PATTERNS: &[&str] = &[
+    "cookies-from-browser",
+    "--cookies",
+    "login required",
+    "log in or provide",
+    "please log in",
+    "requires authentication",
+    "requires login",
+    "must log in",
+    "log in to",
+    "post is private",
+    "account is private",
+    "video is private",
+    "private video",
+    "reel is private",
+    "story is private",
+    "follow this account",
+    "must be following",
+    "followers only",
+    "account is protected",
+    "protected tweets",
+    "members-only",
+    "members only",
+    "join this channel",
+    "channel members only",
+    "granted access",
+    "sign in to view",
+    "confirm your age",
+    "available to subscribers",
+    "subscriber-only",
+    "subscribers only",
+];
+
+/// Appends cookie arguments to a Command based on user configuration.
+pub fn apply_cookie_args(cmd: &mut Command, cookies: Option<&str>) {
+    let cookie_val = match cookies {
+        Some(c) => c.trim(),
+        None => return,
+    };
+
+    if cookie_val.is_empty()
+        || cookie_val.starts_with('-')
+        || matches!(
+            cookie_val.to_ascii_lowercase().as_str(),
+            "none" | "off" | "clear" | "disabled"
+        )
+    {
+        return;
+    }
+
+    if cookie_val.eq_ignore_ascii_case("auto") {
+        if let Some(browser) = detect_available_browser() {
+            cmd.arg("--cookies-from-browser").arg(browser);
+        }
+        return;
+    }
+
+    if let Some((prefix, rest)) = cookie_val.split_once(':') {
+        if prefix.eq_ignore_ascii_case("file") {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with('-') {
+                cmd.arg("--cookies").arg(trimmed);
+            }
+            return;
+        } else if prefix.eq_ignore_ascii_case("browser") {
+            let trimmed = rest.trim();
+            if !trimmed.is_empty() && !trimmed.starts_with('-') {
+                cmd.arg("--cookies-from-browser").arg(trimmed);
+            }
+            return;
+        }
+    }
+
+    let browser_name = cookie_val
+        .split_once(':')
+        .map(|(b, _)| b)
+        .unwrap_or(cookie_val);
+    let lower = cookie_val.to_ascii_lowercase();
+    let browser_lower = browser_name.to_ascii_lowercase();
+
+    if KNOWN_COOKIE_BROWSERS.contains(&browser_lower.as_str()) {
+        cmd.arg("--cookies-from-browser").arg(cookie_val);
+    } else if lower.ends_with(".txt")
+        || cookie_val.contains('/')
+        || cookie_val.contains('\\')
+        || Path::new(cookie_val).is_file()
+    {
+        cmd.arg("--cookies").arg(cookie_val);
+    } else {
+        cmd.arg("--cookies-from-browser").arg(cookie_val);
+    }
+}
+
+/// Determines whether an error string indicates anti-bot verification or captcha requirements.
+pub fn is_bot_error(error: &str) -> bool {
+    let lower = error.to_lowercase().replace('’', "'");
+    BOT_ERROR_PATTERNS.iter().any(|&pat| lower.contains(pat))
+}
+
+/// Determines whether an error string indicates anti-bot verification, login walls, private/follower-only media, or authentication cookie requirements.
+pub fn is_auth_or_bot_error(error: &str) -> bool {
+    let lower = error.to_lowercase().replace('’', "'");
+    BOT_ERROR_PATTERNS
+        .iter()
+        .chain(AUTH_ERROR_PATTERNS.iter())
+        .any(|&pat| lower.contains(pat))
+}
+
+/// Determines whether an error string indicates HTTP 429 or platform rate limiting.
+pub fn is_rate_limit_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    lower.contains("too many requests")
+        || lower.contains("rate limit")
+        || lower.contains("rate-limit")
+        || lower.contains("rate limited")
+        || lower.contains("http error 429")
+        || lower.contains("error 429")
+        || lower.contains("status 429")
+        || lower.contains("code 429")
+        || lower.contains(" 429:")
+        || lower.contains(" 429 ")
+        || lower.contains("[429]")
+        || lower.contains("(429)")
+        || lower.contains("429 too many")
+}
+
 pub fn build_ytdlp_info_cmd(yt_dlp_path: &Path, url: &str) -> Command {
+    build_ytdlp_info_cmd_ext(yt_dlp_path, url, None)
+}
+
+pub fn build_ytdlp_info_cmd_ext(yt_dlp_path: &Path, url: &str, cookies: Option<&str>) -> Command {
     let mut cmd = Command::new(yt_dlp_path);
     cmd.stdin(Stdio::null())
         .arg("-J")
         .arg("--no-warnings")
         .arg("--no-playlist")
         .arg("--socket-timeout")
-        .arg("30")
-        .arg("--")
-        .arg(url);
+        .arg("30");
+    apply_cookie_args(&mut cmd, cookies);
+    cmd.arg("--").arg(url);
     cmd
 }
 
 pub fn fetch_video_info(url: &str, yt_dlp_path: &Path) -> Result<VideoInfo, String> {
-    fetch_video_info_ext(url, yt_dlp_path, false)
+    fetch_video_info_full(url, yt_dlp_path, false, None)
 }
 
 pub fn fetch_video_info_ext(
@@ -684,7 +883,16 @@ pub fn fetch_video_info_ext(
     yt_dlp_path: &Path,
     compat_mode: bool,
 ) -> Result<VideoInfo, String> {
-    let output = build_ytdlp_info_cmd(yt_dlp_path, url)
+    fetch_video_info_full(url, yt_dlp_path, compat_mode, None)
+}
+
+pub fn fetch_video_info_full(
+    url: &str,
+    yt_dlp_path: &Path,
+    compat_mode: bool,
+    cookies: Option<&str>,
+) -> Result<VideoInfo, String> {
+    let output = build_ytdlp_info_cmd_ext(yt_dlp_path, url, cookies)
         .output()
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
 
@@ -1238,7 +1446,7 @@ pub fn clean_partial_files(download_dir: &str, title_hint: Option<&str>) -> usiz
         };
         let name_lower = name.to_lowercase();
 
-        // Support removing leftover temporary directories matching title or temp indicators.
+        // Clean up orphaned temp directories from aborted downloads.
         if path.is_dir() {
             let is_temp_dir = name_lower.ends_with(".temp")
                 || name_lower.ends_with(".tmp")
@@ -1381,6 +1589,31 @@ pub fn build_ytdlp_download_cmd_ext(
     force_overwrites: bool,
     task_id: Option<&str>,
 ) -> Command {
+    build_ytdlp_download_cmd_full(
+        yt_dlp_path,
+        ffmpeg_path,
+        url,
+        format_id,
+        download_dir,
+        custom_output_template,
+        force_overwrites,
+        task_id,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn build_ytdlp_download_cmd_full(
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    url: &str,
+    format_id: &str,
+    download_dir: &str,
+    custom_output_template: Option<&str>,
+    force_overwrites: bool,
+    task_id: Option<&str>,
+    cookies: Option<&str>,
+) -> Command {
     let clean_dir = download_dir.trim_end_matches(['/', '\\']);
     let mut cmd = Command::new(yt_dlp_path);
 
@@ -1466,6 +1699,8 @@ pub fn build_ytdlp_download_cmd_ext(
         cmd.arg("--ffmpeg-location").arg(ffmpeg_path);
     }
 
+    apply_cookie_args(&mut cmd, cookies);
+
     cmd.env("PYTHONUNBUFFERED", "1");
     cmd.arg("--").arg(url);
     cmd.stdin(Stdio::null())
@@ -1534,13 +1769,39 @@ pub fn download_media_ext(
     custom_output_template: Option<&str>,
     force_overwrites: bool,
 ) -> Result<DownloadOutcome, String> {
+    download_media_full(
+        url,
+        format_id,
+        yt_dlp_path,
+        ffmpeg_path,
+        download_dir,
+        title,
+        custom_output_template,
+        force_overwrites,
+        None,
+    )
+}
+
+/// Downloads media with optional cookie-based authentication.
+#[allow(clippy::too_many_arguments)]
+pub fn download_media_full(
+    url: &str,
+    format_id: &str,
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    download_dir: &str,
+    title: Option<&str>,
+    custom_output_template: Option<&str>,
+    force_overwrites: bool,
+    cookies: Option<&str>,
+) -> Result<DownloadOutcome, String> {
     let download_start = Instant::now();
     let validated_dir = validate_download_path(download_dir, true)
         .map_err(|e| format!("Invalid download directory: {}", e))?;
     let clean_download_dir = validated_dir.to_string_lossy();
     let temp_dir = validated_dir.join(".dwdr_direct");
 
-    let mut cmd = build_ytdlp_download_cmd_ext(
+    let mut cmd = build_ytdlp_download_cmd_full(
         yt_dlp_path,
         ffmpeg_path,
         url,
@@ -1549,6 +1810,7 @@ pub fn download_media_ext(
         custom_output_template,
         force_overwrites,
         Some("direct"),
+        cookies,
     );
 
     #[cfg(unix)]
@@ -1973,11 +2235,45 @@ where
     F: FnOnce(&mut Child),
     G: Fn(f64, u64, u64, f64, Option<u64>, DownloadPhase, bool),
 {
+    download_media_background_full(
+        url,
+        format_id,
+        yt_dlp_path,
+        ffmpeg_path,
+        download_dir,
+        custom_output_template,
+        force_overwrites,
+        task_id,
+        None,
+        on_spawn,
+        on_progress,
+    )
+}
+
+/// Downloads media asynchronously with optional cookie authentication.
+#[allow(clippy::too_many_arguments)]
+pub fn download_media_background_full<F, G>(
+    url: &str,
+    format_id: &str,
+    yt_dlp_path: &Path,
+    ffmpeg_path: &Path,
+    download_dir: &str,
+    custom_output_template: Option<&str>,
+    force_overwrites: bool,
+    task_id: Option<&str>,
+    cookies: Option<&str>,
+    on_spawn: F,
+    on_progress: G,
+) -> Result<Option<PathBuf>, String>
+where
+    F: FnOnce(&mut Child),
+    G: Fn(f64, u64, u64, f64, Option<u64>, DownloadPhase, bool),
+{
     let validated_dir = validate_download_path(download_dir, true)
         .map_err(|e| format!("Invalid download directory: {}", e))?;
     let clean_download_dir = validated_dir.to_string_lossy();
 
-    let mut cmd = build_ytdlp_download_cmd_ext(
+    let mut cmd = build_ytdlp_download_cmd_full(
         yt_dlp_path,
         ffmpeg_path,
         url,
@@ -1986,6 +2282,7 @@ where
         custom_output_template,
         force_overwrites,
         task_id,
+        cookies,
     );
 
     #[cfg(unix)]
@@ -3809,5 +4106,210 @@ mod tests {
             height: None,
         };
         assert_eq!(fmt_audio.summary(), "Audio (m4a, 15.2 MB)");
+    }
+
+    #[test]
+    fn test_apply_cookie_args_and_detection() {
+        let mut cmd_brave = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_brave, Some("brave"));
+        let args: Vec<String> = cmd_brave
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args, vec!["--cookies-from-browser", "brave"]);
+
+        let mut cmd_chrome = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_chrome, Some("chrome"));
+        let args_chrome: Vec<String> = cmd_chrome
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args_chrome, vec!["--cookies-from-browser", "chrome"]);
+
+        let mut cmd_edge = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_edge, Some("edge"));
+        let args_edge: Vec<String> = cmd_edge
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args_edge, vec!["--cookies-from-browser", "edge"]);
+
+        let mut cmd_file = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_file, Some("/path/to/cookies.txt"));
+        let args_file: Vec<String> = cmd_file
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args_file, vec!["--cookies", "/path/to/cookies.txt"]);
+
+        let mut cmd_prefix_file = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_prefix_file, Some("file:my_cookies.txt"));
+        let args_pfile: Vec<String> = cmd_prefix_file
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args_pfile, vec!["--cookies", "my_cookies.txt"]);
+
+        let mut cmd_none = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_none, Some("none"));
+        assert!(cmd_none.get_args().next().is_none());
+
+        let mut cmd_off = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_off, Some("off"));
+        assert!(cmd_off.get_args().next().is_none());
+
+        let mut cmd_clear = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_clear, Some("clear"));
+        assert!(cmd_clear.get_args().next().is_none());
+
+        let mut cmd_disabled = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_disabled, Some("disabled"));
+        assert!(cmd_disabled.get_args().next().is_none());
+
+        let mut cmd_injected = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_injected, Some("--exec id"));
+        assert!(cmd_injected.get_args().next().is_none());
+
+        let mut cmd_uppercase_prefix = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_uppercase_prefix, Some("FILE:/path/to/cookies.txt"));
+        let args_up: Vec<String> = cmd_uppercase_prefix
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args_up, vec!["--cookies", "/path/to/cookies.txt"]);
+
+        let mut cmd_uppercase_browser = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_uppercase_browser, Some("BROWSER:edge"));
+        let args_ub: Vec<String> = cmd_uppercase_browser
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args_ub, vec!["--cookies-from-browser", "edge"]);
+
+        let mut cmd_browser_path = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_browser_path, Some("firefox:/custom/profile/path"));
+        let args_bp: Vec<String> = cmd_browser_path
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(
+            args_bp,
+            vec!["--cookies-from-browser", "firefox:/custom/profile/path"]
+        );
+
+        // UTF-8 multibyte safety check: must never panic on multibyte chars
+        let mut cmd_cjk = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_cjk, Some("FILE:/home/日本語/cookies.txt"));
+        let args_cjk: Vec<String> = cmd_cjk
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args_cjk, vec!["--cookies", "/home/日本語/cookies.txt"]);
+
+        let mut cmd_short_cjk = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_short_cjk, Some("你好"));
+        let args_short: Vec<String> = cmd_short_cjk
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(args_short, vec!["--cookies-from-browser", "你好"]);
+
+        let mut cmd_empty = Command::new("yt-dlp");
+        apply_cookie_args(&mut cmd_empty, None);
+        assert!(cmd_empty.get_args().next().is_none());
+    }
+
+    #[test]
+    fn test_build_ytdlp_cmd_cookie_integration() {
+        let yt = Path::new("yt-dlp");
+        let ff = Path::new("ffmpeg");
+
+        let info_cmd = build_ytdlp_info_cmd_ext(yt, "https://example.com/watch", Some("brave"));
+        let info_args: Vec<String> = info_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(info_args.contains(&"--cookies-from-browser".to_string()));
+        assert!(info_args.contains(&"brave".to_string()));
+
+        let download_cmd = build_ytdlp_download_cmd_full(
+            yt,
+            ff,
+            "https://example.com/watch",
+            "best",
+            "/tmp",
+            None,
+            false,
+            None,
+            Some("cookies.txt"),
+        );
+        let dl_args: Vec<String> = download_cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(dl_args.contains(&"--cookies".to_string()));
+        assert!(dl_args.contains(&"cookies.txt".to_string()));
+    }
+
+    #[test]
+    fn test_is_auth_or_bot_error_across_platforms() {
+        assert!(is_auth_or_bot_error("Sign in to confirm you’re not a bot"));
+        assert!(is_auth_or_bot_error(
+            "Use --cookies-from-browser or --cookies for authentication"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[instagram] 12345: Please log in or provide authentication cookies"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[instagram] 12345: This post is private"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[instagram] 12345: This account is private"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[instagram] 12345: This reel is private"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[twitter] 12345: This account is protected"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[twitter] 12345: Protected tweets are only visible to followers"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[youtube] 12345: Join this channel to get access to members-only content"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[youtube] 12345: Private video. Sign in if you've been granted access"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[youtube] 12345: Sign in to confirm your age."
+        ));
+        assert!(is_auth_or_bot_error(
+            "[facebook] 12345: You must log in to continue"
+        ));
+        assert!(is_auth_or_bot_error(
+            "[facebook] 12345: This video requires login to view"
+        ));
+        assert!(is_auth_or_bot_error("[tiktok] 12345: captcha required"));
+        assert!(is_auth_or_bot_error("[tiktok] bot verification required"));
+        assert!(is_auth_or_bot_error(
+            "[twitch] 12345: This video is available to subscribers only"
+        ));
+        assert!(is_auth_or_bot_error("[YOUTUBE] THIS VIDEO IS PRIVATE"));
+        assert!(!is_auth_or_bot_error("Video does not exist (HTTP 404)"));
+        assert!(!is_auth_or_bot_error("Connection timed out"));
+        assert!(!is_auth_or_bot_error("HTTP Error 429: Too Many Requests"));
+
+        assert!(is_bot_error("Sign in to confirm you’re not a bot"));
+        assert!(is_bot_error("[tiktok] bot verification required"));
+        assert!(is_bot_error("[tiktok] returned error: captcha"));
+        assert!(!is_bot_error("[instagram] 12345: This post is private"));
+
+        assert!(is_rate_limit_error("HTTP Error 429: Too Many Requests"));
+        assert!(is_rate_limit_error(
+            "Server returned too many requests error"
+        ));
+        assert!(is_rate_limit_error("Platform rate limit reached"));
+        assert!(!is_rate_limit_error("[youtube] a429xyz: Video unavailable"));
     }
 }

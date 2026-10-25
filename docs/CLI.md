@@ -21,6 +21,7 @@ dwdr [COMMAND]
 | `-f`, `--force` | Force overwrite existing destination media files without prompting. |
 | `--no-animation` | Disables dynamic terminal animations, spinners, and live progress bars (forces plain linear output). |
 | `-q`, `--quiet` | Suppresses the startup banner, non-essential greetings, and informational status chatter. |
+| `--cookies <BROWSER_OR_FILE>` | Browser name (`brave`, `chrome`, `edge`, `firefox`, `opera`, `vivaldi`, `chromium`, `safari`, `auto`) or path to `cookies.txt` for Smart Cookie Fallback authentication. |
 | `-h`, `--help` | Prints help information, commands, and examples. |
 | `-V`, `--version` | Prints compiled binary version information. |
 
@@ -125,6 +126,7 @@ dwdr config set compat true
 dwdr config set animations false
 dwdr config set theme unicode
 dwdr config set bell true
+dwdr config set cookies brave
 ```
 
 Validation bounds enforced:
@@ -136,6 +138,9 @@ Validation bounds enforced:
 - `auto_watch` (or `autowatch`): Boolean flag automatically opening the live download monitor upon enqueuing.
 - `bell`: Boolean flag sounding the terminal bell on download completion.
 - `theme`: Theme mode (`"auto"`, `"unicode"`, `"ascii"`).
+- `cookies` (or `cookie`): Browser preset (`"brave"`, `"chrome"`, `"edge"`, `"firefox"`, `"opera"`, `"vivaldi"`, `"chromium"`, `"safari"`, `"auto"`), path to `cookies.txt` (or prefix `file:` / `browser:`), or `"none"`/`"off"`/`"clear"`/`"disabled"` to disable. Typo suggestions are automatically displayed if misspelled (e.g., `breve` suggests `brave`).
+
+DWDR uses Smart Cookie Fallback: requests probe anonymously first, and cookies are sent only when challenged by platform bot verifications, login walls, follower-restricted media, or HTTP 429 rate limits (which trigger an automatic 1.5s backoff). Note that accessing private media requires your account to follow the creator and not be blocked.
 
 If a download is actively running in another DWDR process, configuration changes are blocked by `active_downloads.lock`. To override this concurrency lock, append `--force`:
 

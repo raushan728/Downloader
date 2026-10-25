@@ -11,7 +11,9 @@ use crossterm::{
 };
 use rfd::FileDialog;
 
-use crate::config::manager::{ConfigManager, DwdrConfig, validate_download_path};
+use crate::config::manager::{
+    ConfigManager, DwdrConfig, normalize_cookie_value, validate_download_path,
+};
 use crate::engine::downloader::MediaFormat;
 use crate::ui::UiContext;
 use crate::ui::format_table::{
@@ -275,6 +277,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
     }
 
     let mut working = config.clone();
+    let mut cursor_idx: usize = 0;
 
     loop {
         let options = vec![
@@ -313,15 +316,22 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                 if working.bell { "Enabled" } else { "Disabled" }
             ),
             format!("8. UI Theme (Current: {})", working.theme),
-            "9. Save & Exit".to_string(),
-            "10. Cancel".to_string(),
+            format!(
+                "9. Cookies / Browser Auth (Current: {})",
+                working.cookies.as_deref().unwrap_or("None (Disabled)")
+            ),
+            "10. Save & Exit".to_string(),
+            "11. Cancel".to_string(),
         ];
 
-        let choice = Select::new("Configuration Menu (Use arrow keys):", options).prompt();
+        let choice = Select::new("Configuration Menu (Use arrow keys):", options)
+            .with_initial_index(cursor_idx)
+            .prompt();
 
         match choice {
             Ok(ans) => {
                 if ans.starts_with("1.") {
+                    cursor_idx = 0;
                     if let Some(path) = prompt_folder_path(&working.download_path) {
                         let path_str = path.to_string_lossy();
                         match validate_download_path(&path_str, true) {
@@ -338,6 +348,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         }
                     }
                 } else if ans.starts_with("2.") {
+                    cursor_idx = 1;
                     let quality_opts = vec![
                         "always ask",
                         "best",
@@ -358,6 +369,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         working.default_quality = quality.to_string();
                     }
                 } else if ans.starts_with("3.") {
+                    cursor_idx = 2;
                     let parallel_opts: Vec<String> = (1..=16).map(|n| n.to_string()).collect();
                     if let Ok(Ok(parallel)) =
                         Select::new("Select Max Parallel Downloads:", parallel_opts)
@@ -367,6 +379,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         working.max_parallel_downloads = parallel;
                     }
                 } else if ans.starts_with("4.") {
+                    cursor_idx = 3;
                     let mode_opts = vec![
                         "Enabled (AVC/H.264 + AAC for older players/QuickTime)",
                         "Disabled (Default: prioritize AV1/VP9 for highest fidelity)",
@@ -377,11 +390,13 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         working.compat_mode = choice.starts_with("Enabled");
                     }
                 } else if ans.starts_with("5.") {
+                    cursor_idx = 4;
                     let anim_opts = vec!["Enabled", "Disabled"];
                     if let Ok(choice) = Select::new("Select UI Animations:", anim_opts).prompt() {
                         working.animations = choice == "Enabled";
                     }
                 } else if ans.starts_with("6.") {
+                    cursor_idx = 5;
                     let watch_opts = vec!["Enabled", "Disabled"];
                     if let Ok(choice) =
                         Select::new("Select Auto-watch Downloads:", watch_opts).prompt()
@@ -389,6 +404,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         working.auto_watch = choice == "Enabled";
                     }
                 } else if ans.starts_with("7.") {
+                    cursor_idx = 6;
                     let bell_opts = vec!["Enabled", "Disabled"];
                     if let Ok(choice) =
                         Select::new("Select Terminal Bell on completion:", bell_opts).prompt()
@@ -396,11 +412,81 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         working.bell = choice == "Enabled";
                     }
                 } else if ans.starts_with("8.") {
+                    cursor_idx = 7;
                     let theme_opts = vec!["auto", "unicode", "ascii"];
                     if let Ok(choice) = Select::new("Select UI Theme Mode:", theme_opts).prompt() {
                         working.theme = choice.to_string();
                     }
                 } else if ans.starts_with("9.") {
+                    cursor_idx = 8;
+                    println!(
+                        "{}",
+                        "\nINFO: Setting your primary browser connects your active login session to DWDR.\n      This prevents bot verification and 'Sign in' challenges across platforms\n      and allows downloading private or follower-only media on Instagram, Facebook, and X.\n"
+                            .cyan()
+                    );
+                    let cookie_opts = vec![
+                        "None (Disabled)",
+                        "Brave",
+                        "Chrome",
+                        "Edge",
+                        "Firefox",
+                        "Opera",
+                        "Vivaldi",
+                        "Chromium",
+                        "Safari",
+                        "Auto-detect installed browser",
+                        "Custom cookies file or profile path...",
+                    ];
+                    if let Ok(choice) = Select::new(
+                        "Select Browser for Cookies & Anti-Bot Authentication:",
+                        cookie_opts,
+                    )
+                    .prompt()
+                    {
+                        match choice {
+                            "None (Disabled)" => working.cookies = None,
+                            "Brave" => working.cookies = Some("brave".to_string()),
+                            "Chrome" => working.cookies = Some("chrome".to_string()),
+                            "Edge" => working.cookies = Some("edge".to_string()),
+                            "Firefox" => working.cookies = Some("firefox".to_string()),
+                            "Opera" => working.cookies = Some("opera".to_string()),
+                            "Vivaldi" => working.cookies = Some("vivaldi".to_string()),
+                            "Chromium" => working.cookies = Some("chromium".to_string()),
+                            "Safari" => working.cookies = Some("safari".to_string()),
+                            "Auto-detect installed browser" => {
+                                working.cookies = Some("auto".to_string())
+                            }
+                            "Custom cookies file or profile path..." => {
+                                if let Ok(path) =
+                                    inquire::Text::new("Path to cookies.txt or browser profile:")
+                                        .prompt()
+                                {
+                                    match normalize_cookie_value(&path) {
+                                        Ok(normalized) => working.cookies = normalized,
+                                        Err(suggestion) => {
+                                            println!(
+                                                "{}",
+                                                format!(
+                                                    "\nERROR: Unknown browser or cookie source '{}'.",
+                                                    path.trim()
+                                                )
+                                                .red()
+                                            );
+                                            if let Some(closest) = suggestion {
+                                                println!(
+                                                    "{}",
+                                                    format!("Tip: Did you mean '{}'?", closest)
+                                                        .yellow()
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else if ans.starts_with("10.") {
                     *config = working;
                     if let Err(e) = ConfigManager::save(config) {
                         println!(
@@ -411,7 +497,7 @@ pub fn interactive_config(config: &mut DwdrConfig) {
                         println!("{}", "SUCCESS: Settings saved successfully!".green());
                     }
                     break;
-                } else if ans.starts_with("10.") {
+                } else if ans.starts_with("11.") {
                     println!("{}", "WARNING: Settings update cancelled.".yellow());
                     break;
                 }

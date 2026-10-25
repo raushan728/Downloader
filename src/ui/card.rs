@@ -3,6 +3,7 @@ use std::time::Duration;
 use colored::Colorize;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+use crate::engine::downloader::{is_auth_or_bot_error, is_bot_error, is_rate_limit_error};
 use crate::ui::UiContext;
 use crate::ui::progress::{format_bytes, format_speed, render_sparkline};
 use crate::ui::text::{sanitize_display, truncate_display};
@@ -169,20 +170,17 @@ pub fn render_completion_card(
 
 /// Returns an actionable troubleshooting hint for a given engine error string.
 pub fn hint_for_error(error: &str) -> &'static str {
-    let lower = error.to_lowercase();
-    if lower.contains("429") || lower.contains("too many requests") {
+    let lower = error.to_lowercase().replace('’', "'");
+    if is_rate_limit_error(error) {
         "Rate limit exceeded (HTTP 429).\nWait and retry, or lower parallel downloads with 'dwdr config set parallel <num>'."
-    } else if lower.contains("confirm you're not a bot")
-        || lower.contains("confirm you are not a bot")
-        || lower.contains("sign in to confirm")
-    {
-        "Platform bot verification or authentication required.\nProvide cookies via browser session or yt-dlp arguments."
+    } else if is_bot_error(error) {
+        "Platform bot verification or authentication required (YouTube, Instagram, Facebook, etc.).\nProvide cookies with 'dwdr config set cookies brave' (or chrome, edge, firefox) or 'dwdr config'."
+    } else if is_auth_or_bot_error(error) {
+        "This media is private, follower-restricted, or requires authentication (Instagram, YouTube, X, Facebook, etc.).\nConnect cookies with 'dwdr config set cookies brave' (or chrome, edge, firefox) or 'dwdr config'.\nNote: For private media, your account must follow the creator and not be blocked."
     } else if lower.contains("403") || lower.contains("forbidden") {
         "Stream token expired or platform signature updated.\nTry running 'dwdr update' to refresh core engines."
     } else if lower.contains("ffmpeg") || lower.contains("merger") {
         "Media merger engine missing or broken.\nRun 'dwdr update' to fetch prebuilt binaries."
-    } else if lower.contains("private") || lower.contains("sign in") {
-        "This media is private or requires account authentication."
     } else if lower.contains("geo")
         || lower.contains("country")
         || lower.contains("not available in your region")
@@ -383,6 +381,18 @@ mod tests {
             ("ERROR 403: Forbidden stream", "Stream token expired"),
             ("ffmpeg: command not found", "Media merger engine"),
             ("This video is private", "media is private"),
+            (
+                "[instagram] 12345: This post is private",
+                "media is private",
+            ),
+            (
+                "[twitter] 12345: This account is protected",
+                "media is private",
+            ),
+            (
+                "[youtube] 12345: Join this channel to get access to members-only content",
+                "media is private",
+            ),
             ("Video not available in your region (geo)", "geo-restricted"),
             ("No space left on device (errno 28)", "Disk is full"),
             ("disk full writing chunk", "Disk is full"),
