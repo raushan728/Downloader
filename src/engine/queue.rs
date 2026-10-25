@@ -374,6 +374,7 @@ pub fn kill_process_by_pid(pid: u32) {
     }
     #[cfg(not(target_os = "windows"))]
     {
+        // SAFETY: pid is validated to be non-zero and within pid_t bounds; SIGTERM is a valid POSIX signal.
         unsafe {
             libc::killpg(pid as libc::pid_t, libc::SIGTERM);
             libc::kill(pid as libc::pid_t, libc::SIGTERM);
@@ -382,6 +383,7 @@ pub fn kill_process_by_pid(pid: u32) {
         let start = std::time::Instant::now();
         let mut still_alive = true;
         while start.elapsed() < std::time::Duration::from_millis(500) {
+            // SAFETY: pid is validated to be non-zero; signal 0 performs existence check without killing.
             if unsafe { libc::kill(pid as libc::pid_t, 0) } != 0 {
                 still_alive = false;
                 break;
@@ -390,6 +392,7 @@ pub fn kill_process_by_pid(pid: u32) {
         }
 
         if still_alive {
+            // SAFETY: pid is validated to be non-zero; SIGKILL is a valid POSIX signal.
             unsafe {
                 libc::killpg(pid as libc::pid_t, libc::SIGKILL);
                 libc::kill(pid as libc::pid_t, libc::SIGKILL);
@@ -779,10 +782,9 @@ impl QueueManager {
             Self::on_task_finished(&mgr_clone);
         });
 
-        if let Ok(mut mgr) = manager_arc.lock() {
-            mgr.worker_handles.retain(|h| !h.is_finished());
-            mgr.worker_handles.push(handle);
-        }
+        let mut mgr = manager_arc.lock().unwrap_or_else(|p| p.into_inner());
+        mgr.worker_handles.retain(|h| !h.is_finished());
+        mgr.worker_handles.push(handle);
     }
 
     // Automatically promotes and spawns the next pending task in FIFO order.
@@ -1140,6 +1142,15 @@ impl QueueManager {
             let mut tick: u64 = 0;
             let mut confirming_cancel = false;
             let mut raw_guard = RawModeGuard::new();
+
+            // Discard any pending keystrokes (e.g. Enter pressed to select format or submit URL).
+            for _ in 0..64 {
+                if let Ok(true) = crossterm::event::poll(Duration::from_millis(0)) {
+                    let _ = crossterm::event::read();
+                } else {
+                    break;
+                }
+            }
 
             loop {
                 if let Ok(true) = crossterm::event::poll(Duration::from_millis(TICK_MS))
@@ -1506,6 +1517,15 @@ impl QueueManager {
 
             let mut lines_printed: u16 = 0;
             let mut raw_guard = RawModeGuard::new();
+
+            // Discard any pending keystrokes so stale inputs do not prematurely detach.
+            for _ in 0..64 {
+                if let Ok(true) = crossterm::event::poll(Duration::from_millis(0)) {
+                    let _ = crossterm::event::read();
+                } else {
+                    break;
+                }
+            }
 
             loop {
                 if let Ok(true) = crossterm::event::poll(Duration::from_millis(200))
