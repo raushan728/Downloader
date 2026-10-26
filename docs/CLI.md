@@ -69,7 +69,7 @@ You are greeted with the interactive prompt:
 
 ```text
 ┌───────────────────────────────────────────────────┐
-│  DWDR v0.1.0 — Terminal Media Downloader          │
+│  DWDR v0.2.0 — Terminal Media Downloader          │
 │  Type a URL to start, 'help' for commands         │
 └───────────────────────────────────────────────────┘
 dwdr >
@@ -174,7 +174,7 @@ dwdr update
 
 - Platform detection automatically resolves appropriate architecture binaries: Linux x86_64, Linux ARM64 (`aarch64`), macOS x86_64, macOS Apple Silicon ARM64, and Windows x86_64.
 - Network requests route through proxy environment variables (HTTP, HTTPS, SOCKS5) when configured.
-- Implements exponential backoff retry logic (up to 3 attempts with 1s, 2s, 4s delay) covering both connection and complete body streaming on transient network failures.
+- Implements exponential backoff retry logic (up to 5 attempts with 1s, 2s, 4s, 8s, 16s delay and a 300s timeout) covering both connection and complete body streaming on transient network failures.
 - Checks existing binaries before updating; if an engine binary is in use or locked by another process, prints a warning and halts rather than reporting false success.
 - Downloads are staged in temporary `.tmp` files and validated with executable magic headers before replacing active binaries.
 

@@ -23,7 +23,7 @@ use crate::engine::updater::check_core_engines_update;
 #[cfg(not(test))]
 use crate::ui::UiContext;
 use crate::ui::progress::{
-    DownloadPhase, ProgressState, format_bytes, format_eta, format_speed, render_bar_pure,
+    DownloadPhase, ProgressState, format_bytes, format_eta, format_speed, render_foreground_frame,
 };
 use crate::ui::smooth::SpeedSmoother;
 #[cfg(not(test))]
@@ -1123,7 +1123,8 @@ impl QueueManager {
 
         for task in &snapshot.active_tasks {
             let title_clean = sanitize_display(&task.title);
-            let desc_tag = format!(" [{}]", task.format_desc);
+            let desc_clean = sanitize_display(&task.format_desc);
+            let desc_tag = format!(" [{}]", desc_clean);
             let status_str = if task.status == TaskStatus::Finalizing {
                 match color {
                     ColorLevel::None => " [Finalizing media...]".to_string(),
@@ -1157,8 +1158,11 @@ impl QueueManager {
                     None
                 },
             };
-            let bar = render_bar_pure(&state, bar_width, theme, color, tick);
-            lines.push(format!("       {}", bar));
+            let is_audio_only = task.format_desc.starts_with("Audio");
+            let show_stepper = !is_audio_only && task.status != TaskStatus::Finalizing;
+            let frame =
+                render_foreground_frame(&state, bar_width, theme, color, tick, show_stepper);
+            lines.push(format!("       {}", frame));
         }
 
         lines

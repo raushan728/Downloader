@@ -86,7 +86,7 @@ DWDR provides a total of **21 primary commands and subcommands** across three ex
 ### 4. Engine Updater (`dwdr update`)
 - **Behavior**: Deletes cached binaries in `~/.dwdr/deps/` and fetches fresh pre-compiled releases from official upstream repositories over TLS (`rustls`).
 - **Platform Detection**: Automatically resolves appropriate binary archives for x86_64 and ARM64 on Linux, macOS, and Windows.
-- **Resilience**: Respects proxy configuration (`DWDR_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `HTTP_PROXY`) and applies exponential backoff retry (up to 3 attempts).
+- **Resilience**: Respects proxy configuration (`DWDR_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `HTTP_PROXY`) and applies exponential backoff retry (up to 5 attempts).
 
 ### 5. CLI Self-Updater (`dwdr self-update`)
 - **Behavior**: Downloads and replaces the current DWDR binary with the latest release from GitHub.

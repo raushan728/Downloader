@@ -13,7 +13,7 @@ DWDR isolates its third-party engines into `~/.dwdr/deps/`:
 - No global Python, yt-dlp, or FFmpeg installations required. Users and test suites can override binary locations via `DWDR_YTDLP_PATH` and `DWDR_FFMPEG_PATH`.
 - TLS networking is powered by `rustls` instead of native OpenSSL, guaranteeing seamless cross-compilation across desktop environments.
 - Network requests automatically route through proxy configurations (`DWDR_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `HTTP_PROXY`), supporting HTTP, HTTPS, and SOCKS5 endpoints.
-- Exponential backoff retry (up to 3 attempts with 1s, 2s, 4s delay) covers both initial connection (30s connect timeout) and full body streaming on transient network errors.
+- Exponential backoff retry (up to 5 attempts with 1s, 2s, 4s, 8s, 16s delay) covers both initial connection (30s connect timeout) and full body streaming (300s timeout) on transient network errors.
 - Dependency binaries are validated for integrity on first download or update invocation via lazy validation in `ensure_dependencies` (`is_valid_executable` checks executable magic headers, file size, and runs `--version`). Validated state is cached in-memory for subsequent downloads, and corrupted or partial binaries are automatically healed.
 
 ### 2. Single-Video Protection (`--no-playlist`)

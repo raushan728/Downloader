@@ -1940,7 +1940,7 @@ pub fn download_media_full(
                     render_foreground_frame(&state, term_w, &theme, color, tick, show_stepper);
 
                 if frame != last_frame {
-                    print!("\r\x1b[K{}", frame);
+                    print!("\r\x1b[2K{}", frame);
                     let _ = stdout().flush();
                     last_frame = frame;
                 }
@@ -2138,7 +2138,10 @@ pub fn download_media_full(
 
     running.store(false, Ordering::Relaxed);
     let (peak_speed, samples) = if let Some(handle) = render_handle {
-        handle.join().unwrap_or((0.0, Vec::new()))
+        let res = handle.join().unwrap_or((0.0, Vec::new()));
+        print!("\r\x1b[2K");
+        let _ = stdout().flush();
+        res
     } else {
         (peak_speed_plain, Vec::new())
     };

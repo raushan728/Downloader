@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-10-26
+
+### Added
+
+- **Windows UTF-8 Console Support (`cli::shell`)**: Automatic activation of code page 65001 (`SetConsoleOutputCP` / `SetConsoleCP`) on Windows startup with clean state restoration on exit, enabling full Unicode and Devanagari/Hindi font rendering in standard Windows command prompts.
+- **Console QuickEdit Mode Guard (`cli::shell`)**: Unsets `ENABLE_QUICK_EDIT_MODE` on standard input during execution, preventing unintended terminal mouse clicks from pausing live stdout download progress.
+- **Queue Progress Stepper Parity (`engine::queue`)**: Integrated `render_foreground_frame` with phase stepper (`Video › Audio › Merge`) across concurrent queue and status monitoring views.
+
+### Changed
+
+- **Terminal Resize & Auto-Wrap Protection (`ui::progress`, `engine::downloader`)**: Clamped single-line download progress bar rendering to `terminal_width - 2` columns and upgraded line clearing to `\x1b[2K`, eliminating soft-wrap line buffer concatenation and visual corruption during terminal resizing and maximizing on Windows conhost and Unix terminals.
+- **Engine Download Resilience & Retry Backoff (`engine::updater`, `cli::shell`)**: Added a 300-second request timeout to the HTTP client and expanded exponential backoff retry attempts to 5 iterations for `yt-dlp` and `ffmpeg` engine downloads, paired with actionable troubleshooting tips on setup failures.
+
 ## [0.1.0] - 2026-10-24
 
 ### Added
