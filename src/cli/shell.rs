@@ -45,7 +45,15 @@ pub fn reset_terminal_state() {
     }
 }
 
-/// Sets Windows console input and output code pages to UTF-8 (65001) and unsets QuickEdit mode.
+pub const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+pub const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+
+/// Computes Windows console input mode flags ensuring QuickEdit mode and extended flags remain active.
+pub fn compute_windows_console_mode(current_mode: u32) -> u32 {
+    current_mode | ENABLE_QUICK_EDIT_MODE | ENABLE_EXTENDED_FLAGS
+}
+
+/// Sets Windows console input and output code pages to UTF-8 (65001) and ensures QuickEdit mode is active.
 #[cfg(target_os = "windows")]
 pub fn init_windows_console() {
     windows_console::init();
@@ -59,6 +67,8 @@ pub fn restore_windows_console() {
 
 #[cfg(target_os = "windows")]
 mod windows_console {
+    use super::{ENABLE_EXTENDED_FLAGS, compute_windows_console_mode};
+
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
@@ -72,8 +82,6 @@ mod windows_console {
 
     const STD_INPUT_HANDLE: u32 = 0xFFFFFFF6;
     const CP_UTF8: u32 = 65001;
-    const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
-    const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
 
     static PREV_IN_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
     static PREV_OUT_CP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -102,8 +110,8 @@ mod windows_console {
                     let mut mode: u32 = 0;
                     if GetConsoleMode(handle, &mut mode) != 0 {
                         PREV_IN_MODE.store(mode, std::sync::atomic::Ordering::Release);
-                        // Disabling QuickEdit mode prevents mouse clicks in the console window from freezing stdout.
-                        let new_mode = (mode & !ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS;
+                        // Ensure QuickEdit mode and extended flags remain enabled so right-click and clipboard paste work in interactive prompts.
+                        let new_mode = compute_windows_console_mode(mode);
                         SetConsoleMode(handle, new_mode);
                     }
                 }
@@ -1112,4 +1120,23 @@ pub fn start_repl(config: &mut DwdrConfig) {
     }
     #[cfg(target_os = "windows")]
     restore_windows_console();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_windows_console_mode_enables_quickedit_and_extended_flags() {
+        let initial_mode = 0;
+        let mode = compute_windows_console_mode(initial_mode);
+        assert_ne!(mode & ENABLE_QUICK_EDIT_MODE, 0);
+        assert_ne!(mode & ENABLE_EXTENDED_FLAGS, 0);
+
+        let with_other_flags = 0x0001;
+        let mode2 = compute_windows_console_mode(with_other_flags);
+        assert_ne!(mode2 & 0x0001, 0);
+        assert_ne!(mode2 & ENABLE_QUICK_EDIT_MODE, 0);
+        assert_ne!(mode2 & ENABLE_EXTENDED_FLAGS, 0);
+    }
 }
