@@ -203,7 +203,8 @@ pub fn render_phase_stepper(phase: DownloadPhase, theme: &ThemeMode, color: Colo
 
 /// Pure renderer for the complete foreground download progress line.
 /// Combines the optional phase stepper with the responsive progress bar while guaranteeing
-/// that the final visible width never exceeds `term_width - 1`.
+/// that the final visible width never exceeds `term_width.saturating_sub(2)` to prevent
+/// cursor auto-wrap and soft reflow corruption across terminal resizes.
 pub fn render_foreground_frame(
     state: &ProgressState,
     term_width: usize,
@@ -212,26 +213,26 @@ pub fn render_foreground_frame(
     tick: u64,
     show_stepper: bool,
 ) -> String {
+    let safe_width = term_width.saturating_sub(2);
     if show_stepper && !state.is_finalizing && state.phase != DownloadPhase::Finalize {
         let stepper = render_phase_stepper(state.phase, theme, color);
         let stepper_width = visible_width(&stepper) + 1;
-        if term_width > stepper_width + 1 {
-            let rem_width = term_width - stepper_width - 1;
-            if rem_width >= BREAKPOINT_NARROW {
-                let bar = render_bar_pure(state, rem_width, theme, color, tick);
-                let frame = format!("{} {}", stepper, bar);
-                if visible_width(&frame) < term_width {
-                    return frame;
-                }
+        if let Some(rem_width) = safe_width.checked_sub(stepper_width)
+            && rem_width >= BREAKPOINT_NARROW
+        {
+            let bar = render_bar_pure(state, rem_width, theme, color, tick);
+            let frame = format!("{} {}", stepper, bar);
+            if visible_width(&frame) <= safe_width {
+                return frame;
             }
         }
     }
 
-    let bar = render_bar_pure(state, term_width.saturating_sub(1), theme, color, tick);
-    if visible_width(&bar) < term_width {
+    let bar = render_bar_pure(state, safe_width, theme, color, tick);
+    if visible_width(&bar) <= safe_width {
         bar
     } else {
-        truncate_display(&bar, term_width.saturating_sub(1))
+        truncate_display(&bar, safe_width)
     }
 }
 
@@ -466,7 +467,7 @@ mod tests {
             ..Default::default()
         };
 
-        // Full mode (> 85 cols): line length must not exceed width
+        // Full mode (>= 85 cols): line length must not exceed width
         let r110 = render_bar_pure(&state, 110, &ThemeMode::Ascii, ColorLevel::None, 0);
         assert!(r110.len() <= 110);
         assert!(r110.contains("75.0%"));
@@ -634,11 +635,13 @@ mod tests {
                                 show_stepper,
                             );
                             let vis = visible_width(&frame);
+                            let safe_w = term_w.saturating_sub(2);
                             assert!(
-                                vis < term_w,
-                                "At width {}: visible width {} is not < term_w",
+                                vis <= safe_w,
+                                "At width {}: visible width {} exceeds safe width {}",
                                 term_w,
-                                vis
+                                vis,
+                                safe_w
                             );
                         }
                     }

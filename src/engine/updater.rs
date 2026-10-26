@@ -190,7 +190,8 @@ pub fn resolve_proxy_url() -> Option<String> {
 pub fn create_http_client(user_agent: &str) -> Result<reqwest::blocking::Client, String> {
     let mut builder = reqwest::blocking::Client::builder()
         .user_agent(user_agent)
-        .connect_timeout(Duration::from_secs(30));
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300));
 
     if let Some(proxy_url) = resolve_proxy_url() {
         let proxy = reqwest::Proxy::all(&proxy_url)
@@ -256,7 +257,7 @@ pub fn download_with_retry(
                             last_error = format!("Body stream interrupted: {}", e);
                             if attempt < max_retries {
                                 std::thread::sleep(delay);
-                                delay = delay.saturating_mul(2);
+                                delay = delay.saturating_mul(2).min(Duration::from_secs(30));
                                 continue;
                             }
                         }
@@ -264,7 +265,7 @@ pub fn download_with_retry(
                 } else if is_retryable_status(status) && attempt < max_retries {
                     last_error = format!("HTTP {}", status);
                     std::thread::sleep(delay);
-                    delay = delay.saturating_mul(2);
+                    delay = delay.saturating_mul(2).min(Duration::from_secs(30));
                     continue;
                 } else {
                     return Err(format!("Download failed with status: {}", status));
@@ -274,7 +275,7 @@ pub fn download_with_retry(
                 last_error = format!("{}", e);
                 if attempt < max_retries {
                     std::thread::sleep(delay);
-                    delay = delay.saturating_mul(2);
+                    delay = delay.saturating_mul(2).min(Duration::from_secs(30));
                     continue;
                 }
             }
@@ -311,7 +312,7 @@ pub fn update_ytdlp_engine() -> Result<(), String> {
 
     let url = get_ytdlp_download_url();
     let client = create_http_client("dwdr-cli/1.0")?;
-    let response = download_with_retry(&client, &url, 3, Duration::from_millis(1000))?;
+    let response = download_with_retry(&client, &url, 5, Duration::from_millis(1000))?;
 
     let bytes = response
         .bytes()
@@ -394,7 +395,7 @@ pub fn update_ffmpeg_engine() -> Result<(), String> {
 
     let url = get_ffmpeg_download_url();
     let client = create_http_client("dwdr-cli/1.0")?;
-    let response = download_with_retry(&client, &url, 3, Duration::from_millis(1000))?;
+    let response = download_with_retry(&client, &url, 5, Duration::from_millis(1000))?;
 
     let expected_filename = if cfg!(target_os = "windows") {
         "ffmpeg.exe"
@@ -644,7 +645,7 @@ pub fn update_self() -> Result<(), String> {
         ctx.animations,
     );
 
-    let response = download_with_retry(&client, &url, 3, Duration::from_millis(1000))?;
+    let response = download_with_retry(&client, &url, 5, Duration::from_millis(1000))?;
 
     if !response.status().is_success() {
         return Err(format!(

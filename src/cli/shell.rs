@@ -45,6 +45,94 @@ pub fn reset_terminal_state() {
     }
 }
 
+/// Sets Windows console input and output code pages to UTF-8 (65001) and unsets QuickEdit mode.
+#[cfg(target_os = "windows")]
+pub fn init_windows_console() {
+    windows_console::init();
+}
+
+/// Restores previous Windows console code pages and input mode.
+#[cfg(target_os = "windows")]
+pub fn restore_windows_console() {
+    windows_console::restore();
+}
+
+#[cfg(target_os = "windows")]
+mod windows_console {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn SetConsoleOutputCP(wCodePageID: u32) -> i32;
+        fn SetConsoleCP(wCodePageID: u32) -> i32;
+        fn GetConsoleOutputCP() -> u32;
+        fn GetConsoleCP() -> u32;
+        fn GetStdHandle(nStdHandle: u32) -> *mut std::ffi::c_void;
+        fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+        fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
+    }
+
+    const STD_INPUT_HANDLE: u32 = 0xFFFFFFF6;
+    const CP_UTF8: u32 = 65001;
+    const ENABLE_QUICK_EDIT_MODE: u32 = 0x0040;
+    const ENABLE_EXTENDED_FLAGS: u32 = 0x0080;
+
+    static PREV_IN_MODE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+    static PREV_OUT_CP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static PREV_IN_CP: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    pub fn init() {
+        // SAFETY: Invokes standard Win32 kernel32 console APIs with valid stack pointers
+        // and checks handles against NULL and INVALID_HANDLE_VALUE (-1) before modification.
+        unsafe {
+            if PREV_OUT_CP.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                let out_cp = GetConsoleOutputCP();
+                if out_cp != CP_UTF8 && SetConsoleOutputCP(CP_UTF8) != 0 {
+                    PREV_OUT_CP.store(out_cp, std::sync::atomic::Ordering::Release);
+                }
+            }
+            if PREV_IN_CP.load(std::sync::atomic::Ordering::Acquire) == 0 {
+                let in_cp = GetConsoleCP();
+                if in_cp != CP_UTF8 && SetConsoleCP(CP_UTF8) != 0 {
+                    PREV_IN_CP.store(in_cp, std::sync::atomic::Ordering::Release);
+                }
+            }
+
+            if PREV_IN_MODE.load(std::sync::atomic::Ordering::Acquire) == u32::MAX {
+                let handle = GetStdHandle(STD_INPUT_HANDLE);
+                if !handle.is_null() && handle as isize != -1 {
+                    let mut mode: u32 = 0;
+                    if GetConsoleMode(handle, &mut mode) != 0 {
+                        PREV_IN_MODE.store(mode, std::sync::atomic::Ordering::Release);
+                        // Disabling QuickEdit mode prevents mouse clicks in the console window from freezing stdout.
+                        let new_mode = (mode & !ENABLE_QUICK_EDIT_MODE) | ENABLE_EXTENDED_FLAGS;
+                        SetConsoleMode(handle, new_mode);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn restore() {
+        // SAFETY: Invokes Win32 console APIs to restore captured code pages and mode flags.
+        unsafe {
+            let prev_mode = PREV_IN_MODE.swap(u32::MAX, std::sync::atomic::Ordering::AcqRel);
+            if prev_mode != u32::MAX {
+                let handle = GetStdHandle(STD_INPUT_HANDLE);
+                if !handle.is_null() && handle as isize != -1 {
+                    SetConsoleMode(handle, prev_mode | ENABLE_EXTENDED_FLAGS);
+                }
+            }
+            let prev_out_cp = PREV_OUT_CP.swap(0, std::sync::atomic::Ordering::AcqRel);
+            if prev_out_cp != 0 {
+                SetConsoleOutputCP(prev_out_cp);
+            }
+            let prev_in_cp = PREV_IN_CP.swap(0, std::sync::atomic::Ordering::AcqRel);
+            if prev_in_cp != 0 {
+                SetConsoleCP(prev_in_cp);
+            }
+        }
+    }
+}
+
 /// Resolved parameters for launching or queueing a media download.
 pub struct ResolvedMedia {
     pub title: String,
@@ -98,7 +186,10 @@ pub fn resolve_media_to_download(
     if let Err(e) = ensure_dependencies() {
         eprintln!(
             "{}",
-            format!("\nERROR: Failed to setup engine: {}\n", e)
+            format!(
+                "\nERROR: Failed to setup engine: {}\nTip: Check your connection or run 'dwdr update' to retry.\n",
+                e
+            )
                 .red()
                 .bold()
         );
@@ -538,7 +629,7 @@ pub fn resolve_media_to_download(
     })
 }
 
-/// Single-URL direct execution entry point for non-interactive CLI usage.
+/// Direct execution entry point for single-URL downloads via CLI arguments.
 pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<(), String> {
     let media = match resolve_media_to_download(url, config, force) {
         Some(m) => m,
@@ -638,7 +729,7 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<()
                     &ctx.theme,
                     ctx.color_level,
                 );
-                print!("\r\x1b[K");
+                print!("\r\x1b[2K");
                 println!("{}", card);
             } else {
                 println!(
@@ -660,7 +751,7 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<()
         Err(e) => {
             let ctx = UiContext::get();
             if !ctx.is_plain() {
-                print!("\r\x1b[K");
+                print!("\r\x1b[2K");
                 let err_card = render_error_card(&media.title, &e, &ctx.theme, ctx.color_level);
                 eprintln!("{}", err_card);
                 if let Some(msg) = check_core_engines_update(&media.yt_dlp_path, &media.ffmpeg_path)
@@ -1019,4 +1110,6 @@ pub fn start_repl(config: &mut DwdrConfig) {
             }
         }
     }
+    #[cfg(target_os = "windows")]
+    restore_windows_console();
 }
