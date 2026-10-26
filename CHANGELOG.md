@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Windows UTF-8 Console Support (`cli::shell`)**: Automatic activation of code page 65001 (`SetConsoleOutputCP` / `SetConsoleCP`) on Windows startup with clean state restoration on exit, enabling full Unicode and Devanagari/Hindi font rendering in standard Windows command prompts.
-- **Console QuickEdit Mode Guard (`cli::shell`)**: Unsets `ENABLE_QUICK_EDIT_MODE` on standard input during execution, preventing unintended terminal mouse clicks from pausing live stdout download progress.
+- **Console QuickEdit & UTF-8 Support (`cli::shell`)**: Ensures `ENABLE_QUICK_EDIT_MODE` and extended flags remain enabled on Windows stdin so right-click and clipboard pasting operate smoothly in interactive prompts, paired with automatic UTF-8 code page 65001 activation and clean restoration on exit.
 - **Queue Progress Stepper Parity (`engine::queue`)**: Integrated `render_foreground_frame` with phase stepper (`Video › Audio › Merge`) across concurrent queue and status monitoring views.
 
 ### Changed
