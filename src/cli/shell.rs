@@ -10,7 +10,7 @@ use crate::cli::prompts::{interactive_config, prompt_folder_path, select_format_
 use crate::config::manager::{ConfigManager, DwdrConfig, validate_download_path};
 use crate::engine::downloader::{
     detect_available_browser, download_media_full, fetch_video_info_full, find_existing_media_file,
-    find_format_with_fallback, is_auth_or_bot_error, is_rate_limit_error,
+    find_format_with_fallback, is_auth_or_bot_error, is_cookie_lock_error, is_rate_limit_error,
     resolve_unique_output_template,
 };
 use crate::engine::paths::{get_ffmpeg_path, get_ytdlp_path};
@@ -153,16 +153,34 @@ pub struct ResolvedMedia {
     pub cookies: Option<String>,
 }
 
+const COOKIE_LOCK_GUIDANCE_TIP: &str = "\
+Tip: Browser cookie database is locked (Chromium browsers like Brave, Chrome, and Edge
+     lock their cookie database on Windows while the browser application is running).
+     Note: yt-dlp reports all Chromium-based engines as 'Chrome cookie database'.
+
+     To resolve this, choose one of the following options:
+       Option 1 (Quick): Close your browser completely (check taskbar/tray) and retry.
+       Option 2 (Keep browser open): Export cookies using an extension (e.g. 'Get cookies.txt LOCALLY')
+                and configure DWDR to use the file:
+                dwdr config set cookies C:\\path\\to\\cookies.txt";
+
 const AUTH_BOT_COOKIE_TIP: &str = "\
-Tip: Platform authentication, bot verification, or private/follower-only access required (Instagram, YouTube, X/Twitter, Facebook, etc.).
-     If you have access or follow this account in your browser, connect cookies in DWDR:
+Tip: Platform authentication, bot verification, or private/follower-only access required (YouTube, Instagram, Facebook, X, etc.).
+     If you have an account and can view this media in your browser, connect cookies in DWDR:
        dwdr config set cookies brave    (or chrome, edge, firefox, opera, vivaldi, auto)
      Or in interactive shell:    type 'config' -> '9. Cookies / Browser Auth'
-     Or use a cookies file:      dwdr config set cookies /path/to/cookies.txt
-     Note: For private media, your logged-in browser account must follow the creator and not be blocked.
-     Ensure you are logged in, then retry.";
+     Or use an exported file:    dwdr config set cookies /path/to/cookies.txt
+
+     Important:
+     - Ensure you are actively logged into the specific platform in that browser profile.
+       (e.g. if logged into YouTube on Brave but Instagram on Chrome, set cookies to the corresponding browser).
+     - For private or follower-only media, your logged-in account must follow the creator and not be blocked.";
 
 fn print_engine_failure_hints(err: &str, yt_dlp_path: &Path, ffmpeg_path: &Path) {
+    if is_cookie_lock_error(err) {
+        eprintln!("{}\n", COOKIE_LOCK_GUIDANCE_TIP.yellow());
+        return;
+    }
     if is_auth_or_bot_error(err) {
         eprintln!("{}", AUTH_BOT_COOKIE_TIP.yellow());
     }
@@ -762,7 +780,9 @@ pub fn process_url(url: &str, config: &mut DwdrConfig, force: bool) -> Result<()
                 print!("\r\x1b[2K");
                 let err_card = render_error_card(&media.title, &e, &ctx.theme, ctx.color_level);
                 eprintln!("{}", err_card);
-                if let Some(msg) = check_core_engines_update(&media.yt_dlp_path, &media.ffmpeg_path)
+                if !is_cookie_lock_error(&e)
+                    && let Some(msg) =
+                        check_core_engines_update(&media.yt_dlp_path, &media.ffmpeg_path)
                 {
                     eprintln!("{}\n", msg.yellow());
                 }

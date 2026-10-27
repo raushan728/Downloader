@@ -22,9 +22,7 @@ use crate::ui::progress::{
 };
 use crate::ui::smooth::{EasedProgress, PlainProgressThrottle, SpeedSmoother};
 use crate::ui::terminal_title::{clear_taskbar_progress, set_taskbar_progress, set_terminal_title};
-use crate::ui::text::sanitize_display;
-#[cfg(test)]
-use crate::ui::text::visible_width;
+use crate::ui::text::{sanitize_display, visible_width};
 use crate::ui::theme::{SAMPLE_INTERVAL_MS, STALL_THRESHOLD, TICK_MS};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -824,6 +822,15 @@ pub fn apply_cookie_args(cmd: &mut Command, cookies: Option<&str>) {
     }
 }
 
+/// Determines whether an error string indicates browser cookie database locking (e.g. Chromium exclusive file locks on Windows).
+pub fn is_cookie_lock_error(error: &str) -> bool {
+    let lower = error.to_lowercase();
+    (lower.contains("could not copy")
+        && (lower.contains("cookie database") || lower.contains("cookies")))
+        || lower.contains("issues/7271")
+        || lower.contains("lockprofilecookiedatabase")
+}
+
 /// Determines whether an error string indicates anti-bot verification or captcha requirements.
 pub fn is_bot_error(error: &str) -> bool {
     let lower = error.to_lowercase().replace('’', "'");
@@ -832,6 +839,9 @@ pub fn is_bot_error(error: &str) -> bool {
 
 /// Determines whether an error string indicates anti-bot verification, login walls, private/follower-only media, or authentication cookie requirements.
 pub fn is_auth_or_bot_error(error: &str) -> bool {
+    if is_cookie_lock_error(error) {
+        return true;
+    }
     let lower = error.to_lowercase().replace('’', "'");
     BOT_ERROR_PATTERNS
         .iter()
@@ -1890,6 +1900,7 @@ pub fn download_media_full(
             let mut eased = EasedProgress::new();
             let mut tick: u64 = 0;
             let mut last_frame = String::new();
+            let mut last_term_w: usize = 0;
             let mut last_sample_time = Instant::now();
 
             while running_render.load(Ordering::Relaxed) {
@@ -1939,6 +1950,34 @@ pub fn download_media_full(
                 let frame =
                     render_foreground_frame(&state, term_w, &theme, color, tick, show_stepper);
 
+                // Clean wrapped rows when terminal width changes to prevent duplicate line artifacts on Windows Conhost.
+                if term_w != last_term_w && last_term_w > 0 {
+                    let prev_vis = visible_width(&last_frame);
+                    let wrapped_rows = if term_w > 0 && prev_vis >= term_w {
+                        (prev_vis / term_w).min(10) as u16
+                    } else {
+                        0
+                    };
+                    if wrapped_rows > 0 {
+                        let _ = crossterm::execute!(
+                            stdout(),
+                            crossterm::cursor::MoveUp(wrapped_rows),
+                            crossterm::cursor::MoveToColumn(0),
+                            crossterm::terminal::Clear(
+                                crossterm::terminal::ClearType::FromCursorDown
+                            )
+                        );
+                    } else {
+                        let _ = crossterm::execute!(
+                            stdout(),
+                            crossterm::cursor::MoveToColumn(0),
+                            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine)
+                        );
+                    }
+                    last_frame.clear();
+                }
+                last_term_w = term_w;
+
                 if frame != last_frame {
                     print!("\r\x1b[2K{}", frame);
                     let _ = stdout().flush();
@@ -1946,7 +1985,13 @@ pub fn download_media_full(
                 }
 
                 tick = tick.wrapping_add(1);
-                thread::sleep(Duration::from_millis(TICK_MS));
+                // Throttle progress updates to ~500ms for stable stats without jitter, using 80ms for finalizer animation.
+                let sleep_duration = if is_fin {
+                    Duration::from_millis(TICK_MS)
+                } else {
+                    Duration::from_millis(500)
+                };
+                thread::sleep(sleep_duration);
             }
 
             (smoother.peak, smoother.sparkline_samples())
@@ -4314,5 +4359,23 @@ mod tests {
         ));
         assert!(is_rate_limit_error("Platform rate limit reached"));
         assert!(!is_rate_limit_error("[youtube] a429xyz: Video unavailable"));
+    }
+
+    #[test]
+    fn test_is_cookie_lock_error() {
+        assert!(is_cookie_lock_error(
+            "Could not copy Chrome cookie database. See https://github.com/yt-dlp/yt-dlp/issues/7271 for more info"
+        ));
+        assert!(is_cookie_lock_error("Could not copy Brave cookie database"));
+        assert!(is_cookie_lock_error("Could not copy cookies database"));
+        assert!(is_cookie_lock_error("LockProfileCookieDatabase failed"));
+        assert!(is_cookie_lock_error(
+            "https://github.com/yt-dlp/yt-dlp/issues/7271"
+        ));
+        assert!(!is_cookie_lock_error("Sign in to confirm you’re not a bot"));
+        assert!(!is_cookie_lock_error("HTTP Error 404: Not Found"));
+        assert!(is_auth_or_bot_error(
+            "Could not copy Chrome cookie database. See https://github.com/yt-dlp/yt-dlp/issues/7271 for more info"
+        ));
     }
 }

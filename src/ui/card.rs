@@ -3,7 +3,9 @@ use std::time::Duration;
 use colored::Colorize;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::engine::downloader::{is_auth_or_bot_error, is_bot_error, is_rate_limit_error};
+use crate::engine::downloader::{
+    is_auth_or_bot_error, is_bot_error, is_cookie_lock_error, is_rate_limit_error,
+};
 use crate::ui::UiContext;
 use crate::ui::progress::{format_bytes, format_speed, render_sparkline};
 use crate::ui::text::{sanitize_display, truncate_display};
@@ -171,7 +173,9 @@ pub fn render_completion_card(
 /// Returns an actionable troubleshooting hint for a given engine error string.
 pub fn hint_for_error(error: &str) -> &'static str {
     let lower = error.to_lowercase().replace('’', "'");
-    if is_rate_limit_error(error) {
+    if is_cookie_lock_error(error) {
+        "The browser cookie database is locked (common on Windows while browser is running).\nClose your browser completely, or export cookies to a cookies.txt file and set:\n  dwdr config set cookies /path/to/cookies.txt"
+    } else if is_rate_limit_error(error) {
         "Rate limit exceeded (HTTP 429).\nWait and retry, or lower parallel downloads with 'dwdr config set parallel <num>'."
     } else if is_bot_error(error) {
         "Platform bot verification or authentication required (YouTube, Instagram, Facebook, etc.).\nProvide cookies with 'dwdr config set cookies brave' (or chrome, edge, firefox) or 'dwdr config'."
@@ -401,6 +405,10 @@ mod tests {
             (
                 "Failed to prepare workspace directory",
                 "Verify the URL syntax",
+            ),
+            (
+                "Could not copy Chrome cookie database. See https://github.com/yt-dlp/yt-dlp/issues/7271 for more info",
+                "cookie database is locked",
             ),
             ("Unknown generic error occurred", "Verify the URL syntax"),
         ];

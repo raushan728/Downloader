@@ -11,12 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cookie Database Lock Detection & Guidance (`engine::downloader`, `cli::shell`, `ui::card`)**: Added `is_cookie_lock_error` to detect Chromium SQLite database locks on Windows (`issues/7271`). Enhanced troubleshooting hints to provide clear options (close browser or use exported `cookies.txt`), clarified multi-platform browser login requirements, and suppressed misleading engine update warnings during local file-lock errors.
 - **Windows UTF-8 Console Support (`cli::shell`)**: Automatic activation of code page 65001 (`SetConsoleOutputCP` / `SetConsoleCP`) on Windows startup with clean state restoration on exit, enabling full Unicode and Devanagari/Hindi font rendering in standard Windows command prompts.
 - **Console QuickEdit & UTF-8 Support (`cli::shell`)**: Ensures `ENABLE_QUICK_EDIT_MODE` and extended flags remain enabled on Windows stdin so right-click and clipboard pasting operate smoothly in interactive prompts, paired with automatic UTF-8 code page 65001 activation and clean restoration on exit.
 - **Queue Progress Stepper Parity (`engine::queue`)**: Integrated `render_foreground_frame` with phase stepper (`Video › Audio › Merge`) across concurrent queue and status monitoring views.
 
 ### Changed
 
+- **Terminal Resize Wrap Ghost Line Elimination (`engine::downloader`)**: Tracks terminal dimension changes during active downloads and clears multi-line wrapped rows via `crossterm::cursor::MoveUp` and `Clear(FromCursorDown)`, preventing repeated stepper line duplication on Windows Conhost and Unix terminals.
+- **Progress Refresh Rate Throttling (`engine::downloader`)**: Throttled download progress rendering interval to 500ms to eliminate rapid visual jitter and ease console buffer load, while retaining 80ms refresh for finalizer phase animations.
 - **Terminal Resize & Auto-Wrap Protection (`ui::progress`, `engine::downloader`)**: Clamped single-line download progress bar rendering to `terminal_width - 2` columns and upgraded line clearing to `\x1b[2K`, eliminating soft-wrap line buffer concatenation and visual corruption during terminal resizing and maximizing on Windows conhost and Unix terminals.
 - **Engine Download Resilience & Retry Backoff (`engine::updater`, `cli::shell`)**: Added a 300-second request timeout to the HTTP client and expanded exponential backoff retry attempts to 5 iterations for `yt-dlp` and `ffmpeg` engine downloads, paired with actionable troubleshooting tips on setup failures.
 
