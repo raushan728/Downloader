@@ -11,12 +11,12 @@ pub fn format_table_header(term_width: usize, color: ColorLevel) -> Option<Strin
     }
     let header = if term_width >= 100 {
         format!(
-            "{:<7} | {:<6} | {:<5} | {:<4} | {:<8} | {:<8}",
+            "{:<7} | {:<6} | {:<7} | {:<4} | {:<18} | {:<8}",
             "Type", "Res", "Codec", "Ext", "Size", "Ratio"
         )
     } else {
         format!(
-            "{:<7} | {:<6} | {:<5} | {:<4} | {:<8}",
+            "{:<7} | {:<6} | {:<7} | {:<4} | {:<18}",
             "Type", "Res", "Codec", "Ext", "Size"
         )
     };
@@ -160,8 +160,6 @@ pub fn build_format_table_options(
                 String::new()
             };
 
-            let size_str = f.format_filesize();
-
             let pad_w = |s: &str, target: usize| -> String {
                 let w = visible_width(s);
                 if w < target {
@@ -171,33 +169,41 @@ pub fn build_format_table_options(
                 }
             };
 
+            let size_display = pad_w(&truncate_display(&f.format_filesize(), 18), 18);
             let res_display = pad_w(&truncate_display(&f.resolution, 6), 6);
             let ext_display = pad_w(&truncate_display(&f.ext, 4), 4);
-            let codec_display = pad_w(short_codec, 5);
+            let codec_display = pad_w(&truncate_display(short_codec, 7), 7);
 
             if term_width >= 100 {
                 let bar = render_relative_size_bar(f.filesize, max_size, 8, theme);
                 format!(
-                    "{:<7} | {} | {} | {} | {:<8} | {}{}{}",
+                    "{:<7} | {} | {} | {} | {} | {}{}{}",
                     tag,
                     res_display,
                     codec_display,
                     ext_display,
-                    size_str,
+                    size_display,
                     bar,
                     rec_badge,
                     hdr_badge
                 )
             } else if term_width >= BREAKPOINT_TABLE {
                 format!(
-                    "{:<7} | {} | {} | {} | {:<8}{}{}",
-                    tag, res_display, codec_display, ext_display, size_str, rec_badge, hdr_badge
+                    "{:<7} | {} | {} | {} | {}{}{}",
+                    tag,
+                    res_display,
+                    codec_display,
+                    ext_display,
+                    size_display,
+                    rec_badge,
+                    hdr_badge
                 )
             } else if term_width >= 60 {
                 let short_tag = if is_audio { "[AUD]" } else { "[VID]" };
+                let compact_size = pad_w(&truncate_display(&f.format_filesize(), 12), 12);
                 format!(
-                    "{:<5} | {} | {} | {:<8}{}{}",
-                    short_tag, res_display, ext_display, size_str, rec_badge, hdr_badge
+                    "{:<5} | {} | {} | {}{}{}",
+                    short_tag, res_display, ext_display, compact_size, rec_badge, hdr_badge
                 )
             } else {
                 let compact_badge = if idx == rec_idx {
@@ -415,6 +421,51 @@ mod tests {
                         w - 6
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn test_format_table_pipe_alignment_with_estimated_sizes() {
+        let fmts = vec![
+            MediaFormat {
+                format_id: "1432354412399806v".into(),
+                ext: "mp4".into(),
+                resolution: "720p".into(),
+                filesize: Some(333_132_595.0),
+                is_estimated: true,
+                is_hdr: false,
+                vcodec: "vp9".into(),
+                acodec: "none".into(),
+                height: Some(720),
+            },
+            MediaFormat {
+                format_id: "hd".into(),
+                ext: "mp4".into(),
+                resolution: "hd".into(),
+                filesize: Some(42_152_755.0),
+                is_estimated: true,
+                is_hdr: false,
+                vcodec: "unknown".into(),
+                acodec: "unknown".into(),
+                height: None,
+            },
+        ];
+
+        for &w in &[80, 100] {
+            let header = format_table_header(w, ColorLevel::None).unwrap();
+            let header_pipe_indices: Vec<usize> =
+                header.match_indices('|').map(|(i, _)| i).collect();
+
+            let rows =
+                build_format_table_options(&fmts, "720p", w, &ThemeMode::Ascii, ColorLevel::None);
+            for row in &rows {
+                let row_pipe_indices: Vec<usize> = row.match_indices('|').map(|(i, _)| i).collect();
+                assert_eq!(
+                    header_pipe_indices, row_pipe_indices,
+                    "Pipe alignment mismatch at width {} between header and row:\nHeader: {}\nRow:    {}",
+                    w, header, row
+                );
             }
         }
     }

@@ -814,6 +814,7 @@ fn read_line_fallback(prompt: &str) -> Option<String> {
 }
 
 fn read_shell_input(prompt: &str) -> Option<String> {
+    flush_notifications();
     set_in_interactive_prompt(true);
     let result = if io::stdin().is_terminal() {
         match Text::new(prompt).prompt() {

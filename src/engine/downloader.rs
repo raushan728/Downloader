@@ -206,6 +206,18 @@ pub fn resolve_resolution(
             return Some(("240p", 240));
         } else if lower.contains("144") {
             return Some(("144p", 144));
+        } else if lower == "hd"
+            || lower.starts_with("hd-")
+            || lower.ends_with("_hd")
+            || lower.contains("high definition")
+        {
+            return Some(("720p", 720));
+        } else if lower == "sd"
+            || lower.starts_with("sd-")
+            || lower.ends_with("_sd")
+            || lower.contains("standard definition")
+        {
+            return Some(("480p", 480));
         }
     }
 
@@ -451,12 +463,27 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
             let note_str = f["format_note"].as_str().unwrap_or("");
             let id_str = f["format_id"].as_str().unwrap_or("");
             for s in [note_str, id_str] {
+                let lower = s.to_lowercase();
                 if let Some(h) = s
                     .strip_suffix('p')
                     .or_else(|| s.strip_suffix('P'))
                     .and_then(|v| v.parse::<u64>().ok())
                 {
                     height = Some(h);
+                    break;
+                } else if lower == "hd"
+                    || lower.starts_with("hd-")
+                    || lower.ends_with("_hd")
+                    || lower.contains("high definition")
+                {
+                    height = Some(720);
+                    break;
+                } else if lower == "sd"
+                    || lower.starts_with("sd-")
+                    || lower.ends_with("_sd")
+                    || lower.contains("standard definition")
+                {
+                    height = Some(480);
                     break;
                 }
             }
@@ -490,7 +517,7 @@ pub fn parse_video_info_json_ext(stdout_str: &str, compat_mode: bool) -> Result<
         let vbr = f["vbr"].as_f64();
         let abr = f["abr"].as_f64();
         let protocol = f["protocol"].as_str().unwrap_or("https");
-        let is_direct = !protocol.contains("m3u8");
+        let is_direct = !protocol.contains("m3u8") && !protocol.contains("dash");
         let is_exact = exact.is_some();
 
         if is_video {
@@ -1638,6 +1665,8 @@ pub fn build_ytdlp_download_cmd_full(
     } else if format_id.eq_ignore_ascii_case("audio") || format_id.eq_ignore_ascii_case("bestaudio")
     {
         (true, true, "bestaudio/best")
+    } else if format_id.eq_ignore_ascii_case("hd") || format_id.eq_ignore_ascii_case("sd") {
+        (false, true, format_id)
     } else {
         (false, false, format_id)
     };
@@ -2808,6 +2837,22 @@ mod tests {
             resolve_resolution(Some(800), Some(1920), None),
             Some(("1080p", 1080))
         );
+        assert_eq!(
+            resolve_resolution(None, None, Some("hd")),
+            Some(("720p", 720))
+        );
+        assert_eq!(
+            resolve_resolution(None, None, Some("HD")),
+            Some(("720p", 720))
+        );
+        assert_eq!(
+            resolve_resolution(None, None, Some("sd")),
+            Some(("480p", 480))
+        );
+        assert_eq!(
+            resolve_resolution(None, None, Some("SD")),
+            Some(("480p", 480))
+        );
         assert_eq!(resolve_resolution(None, None, None), None);
     }
 
@@ -3210,6 +3255,34 @@ mod tests {
         assert!(args_audio.contains(&"140".to_string()));
         assert!(!args_audio.contains(&"140+bestaudio/140/best".to_string()));
         assert!(!args_audio.contains(&"--merge-output-format".to_string()));
+
+        let cmd_hd = build_ytdlp_download_cmd(
+            yt,
+            ff,
+            "https://facebook.com/watch",
+            "hd",
+            "/downloads/path",
+        );
+        let args_hd: Vec<String> = cmd_hd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args_hd.contains(&"hd".to_string()));
+        assert!(!args_hd.contains(&"hd+bestaudio/hd/best".to_string()));
+
+        let cmd_sd = build_ytdlp_download_cmd(
+            yt,
+            ff,
+            "https://facebook.com/watch",
+            "sd",
+            "/downloads/path",
+        );
+        let args_sd: Vec<String> = cmd_sd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args_sd.contains(&"sd".to_string()));
+        assert!(!args_sd.contains(&"sd+bestaudio/sd/best".to_string()));
     }
 
     #[test]
@@ -3466,6 +3539,39 @@ mod tests {
         assert_eq!(parsed.formats[1].resolution, "Audio");
         assert_eq!(parsed.formats[1].filesize, Some(4000000.0));
         assert!(!parsed.formats[1].is_estimated);
+    }
+
+    #[test]
+    fn test_parse_video_info_facebook_progressive_over_dash() {
+        let json_payload = r#"{
+            "title": "Facebook Video",
+            "duration": 45.0,
+            "formats": [
+                {
+                    "format_id": "dash_720",
+                    "ext": "mp4",
+                    "height": 720,
+                    "protocol": "dash",
+                    "vcodec": "avc1",
+                    "acodec": "none",
+                    "filesize": 50000000.0
+                },
+                {
+                    "format_id": "hd",
+                    "ext": "mp4",
+                    "format_note": "hd",
+                    "protocol": "https",
+                    "vcodec": "avc1",
+                    "acodec": "mp4a",
+                    "filesize": 42000000.0
+                }
+            ]
+        }"#;
+
+        let parsed = parse_video_info_json(json_payload).unwrap();
+        assert_eq!(parsed.formats.len(), 1);
+        assert_eq!(parsed.formats[0].format_id, "hd");
+        assert_eq!(parsed.formats[0].resolution, "720p");
     }
 
     #[test]
