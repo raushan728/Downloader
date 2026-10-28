@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Progressive Stream Priority & Facebook HD/SD Support (`engine::downloader`)**: Added `"hd"` (720p) and `"sd"` (480p) resolution mapping and prioritized direct progressive streams over adaptive DASH manifests, preventing Facebook 403 Forbidden errors and fixing filesize estimates.
+- **Queue Error Reporting & Failed Task Visibility (`engine::queue`, `cli::shell`)**: Guaranteed failure error reporting upon live monitor exit, added failed and completed task summaries to `render_status_snapshot`, and flushed pending notifications prior to prompt rendering.
 - **Cookie Database Lock Detection & Guidance (`engine::downloader`, `cli::shell`, `ui::card`)**: Added `is_cookie_lock_error` to detect Chromium SQLite database locks on Windows (`issues/7271`). Enhanced troubleshooting hints to provide clear options (close browser or use exported `cookies.txt`), clarified multi-platform browser login requirements, and suppressed misleading engine update warnings during local file-lock errors.
 - **Windows UTF-8 Console Support (`cli::shell`)**: Automatic activation of code page 65001 (`SetConsoleOutputCP` / `SetConsoleCP`) on Windows startup with clean state restoration on exit, enabling full Unicode and Devanagari/Hindi font rendering in standard Windows command prompts.
 - **Console QuickEdit & UTF-8 Support (`cli::shell`)**: Ensures `ENABLE_QUICK_EDIT_MODE` and extended flags remain enabled on Windows stdin so right-click and clipboard pasting operate smoothly in interactive prompts, paired with automatic UTF-8 code page 65001 activation and clean restoration on exit.
@@ -18,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Format Table Column Alignment (`ui::format_table`)**: Standardized Size (18 cols) and Codec (7 cols) column widths with strict padding across headers and rows, ensuring vertical pipes `|` align across all rows and estimated filesize formats.
 - **Terminal Resize Wrap Ghost Line Elimination (`engine::downloader`)**: Tracks terminal dimension changes during active downloads and clears multi-line wrapped rows via `crossterm::cursor::MoveUp` and `Clear(FromCursorDown)`, preventing repeated stepper line duplication on Windows Conhost and Unix terminals.
 - **Progress Refresh Rate Throttling (`engine::downloader`)**: Throttled download progress rendering interval to 500ms to eliminate rapid visual jitter and ease console buffer load, while retaining 80ms refresh for finalizer phase animations.
 - **Terminal Resize & Auto-Wrap Protection (`ui::progress`, `engine::downloader`)**: Clamped single-line download progress bar rendering to `terminal_width - 2` columns and upgraded line clearing to `\x1b[2K`, eliminating soft-wrap line buffer concatenation and visual corruption during terminal resizing and maximizing on Windows conhost and Unix terminals.

@@ -1034,6 +1034,22 @@ impl QueueManager {
             .filter(|(_, _, _, s, _)| matches!(s, TaskStatus::Queued))
             .collect();
 
+        let failed_tasks: Vec<_> = tasks_snapshot
+            .iter()
+            .filter_map(|(id, title, desc, s, _)| match s {
+                TaskStatus::Failed(err) => Some((*id, title.as_str(), desc.as_str(), err.as_str())),
+                _ => None,
+            })
+            .collect();
+
+        let completed_tasks: Vec<_> = tasks_snapshot
+            .iter()
+            .filter_map(|(id, title, desc, s, _)| match s {
+                TaskStatus::Completed => Some((*id, title.as_str(), desc.as_str())),
+                _ => None,
+            })
+            .collect();
+
         println!(
             "\n{}",
             format!(
@@ -1087,6 +1103,41 @@ impl QueueManager {
                     "  [#{}] (Position: {}) \"{}\" [{}]",
                     id,
                     i + 1,
+                    sanitize_display(title),
+                    sanitize_display(format_desc)
+                );
+            }
+        }
+
+        if !failed_tasks.is_empty() {
+            println!(
+                "\n{}",
+                format!("=== Failed Downloads ({}) ===", failed_tasks.len())
+                    .red()
+                    .bold()
+            );
+            for (id, title, format_desc, err) in &failed_tasks {
+                println!(
+                    "  [#{}] \"{}\" [{}]\n       Error: {}",
+                    id,
+                    sanitize_display(title),
+                    sanitize_display(format_desc),
+                    sanitize_display(err)
+                );
+            }
+        }
+
+        if !completed_tasks.is_empty() {
+            println!(
+                "\n{}",
+                format!("=== Completed Downloads ({}) ===", completed_tasks.len())
+                    .green()
+                    .bold()
+            );
+            for (id, title, format_desc) in &completed_tasks {
+                println!(
+                    "  [#{}] \"{}\" [{}]",
+                    id,
                     sanitize_display(title),
                     sanitize_display(format_desc)
                 );
@@ -1304,7 +1355,71 @@ impl QueueManager {
                             )
                         );
                     }
-                    println!("{}", "SUCCESS: All active tasks completed!".green());
+
+                    let mut failed_tasks = Vec::new();
+                    let mut completed_tasks = Vec::new();
+                    let mut has_cancelled = false;
+
+                    for t in &tasks {
+                        let guard = t.lock().unwrap_or_else(|p| p.into_inner());
+                        match &guard.status {
+                            TaskStatus::Failed(err) => {
+                                failed_tasks.push((
+                                    guard.id,
+                                    guard.title.clone(),
+                                    guard.format_desc.clone(),
+                                    err.clone(),
+                                ));
+                            }
+                            TaskStatus::Completed => {
+                                completed_tasks.push((
+                                    guard.id,
+                                    guard.title.clone(),
+                                    guard.format_desc.clone(),
+                                ));
+                            }
+                            TaskStatus::Cancelled => {
+                                has_cancelled = true;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if !failed_tasks.is_empty() {
+                        for (id, title, desc, err) in &failed_tasks {
+                            eprintln!(
+                                "{}",
+                                format!(
+                                    "\nERROR: Download failed for [#{}] \"{}\" [{}]: {}\n",
+                                    id,
+                                    sanitize_display(title),
+                                    sanitize_display(desc),
+                                    sanitize_display(err)
+                                )
+                                .red()
+                                .bold()
+                            );
+                        }
+                    }
+
+                    if !completed_tasks.is_empty() {
+                        if failed_tasks.is_empty() {
+                            println!("{}", "SUCCESS: All active tasks completed!".green());
+                        } else {
+                            println!(
+                                "{}",
+                                format!(
+                                    "SUCCESS: {} of {} task(s) completed successfully.",
+                                    completed_tasks.len(),
+                                    completed_tasks.len() + failed_tasks.len()
+                                )
+                                .green()
+                            );
+                        }
+                    } else if failed_tasks.is_empty() && has_cancelled {
+                        println!("{}", "INFO: Tasks were cancelled.".yellow());
+                    }
+
                     lines_printed = 0;
                     break;
                 }
@@ -2122,6 +2237,7 @@ mod tests {
         })));
 
         mgr.print_list();
+        mgr.print_status();
     }
 
     #[test]
