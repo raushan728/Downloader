@@ -1933,7 +1933,7 @@ pub fn download_media_full(
             let mut last_sample_time = Instant::now();
 
             while running_render.load(Ordering::Relaxed) {
-                let (state, target_pct, is_fin) = {
+                let (state, target_pct) = {
                     let guard = shared_render.lock().unwrap_or_else(|p| p.into_inner());
                     let now = Instant::now();
 
@@ -1964,18 +1964,17 @@ pub fn download_media_full(
                         is_finalizing: guard.is_finalizing,
                         finalizing_msg: guard.finalizing_msg.clone(),
                     };
-                    (state, guard.target_percent, guard.is_finalizing)
+                    (state, guard.target_percent)
                 };
 
+                let is_fin = state.is_finalizing;
                 set_taskbar_progress(target_pct as u8);
                 if let Some(ref t) = title_opt {
                     set_terminal_title(&format!("DWDR - {:.0}% - {}", target_pct, t));
                 }
 
-                let term_w = crossterm::terminal::size()
-                    .map(|(w, _)| w as usize)
-                    .unwrap_or(80);
-                let show_stepper = !is_audio_only && !is_fin;
+                let term_w = UiContext::current_width();
+                let show_stepper = !is_audio_only;
                 let frame =
                     render_foreground_frame(&state, term_w, &theme, color, tick, show_stepper);
 
