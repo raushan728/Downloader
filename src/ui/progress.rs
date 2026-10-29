@@ -159,11 +159,16 @@ pub fn render_sparkline(samples: &[f64], theme: &ThemeMode) -> String {
 pub fn render_phase_stepper(phase: DownloadPhase, theme: &ThemeMode, color: ColorLevel) -> String {
     let arrow = symbol_arrow(theme);
     let check = symbol_check(theme);
+    let effective_phase = if phase == DownloadPhase::Finalize {
+        DownloadPhase::Merge
+    } else {
+        phase
+    };
 
     let format_step = |step_phase: DownloadPhase, name: &str| -> String {
-        let is_current = phase == step_phase;
+        let is_current = effective_phase == step_phase;
         let is_done = matches!(
-            (step_phase, phase),
+            (step_phase, effective_phase),
             (
                 DownloadPhase::Video,
                 DownloadPhase::Audio | DownloadPhase::Merge | DownloadPhase::Complete,
@@ -186,17 +191,22 @@ pub fn render_phase_stepper(phase: DownloadPhase, theme: &ThemeMode, color: Colo
         } else {
             match color {
                 ColorLevel::None => format!(" {} ", name),
-                _ => format!(" {} ", name).dimmed().to_string(),
+                _ => format!(" {} ", name).bright_black().to_string(),
             }
         }
+    };
+
+    let arrow_styled = match color {
+        ColorLevel::None => arrow.to_string(),
+        _ => arrow.bright_black().to_string(),
     };
 
     format!(
         "{} {} {} {} {}",
         format_step(DownloadPhase::Video, "Video"),
-        arrow,
+        arrow_styled,
         format_step(DownloadPhase::Audio, "Audio"),
-        arrow,
+        arrow_styled,
         format_step(DownloadPhase::Merge, "Merge")
     )
 }
@@ -214,8 +224,13 @@ pub fn render_foreground_frame(
     show_stepper: bool,
 ) -> String {
     let safe_width = term_width.saturating_sub(2);
-    if show_stepper && !state.is_finalizing && state.phase != DownloadPhase::Finalize {
-        let stepper = render_phase_stepper(state.phase, theme, color);
+    if show_stepper {
+        let current_phase = if state.is_finalizing {
+            DownloadPhase::Merge
+        } else {
+            state.phase
+        };
+        let stepper = render_phase_stepper(current_phase, theme, color);
         let stepper_width = visible_width(&stepper) + 1;
         if let Some(rem_width) = safe_width.checked_sub(stepper_width)
             && rem_width >= BREAKPOINT_NARROW
@@ -584,6 +599,21 @@ mod tests {
         let s_asc = render_phase_stepper(DownloadPhase::Audio, &ThemeMode::Ascii, ColorLevel::None);
         assert!(s_asc.contains(symbol_check(&ThemeMode::Ascii)));
         assert!(s_asc.contains(">Audio<"));
+
+        let s_merge =
+            render_phase_stepper(DownloadPhase::Merge, &ThemeMode::Unicode, ColorLevel::None);
+        assert!(s_merge.contains(">Merge<"));
+        assert!(s_merge.contains("[✓ Video]"));
+        assert!(s_merge.contains("[✓ Audio]"));
+
+        let s_fin = render_phase_stepper(
+            DownloadPhase::Finalize,
+            &ThemeMode::Unicode,
+            ColorLevel::None,
+        );
+        assert!(s_fin.contains(">Merge<"));
+        assert!(s_fin.contains("[✓ Video]"));
+        assert!(s_fin.contains("[✓ Audio]"));
     }
 
     #[test]

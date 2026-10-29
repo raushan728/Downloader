@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Phase Stepper Merge Tracking & Contrast Parity (`ui::progress`, `engine::downloader`, `engine::queue`)**: Enabled stepper progression through the media finalizing stage (`[✓ Video] › [✓ Audio] › >Merge<`), and upgraded inactive stepper elements to high-legibility `bright_black` across modern terminal emulators.
 - **Progressive Stream Priority & Facebook HD/SD Support (`engine::downloader`)**: Added `"hd"` (720p) and `"sd"` (480p) resolution mapping and prioritized direct progressive streams over adaptive DASH manifests, preventing Facebook 403 Forbidden errors and fixing filesize estimates.
 - **Queue Error Reporting & Failed Task Visibility (`engine::queue`, `cli::shell`)**: Guaranteed failure error reporting upon live monitor exit, added failed and completed task summaries to `render_status_snapshot`, and flushed pending notifications prior to prompt rendering.
 - **Cookie Database Lock Detection & Guidance (`engine::downloader`, `cli::shell`, `ui::card`)**: Added `is_cookie_lock_error` to detect Chromium SQLite database locks on Windows (`issues/7271`). Enhanced troubleshooting hints to provide clear options (close browser or use exported `cookies.txt`), clarified multi-platform browser login requirements, and suppressed misleading engine update warnings during local file-lock errors.
@@ -20,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Live Queue Flicker Elimination & Atomic Output (`engine::queue`)**: Wrapped in-place live dashboard repaints inside atomic synchronized update blocks (`\x1b[?2026h ... \x1b[?2026l`) and rewrote row rendering to overwrite line-by-line via `\x1b[2K`, eliminating terminal screen blanking and redraw blinking.
+- **Windows Terminal Resize & Auto-Wrap Protection (`engine::queue`)**: Clamped all live queue monitor lines strictly within `width - 2` columns and added terminal width change detection (`last_term_w`), preventing Windows Terminal soft-wrap buffer corruption (`DECAWM`) and line cascading during window resizing.
+- **Queue Progress Refresh Rate Throttling (`engine::queue`)**: Synchronized live queue rendering to a steady 500ms throttle interval (matching foreground download behavior) while retaining 80ms keyboard responsiveness and smooth finalizing animations.
 - **Format Table Column Alignment (`ui::format_table`)**: Standardized Size (18 cols) and Codec (7 cols) column widths with strict padding across headers and rows, ensuring vertical pipes `|` align across all rows and estimated filesize formats.
 - **Terminal Resize Wrap Ghost Line Elimination (`engine::downloader`)**: Tracks terminal dimension changes during active downloads and clears multi-line wrapped rows via `crossterm::cursor::MoveUp` and `Clear(FromCursorDown)`, preventing repeated stepper line duplication on Windows Conhost and Unix terminals.
 - **Progress Refresh Rate Throttling (`engine::downloader`)**: Throttled download progress rendering interval to 500ms to eliminate rapid visual jitter and ease console buffer load, while retaining 80ms refresh for finalizer phase animations.

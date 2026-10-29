@@ -1157,6 +1157,7 @@ impl QueueManager {
         color: ColorLevel,
         tick: u64,
     ) -> Vec<String> {
+        let safe_width = width.saturating_sub(2);
         let mut lines = Vec::new();
         let speed_part = if snapshot.total_speed > 0.0 {
             format!(" | Total Speed: {}", format_speed(snapshot.total_speed))
@@ -1170,13 +1171,14 @@ impl QueueManager {
             snapshot.queued_count,
             speed_part
         );
-        lines.push(header_raw);
+        lines.push(truncate_display(&header_raw, safe_width));
 
         for task in &snapshot.active_tasks {
             let title_clean = sanitize_display(&task.title);
             let desc_clean = sanitize_display(&task.format_desc);
             let desc_tag = format!(" [{}]", desc_clean);
-            let status_str = if task.status == TaskStatus::Finalizing {
+            let is_finalizing = task.status == TaskStatus::Finalizing;
+            let status_str = if is_finalizing {
                 match color {
                     ColorLevel::None => " [Finalizing media...]".to_string(),
                     _ => " [Finalizing media...]".yellow().to_string(),
@@ -1188,12 +1190,19 @@ impl QueueManager {
             let prefix = format!("  [#{}] \"", task.id);
             let suffix = format!("\"{}{}", desc_tag, status_str);
             let fixed_w = visible_width(&prefix) + visible_width(&suffix);
-            let max_title_w = width.saturating_sub(fixed_w).max(5);
-            let title_display = truncate_display(&title_clean, max_title_w);
-            lines.push(format!("{}{}{}", prefix, title_display, suffix));
+            let max_title_w = safe_width.saturating_sub(fixed_w);
+            let title_line = if max_title_w >= 5 {
+                let title_display = truncate_display(&title_clean, max_title_w);
+                format!("{}{}{}", prefix, title_display, suffix)
+            } else {
+                truncate_display(&format!("{}{}{}", prefix, title_clean, suffix), safe_width)
+            };
+            lines.push(title_line);
 
             const STATUS_INDENT: usize = 7;
-            let bar_width = width.saturating_sub(STATUS_INDENT);
+            let indent_len = STATUS_INDENT.min(safe_width);
+            let indent_spaces = " ".repeat(indent_len);
+            let bar_width = safe_width.saturating_sub(indent_len);
             let state = ProgressState {
                 percent: task.progress.percent,
                 downloaded_bytes: task.progress.downloaded_bytes,
@@ -1202,18 +1211,19 @@ impl QueueManager {
                 eta_seconds: task.progress.eta_seconds,
                 sparkline_samples: task.progress.sparkline_samples.clone(),
                 phase: task.progress.phase,
-                is_finalizing: task.status == TaskStatus::Finalizing,
-                finalizing_msg: if task.status == TaskStatus::Finalizing {
+                is_finalizing,
+                finalizing_msg: if is_finalizing {
                     Some("Finalizing media...".to_string())
                 } else {
                     None
                 },
             };
             let is_audio_only = task.format_desc.starts_with("Audio");
-            let show_stepper = !is_audio_only && task.status != TaskStatus::Finalizing;
+            let show_stepper = !is_audio_only;
             let frame =
                 render_foreground_frame(&state, bar_width, theme, color, tick, show_stepper);
-            lines.push(format!("       {}", frame));
+            let line = format!("{}{}", indent_spaces, frame);
+            lines.push(truncate_display(&line, safe_width));
         }
 
         lines
@@ -1281,6 +1291,8 @@ impl QueueManager {
             let mut tick: u64 = 0;
             let mut confirming_cancel = false;
             let mut raw_guard = RawModeGuard::new();
+            let mut last_term_w: usize = 0;
+            let mut last_render: Option<Instant> = None;
 
             // Discard any pending keystrokes (e.g. Enter pressed to select format or submit URL).
             for _ in 0..64 {
@@ -1292,6 +1304,7 @@ impl QueueManager {
             }
 
             loop {
+                let mut force_render = false;
                 if let Ok(true) = crossterm::event::poll(Duration::from_millis(TICK_MS))
                     && let Ok(crossterm::event::Event::Key(key_event)) = crossterm::event::read()
                     && key_event.kind != crossterm::event::KeyEventKind::Release
@@ -1300,6 +1313,7 @@ impl QueueManager {
                         LiveAction::Detach => break,
                         LiveAction::AskCancel => {
                             confirming_cancel = true;
+                            force_render = true;
                         }
                         LiveAction::ConfirmCancel => {
                             Self::cancel_and_join(manager_arc);
@@ -1307,6 +1321,7 @@ impl QueueManager {
                         }
                         LiveAction::DismissCancel => {
                             confirming_cancel = false;
+                            force_render = true;
                         }
                         LiveAction::None => {}
                     }
@@ -1424,6 +1439,38 @@ impl QueueManager {
                     break;
                 }
 
+                let term_w = UiContext::current_width();
+                let safe_w = term_w.saturating_sub(2);
+                if term_w != last_term_w && last_term_w > 0 && lines_printed > 0 {
+                    let _ = crossterm::execute!(
+                        io::stdout(),
+                        crossterm::cursor::MoveUp(lines_printed),
+                        crossterm::cursor::MoveToColumn(0),
+                        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
+                    );
+                    lines_printed = 0;
+                    prev_frame.clear();
+                    force_render = true;
+                }
+                last_term_w = term_w;
+
+                let any_finalizing = active_tasks
+                    .iter()
+                    .any(|t| t.status == TaskStatus::Finalizing);
+                let throttle_interval = if any_finalizing {
+                    Duration::from_millis(TICK_MS)
+                } else {
+                    Duration::from_millis(500)
+                };
+
+                let should_render =
+                    force_render || last_render.is_none_or(|t| t.elapsed() >= throttle_interval);
+                if !should_render {
+                    tick = tick.wrapping_add(1);
+                    continue;
+                }
+                last_render = Some(Instant::now());
+
                 set_terminal_title(&format!(
                     "DWDR Live - Active: {}/{} - Queued: {}",
                     active_tasks.len(),
@@ -1431,7 +1478,6 @@ impl QueueManager {
                     queued_count
                 ));
 
-                let term_w = UiContext::current_width();
                 let ctx = UiContext::get();
                 let snapshot = StatusSnapshot {
                     active_tasks,
@@ -1440,41 +1486,50 @@ impl QueueManager {
                     total_speed,
                 };
 
-                let status_lines =
+                let mut status_lines =
                     Self::render_status_frame(&snapshot, term_w, &ctx.theme, ctx.color_level, tick);
 
-                let mut current_frame = status_lines.join("\n");
-                if confirming_cancel {
-                    current_frame.push_str("\n  Cancel all downloads? [y/N] ");
+                let prompt_raw = if confirming_cancel {
+                    "  Cancel all downloads? [y/N] "
                 } else {
-                    current_frame.push_str("\n  [q] Detach to prompt | [c] Cancel tasks");
-                }
+                    "  [q] Detach to prompt | [c] Cancel tasks"
+                };
+                status_lines.push(truncate_display(prompt_raw, safe_w));
 
+                let current_frame = status_lines.join("\n");
                 if current_frame == prev_frame {
                     tick = tick.wrapping_add(1);
                     continue;
                 }
-                prev_frame = current_frame.clone();
-
-                if lines_printed > 0 {
-                    let _ = crossterm::execute!(
-                        io::stdout(),
-                        crossterm::cursor::MoveUp(lines_printed),
-                        crossterm::cursor::MoveToColumn(0),
-                        crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown)
-                    );
-                }
+                prev_frame = current_frame;
 
                 let use_sync = ctx.is_tty && ctx.color_level != ColorLevel::None;
                 if use_sync {
                     print!("\x1b[?2026h");
                 }
-                print!("{}\r\n", current_frame.replace('\n', "\r\n"));
+                if lines_printed > 0 {
+                    let _ = crossterm::execute!(
+                        io::stdout(),
+                        crossterm::cursor::MoveUp(lines_printed),
+                        crossterm::cursor::MoveToColumn(0),
+                    );
+                }
+                for line in &status_lines {
+                    print!("\x1b[2K{}\r\n", line);
+                }
+                let new_line_count = status_lines.len() as u16;
+                if new_line_count < lines_printed {
+                    let diff = lines_printed - new_line_count;
+                    for _ in 0..diff {
+                        print!("\x1b[2K\r\n");
+                    }
+                    let _ = crossterm::execute!(io::stdout(), crossterm::cursor::MoveUp(diff));
+                }
                 if use_sync {
                     print!("\x1b[?2026l");
                 }
                 let _ = io::stdout().flush();
-                lines_printed = (status_lines.len() + 1) as u16;
+                lines_printed = new_line_count;
                 tick = tick.wrapping_add(1);
             }
 
@@ -2615,6 +2670,55 @@ mod tests {
         assert!(lines[2].contains("65.0%"));
         assert!(lines[3].contains("[#2] \"Download Two\" [Audio] [Finalizing media...]"));
         assert!(lines[4].contains("Finalizing"));
+    }
+
+    #[test]
+    fn test_render_status_frame_line_widths_within_safe_margin() {
+        let task = TaskSnapshot {
+            id: 1,
+            title: "A Very Long Media Video Title That Extends Far Beyond Standard Line Widths To Test Truncation Boundaries In Terminals".to_string(),
+            format_desc: "1080p (mp4, ~500.0 MB (Est.))".to_string(),
+            status: TaskStatus::Downloading,
+            progress: TaskProgress {
+                percent: 45.5,
+                downloaded_bytes: 450_000_000,
+                total_bytes: 1_000_000_000,
+                speed_bytes_sec: 1_500_000.0,
+                eta_seconds: Some(360),
+                phase: DownloadPhase::Video,
+                sparkline_samples: vec![1.0, 2.0, 3.0, 4.0, 5.0],
+                ..TaskProgress::default()
+            },
+        };
+
+        let snapshot = StatusSnapshot {
+            active_tasks: vec![task],
+            max_parallel: 3,
+            queued_count: 5,
+            total_speed: 1_500_000.0,
+        };
+
+        for width in 20..=200 {
+            for theme in [&ThemeMode::Unicode, &ThemeMode::Ascii] {
+                for color in [ColorLevel::None, ColorLevel::TrueColor] {
+                    let lines =
+                        QueueManager::render_status_frame(&snapshot, width, theme, color, 0);
+                    let safe_w = width.saturating_sub(2);
+                    for (idx, line) in lines.iter().enumerate() {
+                        let vis = visible_width(line);
+                        assert!(
+                            vis <= safe_w,
+                            "Line {} at width {} exceeded safe margin (vis: {}, safe: {}): {:?}",
+                            idx,
+                            width,
+                            vis,
+                            safe_w,
+                            line
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
