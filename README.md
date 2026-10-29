@@ -6,9 +6,9 @@
 
   <br><br>
 
-  <video src="assets/demo.mp4" poster="assets/demo-poster.png" controls="controls" muted="muted" width="100%">
-    <a href="assets/demo.mp4">Watch demo video</a>
-  </video>
+  <img src="assets/demo.gif" alt="DWDR Interactive Shell Walkthrough" width="100%">
+  <br>
+  <sub><i>Interactive Shell Walkthrough &middot; <a href="assets/demo.mp4">MP4 Video</a></i></sub>
 </div>
 
 Source code repository for [DWDR]. It contains the CLI engine, interactive terminal shell, and configuration manager.
